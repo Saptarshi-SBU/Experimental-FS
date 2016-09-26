@@ -1,0 +1,9 @@
+Linux implementation of a Log-Structured File System.
+
+ -Initial efforts to have a base stable LFS implementation.
+
+ -Benchmark performance with Large Files.
+
+ -Experiment with data-structures for reduced write-amplification
+
+ -Contrast Performance against NILFS2
