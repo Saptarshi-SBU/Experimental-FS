@@ -1,0 +1,124 @@
+[ssen@localhost linux-3.11.10]$ gdb ./vmlinux 
+GNU gdb (GDB) Fedora 7.7.1-21.fc20
+Copyright (C) 2014 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.  Type "show copying"
+and "show warranty" for details.
+This GDB was configured as "x86_64-redhat-linux-gnu".
+Type "show configuration" for configuration details.
+For bug reporting instructions, please see:
+<http://www.gnu.org/software/gdb/bugs/>.
+Find the GDB manual and other documentation resources online at:
+<http://www.gnu.org/software/gdb/documentation/>.
+For help, type "help".
+Type "apropos word" to search for commands related to "word"...
+Reading symbols from ./vmlinux...done.
+
+(gdb) print iput
+$1 = {void (struct inode *)} 0xffffffff811bec70 <iput>
+(gdb) list *0xffffffff811bec70
+0xffffffff811bec70 is in iput (fs/inode.c:1435).
+1430     *  zero, the inode is then freed and may also be destroyed.
+1431     *
+1432     *  Consequently, iput() can sleep.
+1433     */
+1434    void iput(struct inode *inode)
+1435    {
+1436        if (inode) {
+1437            BUG_ON(inode->i_state & I_CLEAR);
+1438    
+1439            if (atomic_dec_and_lock(&inode->i_count, &inode->i_lock))
+(gdb) print do_mount
+$2 = {long (const char *, const char *, const char *, unsigned long, void *)}
+0xffffffff811c4170 <do_mount>
+(gdb) list *0xffffffff811c4170
+0xffffffff811c4170 is in do_mount (fs/namespace.c:2263).
+2258     * Therefore, if this magic number is present, it carries no information
+2259     * and must be discarded.
+2260     */
+2261    long do_mount(const char *dev_name, const char *dir_name,
+2262            const char *type_page, unsigned long flags, void *data_page)
+2263    {
+2264        struct path path;
+2265        int retval = 0;
+2266        int mnt_flags = 0;
+2267    
+(gdb) list *0xffffffff811c45c8
+0xffffffff811c45c8 is in do_mount (fs/namespace.c:2009).
+2004        if (IS_ERR(mnt))
+2005            return PTR_ERR(mnt);
+2006    
+2007        err = do_add_mount(real_mount(mnt), path, mnt_flags);
+2008        if (err)
+2009            mntput(mnt);
+2010        return err;
+2011    }
+2012    
+2013    int finish_automount(struct vfsmount *m, struct path *path)
+
+
+========================================================================
+
+[root@localhost Linux-LFS]# cat /sys/module/luci/sections/.init.text 
+0xffffffffa0024000
+[root@localhost Linux-LFS]# gdb luci.ko
+GNU gdb (GDB) Fedora 7.7.1-21.fc20
+Copyright (C) 2014 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.  Type "show copying"
+and "show warranty" for details.
+This GDB was configured as "x86_64-redhat-linux-gnu".
+Type "show configuration" for configuration details.
+For bug reporting instructions, please see:
+<http://www.gnu.org/software/gdb/bugs/>.
+Find the GDB manual and other documentation resources online at:
+<http://www.gnu.org/software/gdb/documentation/>.
+For help, type "help".
+Type "apropos word" to search for commands related to "word"...
+Reading symbols from luci.ko...done.
+(gdb) add-symbol-file luci.o 0xffffffffa0024000
+add symbol table from file "luci.o" at
+    .text_addr = 0xffffffffa0024000
+(y or n) y
+Reading symbols from luci.o...done.
+(gdb) disassemble luci_mount
+Dump of assembler code for function luci_mount:
+   0x0000000000000170 <+0>: callq  0x175 <luci_mount+5>
+   0x0000000000000175 <+5>: push   %rbp
+   0x0000000000000176 <+6>: mov    %rsp,%rbp
+   0x0000000000000179 <+9>: push   %r13
+
+(gdb) list *0x0000000000000276
+0x276 is in luci_mount (/home/ssen/Downloads/projects/Linux-LFS/super.c:113).
+108         printk(KERN_ERR "NILFS: get root inode failed\n");
+109         ret = PTR_ERR(root_inode);
+110         goto out;
+111     }
+112 
+113     if (!S_ISDIR(root_inode->i_mode) || !root_inode->i_blocks ||
+!root_inode->i_size) {
+114         iput(root_inode);
+115         printk(KERN_ERR "NILFS: corrupt root inode.\n");
+116         ret = -EINVAL;
+117         goto out;
+(gdb) q
+
+=============================================================
+Nov 26 03:36:44 localhost kernel: [<ffffffff811bedca>] iput+0x15a/0x180
+
+(gdb) list *0xffffffff811bedca
+0xffffffff811bedca is in iput (fs/inode.c:1394).
+1389    {
+1390        struct super_block *sb = inode->i_sb;
+1391        const struct super_operations *op = inode->i_sb->s_op;
+1392        int drop;
+1393    
+1394        WARN_ON(inode->i_state & I_NEW);
+1395    
+1396        if (op->drop_inode)
+1397            drop = op->drop_inode(inode);
+1398        else
+(gdb) 
+

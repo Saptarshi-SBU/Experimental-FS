@@ -1,9 +1,7 @@
-Linux implementation of a Log-Structured File System.
+Linux implementation of a COW File System.
 
- -Initial efforts to have a base stable LFS implementation.
+ -Initial efforts to have a base stable COW implementation.
 
- -Benchmark performance with Large Files.
+ -Benchmark performance with Random Read/Writes
 
  -Experiment with data-structures for reduced write-amplification
-
- -Contrast Performance against NILFS2
