@@ -12,14 +12,16 @@
 #include <linux/fs.h>
 #include <linux/mount.h>
 #include "luci.h"
-
-#define KERNV_311 0
-#define KERNV_317 1
+#include "kern_feature.h"
 
 MODULE_AUTHOR("Saptarshi.S");
-MODULE_ALIAS_FS("LUCI");
+MODULE_ALIAS_FS("luci");
 MODULE_DESCRIPTION("COW File System for Linux");
 MODULE_LICENSE("GPL");
+
+extern const struct inode_operations luci_dir_inode_operations;
+
+extern const struct file_operations luci_dir_operations;
 
 static struct kmem_cache* luci_inode_cachep;
 
@@ -74,10 +76,10 @@ static const struct super_operations luci_sops = {
 };
 
 
-static int luci_read_inode(struct inode* inode, int mode) {
+static int luci_read_inode(struct inode* inode, unsigned int mode) {
 
 /* TBD : Read from device. But currently faking */
-    inode->i_mode |= mode;
+    inode->i_mode = mode;
     inode->i_blocks = 1;
     inode->i_size = 4096;
     inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME;
@@ -89,6 +91,7 @@ struct inode *luci_iget(struct super_block *sb, unsigned long ino)
     int err = 0;
     struct inode *inode;
 
+    // TBD : iget* initializes i_mode
     inode = iget_locked(sb, ino);
     if (!inode)
         return ERR_PTR(-ENOMEM);
@@ -122,9 +125,12 @@ luci_fill_super(struct super_block *sb, void *data, int silent)
         goto out;
     }
 
-#if KERNV_317
+    root_inode->i_op = &luci_dir_inode_operations;
+    root_inode->i_fop = &luci_dir_operations;
+
+#if HAVE_D_OBTAIN_ROOT
     dentry = d_obtain_root(root_inode);
-#elif KERNV_311
+#else
     dentry = d_make_root(root_inode);
 #endif
     if (IS_ERR(dentry)) {
@@ -207,7 +213,7 @@ luci_mount(struct file_system_type *fs_type, int flags,
 
 struct file_system_type luci_fs = {
     .owner    = THIS_MODULE,
-    .name     = "LUCI",
+    .name     = "luci",
     .mount    = luci_mount,
     .kill_sb  = kill_block_super,
     .fs_flags = FS_REQUIRES_DEV,
