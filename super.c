@@ -11,6 +11,7 @@
 #include <linux/vfs.h>
 #include <linux/fs.h>
 #include <linux/mount.h>
+#include <linux/backing-dev.h>
 #include "luci.h"
 #include "kern_feature.h"
 
@@ -139,7 +140,7 @@ luci_fill_super(struct super_block *sb, void *data, int silent)
     }
 
     sb->s_root = dentry;
-    sb->s_bdi = &bdev_get_queue(sb->s_bdev)->backing_dev_info;
+    sb->s_bdi = (struct backing_dev_info*)&bdev_get_queue(sb->s_bdev)->backing_dev_info;
     sb->s_op = &luci_sops;
 
 out:

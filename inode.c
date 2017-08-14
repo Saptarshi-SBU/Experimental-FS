@@ -5,13 +5,21 @@
  *
  * ------------------------------------------------------------------*/
 #include <linux/fs.h>
+#include <linux/version.h>
 
 static int luci_setattr(struct dentry *dentry, struct iattr *attr)
 {
     return 0;
 }
 
-static int luci_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,8)
+static int luci_getattr(const struct path *path, struct kstat *stat,
+   u32 request_mask, unsigned int query_flags)
+#else
+static int luci_getattr(struct vfsmount *mnt, struct dentry *dentry,
+   struct kstat *stat)
+#endif
 {
     return 0;
 }
@@ -78,7 +86,11 @@ static int luci_rmdir(struct inode * dir, struct dentry *dentry)
     return 0;
 }
 static int luci_rename(struct inode * old_dir, struct dentry *old_dentry,
-                           struct inode * new_dir, struct dentry *new_dentry)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,8)
+   struct inode * new_dir, struct dentry *new_dentry, unsigned int flags)
+#else
+   struct inode * new_dir, struct dentry *new_dentry)
+#endif
 {
     printk(KERN_INFO "%s", __func__);
     return 0;
