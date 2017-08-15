@@ -112,7 +112,7 @@ luci_fill_super(struct super_block *sb, void *data, int silent)
     struct inode* root_inode;
     int ret = 0;
 
-    root_inode = luci_iget(sb, LUCI_ROOT_INODE);
+    root_inode = luci_iget(sb, LUCI_ROOT_INO);
     if (IS_ERR(root_inode)) {
         printk(KERN_ERR "LUCI: get root inode failed\n");
         ret = PTR_ERR(root_inode);

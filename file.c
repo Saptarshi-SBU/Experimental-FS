@@ -15,19 +15,15 @@ const struct file_operations luci_file_operations = {
         .read           = do_sync_read,
         .write          = do_sync_write,
 #endif
-#if HAVE_IOV_ITER
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,8)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
         .read_iter      = generic_file_read_iter,
-#else
+#else 
         .aio_read       = generic_file_aio_read,
 #endif
-#endif
-#if HAVE_IOV_ITER
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,8)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
         .write_iter     = generic_file_write_iter,
 #else
-        .aio_write       = generic_file_aio_write,
-#endif
+        .aio_write      = generic_file_aio_write,
 #endif
         .mmap           = generic_file_mmap,
         .fsync          = generic_file_fsync,

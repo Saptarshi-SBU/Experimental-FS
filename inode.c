@@ -6,6 +6,7 @@
  * ------------------------------------------------------------------*/
 #include <linux/fs.h>
 #include <linux/version.h>
+#include "luci.h"
 
 static int luci_setattr(struct dentry *dentry, struct iattr *attr)
 {
