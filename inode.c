@@ -110,3 +110,5 @@ const struct inode_operations luci_dir_inode_operations = {
         .getattr        = luci_getattr,
         .tmpfile        = luci_tmpfile,
 };
+
+const struct address_space_operations luci_aops = { };

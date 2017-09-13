@@ -67,7 +67,7 @@ struct luci_super_block {
 	 * the incompatible feature set is that if there is a bit set
 	 * in the incompatible feature set that the kernel doesn't
 	 * know about, it should refuse to mount the filesystem.
-	 * 
+	 *
 	 * e2fsck's requirements are more strict; if it doesn't know
 	 * about a feature in either the compatible or incompatible
 	 * feature set, it must abort and not try to meddle with
@@ -123,7 +123,7 @@ struct luci_sb_info {
 	unsigned long s_overhead_last;  /* Last calculated overhead */
 	unsigned long s_blocks_last;    /* Last seen block count */
 	struct buffer_head * s_sbh;	/* Buffer containing the super block */
-	struct luci_super_block * s_es;	/* Pointer to the super block in the buffer */
+	struct luci_super_block * s_lsb;	/* Pointer to the super block in the buffer */
 	struct buffer_head ** s_group_desc;
 	unsigned long  s_mount_opt;
 	unsigned long s_sb_block;
@@ -146,7 +146,7 @@ struct luci_sb_info {
 	/*
 	 * s_lock protects against concurrent modifications of s_mount_state,
 	 * s_blocks_last, s_overhead_last and the content of superblock's
-	 * buffer pointed to by sbi->s_es.
+	 * buffer pointed to by sbi->s_lsb.
 	 *
 	 * Note: It is used in luci_show_options() to provide a consistent view
 	 * of the mount options.
@@ -312,7 +312,7 @@ static inline luci_fsblk_t
 luci_group_first_block_no(struct super_block *sb, unsigned long group_no)
 {
 	return group_no * (luci_fsblk_t)LUCI_BLOCKS_PER_GROUP(sb) +
-		le32_to_cpu(LUCI_SB(sb)->s_es->s_first_data_block);
+		le32_to_cpu(LUCI_SB(sb)->s_lsb->s_first_data_block);
 }
 
 /*
@@ -488,6 +488,9 @@ struct luci_mount_options {
 #define LUCI_DIR_REC_LEN(name_len)	(((name_len) + 8 + LUCI_DIR_ROUND) & \
 					 ~LUCI_DIR_ROUND)
 #define LUCI_MAX_REC_LEN		((1<<16)-1)
+
+#define LUCI_SUPER_MAGIC	0xEF53
+#define LUCI_LINK_MAX           32000
 
 #define LUCI_SB_MAGIC_OFFSET    0x38
 #define LUCI_SB_BLOCKS_OFFSET   0x04
