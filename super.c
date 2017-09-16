@@ -1,5 +1,5 @@
 /*-----------------------------------------------------------
- * Copyright(C) 2016, Saptarshi Sen
+ * Copyright(C) 2016-2017, Saptarshi Sen
  *
  * Playground for Luci Super block and namespace operations
  *
@@ -19,7 +19,7 @@
 
 MODULE_AUTHOR("Saptarshi.S");
 MODULE_ALIAS_FS("luci");
-MODULE_DESCRIPTION("COW File System for Linux");
+MODULE_DESCRIPTION("File System for Linux");
 MODULE_LICENSE("GPL");
 
 extern const struct inode_operations luci_dir_inode_operations;
@@ -93,6 +93,116 @@ static const struct super_operations luci_sops = {
     .put_super = luci_put_super,
 };
 
+static void
+luci_print_sbinfo(struct super_block *sb) {
+   if (sb && sb->s_fs_info) {
+      struct luci_sb_info *sbi = sb->s_fs_info;
+      printk(KERN_INFO "LUCI: desc_per_block :%lu "
+         "gdb :%lu blocks_count :%u inodes_count :%u "
+	 "block_size :%lu blocks_per_group :%lu "
+	 "first_data_block :%u groups_count :%lu", sbi->s_desc_per_block,
+	 sbi->s_gdb_count, sbi->s_lsb->s_blocks_count,
+	 sbi->s_lsb->s_inodes_count, sb->s_blocksize,
+	 sbi->s_blocks_per_group, sbi->s_lsb->s_first_data_block,
+	 sbi->s_groups_count);
+    }
+}
+
+static int
+luci_check_descriptors(struct super_block *sb) {
+   int i, j;
+   uint32_t block_map, inode_map, inode_tbl;
+   struct luci_sb_info *sbi = sb->s_fs_info;
+
+   for (i = 0; i < sbi->s_gdb_count; i++) {
+      struct buffer_head *bh = sbi->s_group_desc[i];
+      for (j = 0; j < sbi->s_desc_per_block; j++) {
+         struct luci_group_desc *gdesc;
+         luci_fsblk_t first_block, last_block;
+	 uint32_t gp = (i * sbi->s_desc_per_block) + j + 1;
+	 if (gp > sbi->s_groups_count) {
+            goto done;
+	 }
+
+	 first_block = luci_group_first_block_no(sb, (i + 1)* j);
+
+	 if (gp == sbi->s_groups_count - 1) {
+	    last_block = sbi->s_lsb->s_blocks_count - 1;
+	 } else {
+	    last_block = first_block + sbi->s_blocks_per_group - 1;
+	 }
+
+         gdesc = (struct luci_group_desc*)
+	    (bh->b_data +  j * sizeof(struct luci_group_desc));
+
+	 block_map = le32_to_cpu(gdesc->bg_block_bitmap);
+         printk(KERN_DEBUG " block bitmap for group[%u]:%u", gp, block_map);
+	 if ((block_map < first_block) || (block_map > last_block)) {
+            printk(KERN_ERR "%s failed, block bitmap for group %d invalid block"
+			    " no %u", __func__, (i + 1) * j, block_map);
+	    return -EINVAL;
+         }
+
+	 inode_map = le32_to_cpu(gdesc->bg_inode_bitmap);
+	 if ((inode_map < first_block) || (inode_map > last_block)) {
+            printk(KERN_ERR "%s failed, inode bitmap for group %d invalid block"
+			    " no %u", __func__, (i + 1) * j, inode_map);
+	    return -EINVAL;
+         }
+
+	 inode_tbl = le32_to_cpu(gdesc->bg_inode_table);
+	 if ((inode_tbl < first_block) || (inode_tbl > last_block)) {
+            printk(KERN_ERR "%s failed, inode table for group %d invalid block"
+			    " no %u", __func__, (i + 1) * j, inode_tbl);
+	    return -EINVAL;
+         }
+      }
+   }
+
+   done:
+   return 0;
+}
+
+static void
+luci_check_superblock_backups(struct super_block *sb) {
+   int i, j;
+   uint32_t gp;
+   struct buffer_head *bh;
+   struct luci_super_block *lsb;
+   luci_fsblk_t first_block;
+   struct luci_sb_info *sbi = sb->s_fs_info;
+
+   for (i = 0; i < sbi->s_gdb_count; i++) {
+      for (j = 0; j < sbi->s_desc_per_block; j++) {
+	 gp = (i * sbi->s_desc_per_block) + j + 1;
+	 if (gp > sbi->s_groups_count) {
+            return;
+	 }
+
+	 if (gp > 1) {
+	    first_block = luci_group_first_block_no(sb, (i + 1)* j);
+            bh = sb_bread(sb, first_block);
+            lsb = (struct luci_super_block*)((char*) bh->b_data);
+	    if (le16_to_cpu(lsb->s_magic) == LUCI_SUPER_MAGIC) {
+               printk(KERN_INFO "LUCI: superblock backup at block %lu "
+	          "group %u ", first_block, (i + 1) *j);
+	    }
+	    brelse(bh);
+	 }
+       }
+    }
+}
+
+static int
+luci_runlayoutchecks(struct super_block *sb) {
+   luci_print_sbinfo(sb);
+   if ((luci_check_descriptors(sb))) {
+      return -EINVAL;
+   }
+   luci_check_superblock_backups(sb);
+   return 0;
+}
+
 static int luci_read_inode(struct inode* inode, unsigned int mode) {
 /* TBD : Read from device. But currently faking */
     inode->i_mode = mode;
@@ -132,7 +242,7 @@ luci_file_maxsize(int bits) {
 static int
 luci_read_superblock(struct super_block *sb) {
    int ret = 0;
-   unsigned long i;
+   long i;
    unsigned long block_no;
    unsigned long block_of;
    unsigned long block_size;
@@ -183,6 +293,8 @@ restart:
       ret = -EINVAL;
       goto failed_mount;
    }
+
+   printk(KERN_DEBUG "LUCI: magic number on block:%lu(%lu)",block_no, block_of);
 
    // get the on-disk block size
    block_size = BLOCK_SIZE << le32_to_cpu(lsb->s_log_block_size);
@@ -266,10 +378,10 @@ restart:
    sbi->s_desc_per_block_bits = ilog2 (sbi->s_desc_per_block);
 
    // nr_groups
-   sbi->s_groups_count =
-     (le32_to_cpu(lsb->s_blocks_count) - le32_to_cpu(lsb->s_first_data_block))/
-     sbi->s_blocks_per_group;
-   sbi->s_gdb_count = sbi->s_groups_count/sbi->s_desc_per_block;
+   sbi->s_groups_count = ((le32_to_cpu(lsb->s_blocks_count) -
+      le32_to_cpu(lsb->s_first_data_block) - 1)/ sbi->s_blocks_per_group) + 1;
+   sbi->s_gdb_count =
+     (sbi->s_groups_count + sbi->s_desc_per_block - 1)/sbi->s_desc_per_block;
    // bh array
    sbi->s_group_desc = (struct buffer_head **) kmalloc
       (sbi->s_gdb_count * sizeof(struct buffer_head *), GFP_KERNEL);
@@ -291,6 +403,11 @@ restart:
 
    sb->s_fs_info = sbi;
 
+   if (luci_runlayoutchecks(sb)) {
+      ret = -EINVAL;
+      goto failed_layoutcheck;
+   }
+
    // ready the super-block for any operations
    sb->s_op = &luci_sops;
 
@@ -304,11 +421,12 @@ restart:
    printk(KERN_INFO "LUCI: super_block read successfull");
    return 0;
 
+failed_layoutcheck:
+   i = sbi->s_gdb_count - 1;
 failed_gdb:
-   while (i >= 0) {
-     brelse(sbi->s_group_desc[i]);
-     i--;
-   };
+   for (;i >= 0; i--) {
+      brelse(sbi->s_group_desc[i]);
+   }
    kfree(sbi->s_group_desc);
 failed_mount:
    sbi->s_sbh = NULL;

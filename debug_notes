@@ -1,4 +1,4 @@
-[ssen@localhost linux-3.11.10]$ gdb ./vmlinux 
+[ssen@localhost linux-3.11.10]$ gdb ./vmlinux
 GNU gdb (GDB) Fedora 7.7.1-21.fc20
 Copyright (C) 2014 Free Software Foundation, Inc.
 License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
@@ -27,7 +27,7 @@ $1 = {void (struct inode *)} 0xffffffff811bec70 <iput>
 1435    {
 1436        if (inode) {
 1437            BUG_ON(inode->i_state & I_CLEAR);
-1438    
+1438
 1439            if (atomic_dec_and_lock(&inode->i_count, &inode->i_lock))
 (gdb) print do_mount
 $2 = {long (const char *, const char *, const char *, unsigned long, void *)}
@@ -43,24 +43,24 @@ $2 = {long (const char *, const char *, const char *, unsigned long, void *)}
 2264        struct path path;
 2265        int retval = 0;
 2266        int mnt_flags = 0;
-2267    
+2267
 (gdb) list *0xffffffff811c45c8
 0xffffffff811c45c8 is in do_mount (fs/namespace.c:2009).
 2004        if (IS_ERR(mnt))
 2005            return PTR_ERR(mnt);
-2006    
+2006
 2007        err = do_add_mount(real_mount(mnt), path, mnt_flags);
 2008        if (err)
 2009            mntput(mnt);
 2010        return err;
 2011    }
-2012    
+2012
 2013    int finish_automount(struct vfsmount *m, struct path *path)
 
 
 ========================================================================
 
-[root@localhost Linux-LFS]# cat /sys/module/luci/sections/.init.text 
+[root@localhost Linux-LFS]# cat /sys/module/luci/sections/.init.text
 0xffffffffa0024000
 [root@localhost Linux-LFS]# gdb luci.ko
 GNU gdb (GDB) Fedora 7.7.1-21.fc20
@@ -96,7 +96,7 @@ Dump of assembler code for function luci_mount:
 109         ret = PTR_ERR(root_inode);
 110         goto out;
 111     }
-112 
+112
 113     if (!S_ISDIR(root_inode->i_mode) || !root_inode->i_blocks ||
 !root_inode->i_size) {
 114         iput(root_inode);
@@ -114,13 +114,13 @@ Nov 26 03:36:44 localhost kernel: [<ffffffff811bedca>] iput+0x15a/0x180
 1390        struct super_block *sb = inode->i_sb;
 1391        const struct super_operations *op = inode->i_sb->s_op;
 1392        int drop;
-1393    
+1393
 1394        WARN_ON(inode->i_state & I_NEW);
-1395    
+1395
 1396        if (op->drop_inode)
 1397            drop = op->drop_inode(inode);
 1398        else
-(gdb) 
+(gdb)
 
 --------------------------------------------------------------------
 inode_flags : NEW, SYNC, DIRTY ...
@@ -128,5 +128,5 @@ sync(2) : tagged_writepages, sync
 WB_SYNC_ALL, WB_SYNC_NONE
 bdi_writeback, queue_work, push work to block device queue
 bdi_bandwidth : sync and small tasks getting starved...
-axeboes patch...
+axeboes patch regarding livelock, starvation...
 compat feature, incompat feature...
