@@ -280,7 +280,7 @@ struct luci_inode_info {
  */
 #define LUCI_STATE_NEW			0x00000001 /* inode is newly created */
 
-static inline struct luci_inode_info *luci_i(struct inode *inode)
+static inline struct luci_inode_info *LUCI_I(struct inode *inode)
 {
 	return container_of(inode, struct luci_inode_info, vfs_inode);
 }
@@ -442,6 +442,7 @@ enum {
 #define LUCI_ERRORS_RO			2	/* Remount fs read-only */
 #define LUCI_ERRORS_PANIC		3	/* Panic */
 #define LUCI_ERRORS_DEFAULT		LUCI_ERRORS_CONTINUE
+#define EFSCORRUPTED                    EUCLEAN /* Filesystem is corrupted */
 
 /*
  * Revision levels
@@ -489,8 +490,10 @@ struct luci_mount_options {
 					 ~LUCI_DIR_ROUND)
 #define LUCI_MAX_REC_LEN		((1<<16)-1)
 
+#define LUCI_NAME_LEN           255
 #define LUCI_SUPER_MAGIC	0xEF53
 #define LUCI_LINK_MAX           32000
+#define LUCI_MAX_DEPTH          4
 
 #define LUCI_SB_MAGIC_OFFSET    0x38
 #define LUCI_SB_BLOCKS_OFFSET   0x04
@@ -522,4 +525,24 @@ static inline void verify_offsets(void)
 #else
 #	define luci_debug(f, a...)	/**/
 #endif
+
+typedef struct {
+   __le32 *p;
+   __le32 key;
+   struct buffer_head *bh;
+} Indirect;
+
+/* dir.c */
+extern ino_t luci_inode_by_name(struct inode *, const struct qstr *);
+extern struct luci_dir_entry_2 * luci_find_entry (struct inode *,const struct qstr *, struct page **);
+
+/* inode.c */
+extern struct inode *luci_iget (struct super_block *, unsigned long);
+extern int luci_get_block(struct inode *, sector_t, struct buffer_head *, int);
+
+extern const struct inode_operations luci_file_inode_operations;
+extern const struct file_operations luci_file_operations;
+extern const struct inode_operations luci_dir_inode_operations;
+extern const struct file_operations luci_dir_operations;
+extern const struct address_space_operations luci_aops;
 #endif
