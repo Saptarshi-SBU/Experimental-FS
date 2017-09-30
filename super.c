@@ -92,6 +92,7 @@ static const struct super_operations luci_sops = {
     .alloc_inode    = luci_alloc_inode,
     .destroy_inode  = luci_destroy_inode,
     .put_super = luci_put_super,
+    .write_inode = luci_write_inode,
 };
 
 static void
@@ -162,6 +163,15 @@ luci_check_descriptors(struct super_block *sb) {
 
 done:
     return 0;
+}
+
+static void
+luci_dump_blockbitmap(struct super_block *sb) {
+   int i = 0;
+   struct luci_sb_info *sbi = sb->s_fs_info;
+   for (; i < sbi->s_groups_count; i++) {
+      read_block_bitmap(sb, i);
+   }
 }
 
 static void
@@ -379,6 +389,8 @@ restart:
         ret = -EINVAL;
         goto failed_layoutcheck;
     }
+
+    luci_dump_blockbitmap(sb);
 
     // ready the super-block for any operations
     sb->s_op = &luci_sops;
