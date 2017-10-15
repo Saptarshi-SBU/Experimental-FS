@@ -9,6 +9,7 @@
 #include "kern_feature.h"
 
 #include <linux/fs.h>
+#include <linux/uio.h>
 
 loff_t
 luci_llseek(struct file * file, loff_t off, int whence) {
@@ -35,6 +36,8 @@ ssize_t luci_write(struct file * file, const char *buf, size_t size, loff_t *pos
 
 ssize_t luci_write_iter(struct kiocb*iocb, struct iov_iter *iter) {
    ssize_t ret;
+   printk(KERN_INFO "Luci :%s pos :%llu count :%lu",
+      __func__, iocb->ki_pos, iov_iter_count(iter));
    ret = generic_file_write_iter(iocb, iter);
    printk(KERN_INFO "%s return :%lu", __func__, ret);
    return ret;

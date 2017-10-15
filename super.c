@@ -214,11 +214,17 @@ luci_runlayoutchecks(struct super_block *sb) {
     return 0;
 }
 
-// TBD
 static size_t
-luci_file_maxsize(int bits) {
-
-    return 0;
+luci_file_maxsize(struct super_block *sb) {
+    size_t size, dir, indir, dindir, tindir;
+    // Calculate the leaves
+    dir = LUCI_NDIR_BLOCKS;
+    indir = 1 * LUCI_ADDR_PER_BLOCK(sb);
+    dindir = indir * LUCI_ADDR_PER_BLOCK(sb);
+    tindir = dindir * LUCI_ADDR_PER_BLOCK(sb);
+    size = (dir + indir + dindir + tindir) * sb->s_blocksize;
+    printk(KERN_INFO "Luci:%s maxsize :%lu", __func__, size);
+    return size;
 }
 
 static int
@@ -291,7 +297,7 @@ restart:
     }
 
     sbi->s_sbh = bh;
-    sb->s_maxbytes = luci_file_maxsize(sb->s_blocksize_bits);
+    sb->s_maxbytes = luci_file_maxsize(sb);
     sb->s_max_links = LUCI_LINK_MAX;
 
     // inode size

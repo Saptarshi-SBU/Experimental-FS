@@ -66,7 +66,9 @@ read_inode_bitmap(struct super_block *sb, unsigned long block_group) {
 
 struct buffer_head *
 read_block_bitmap(struct super_block *sb, unsigned long block_group) {
+#ifdef DEBUG
    int i = 0;
+#endif
    uint32_t bmap_block;
    struct luci_group_desc *gdesc;
    struct buffer_head *bh_bmap;
@@ -79,10 +81,12 @@ read_block_bitmap(struct super_block *sb, unsigned long block_group) {
       printk(KERN_ERR "Unable to read inode bitmap");
       goto out;
    }
+#ifdef DEBUG
    for (i = 0; i < bh_bmap->b_size/sizeof(unsigned int); i++) {
       printk(KERN_ERR "%s block_group :%ld [%d] : %x", __func__, block_group, i,
               *((unsigned int*)bh_bmap->b_data + i));
    }
+#endif
 out:
    return bh_bmap;
 }
@@ -254,8 +258,10 @@ luci_new_block(struct inode *inode)
 
    block = find_next_zero_bit((unsigned long*)bitmap_bh->b_data,
       LUCI_BLOCKS_PER_GROUP(sb), 0);
+#ifdef DEBUG
    printk(KERN_INFO "Finding zero bit in block group %d : %d", block_group, block);
    printk(KERN_INFO "%lx", *(unsigned long*)bitmap_bh->b_data);
+#endif
    if (block < LUCI_BLOCKS_PER_GROUP(sb)) {
       if (!(__test_and_set_bit_le(block, bitmap_bh->b_data))) {
      printk(KERN_INFO "Luci :%s found block %d", __func__, block);

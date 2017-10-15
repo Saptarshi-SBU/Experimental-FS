@@ -846,6 +846,33 @@ luci_writepage(struct page *page, struct writeback_control *wbc)
 }
 
 static int
+luci_write_begin(struct file *file, struct address_space *mapping,
+    loff_t pos, unsigned len, unsigned flags,
+    struct page **pagep, void **fsdata)
+{
+    int ret;
+    ret = block_write_begin(mapping, pos, len, flags, pagep,
+       luci_get_block);
+    if (ret < 0) {
+       printk(KERN_ERR "Luci:%s failed with %d", __func__, ret);
+    }
+    return ret;
+}
+
+static int
+luci_write_end(struct file *file, struct address_space *mapping,
+    loff_t pos, unsigned len, unsigned copied,
+    struct page *page, void *fsdata)
+{
+    int ret;
+    ret = generic_write_end(file, mapping, pos, len, copied, page, fsdata);
+    if (ret < 0) {
+       printk(KERN_ERR "Luci:%s failed with %d", __func__, ret);
+    }
+    return ret;
+}
+
+static int
 luci_readpage(struct file *file, struct page *page)
 {
     return mpage_readpage(page, luci_get_block);
@@ -868,4 +895,6 @@ const struct inode_operations luci_dir_inode_operations = {
 const struct address_space_operations luci_aops = {
     .readpage       = luci_readpage,
     .writepage      = luci_writepage,
+    .write_begin    = luci_write_begin,
+    .write_end      = luci_write_end,
 };
