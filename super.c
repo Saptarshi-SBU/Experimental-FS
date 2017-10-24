@@ -11,6 +11,7 @@
 #include <linux/vfs.h>
 #include <linux/fs.h>
 #include <linux/mount.h>
+#include <linux/mm.h>
 #include <linux/backing-dev.h>
 #include <linux/buffer_head.h>
 #include <linux/log2.h>
@@ -60,6 +61,250 @@ luci_put_super(struct super_block *sb) {
     kfree(sbi);
 }
 
+static int
+luci_free_block(struct inode *inode, unsigned long block)
+{
+   unsigned block_group;
+   struct super_block *sb;
+   struct luci_inode_info *li;
+   struct luci_group_desc *gdesc;
+   struct buffer_head *bh_block, *bh_desc;
+
+   sb = inode->i_sb;
+   li = LUCI_I(inode);
+   block_group = li->i_block_group;
+
+   printk(KERN_INFO "luci : Freeing block %lu in block group :%u",
+      block, block_group);
+
+   bh_block = read_block_bitmap(sb, block_group);
+   if (!bh_block) {
+      printk(KERN_ERR "luci : Free block :%lu failed. Error reading block "
+         "bitmap for group :%u", block, block_group);
+      return -EIO;
+   }
+   if (!(__test_and_clear_bit_le(block, bh_block->b_data))) {
+      printk(KERN_ERR "luci : Free block :%lu failed. Block marked not in use!",
+         block);
+      return -EIO;
+   }
+   mark_buffer_dirty(bh_block);
+   brelse(bh_block);
+
+   gdesc = luci_get_group_desc(sb, block_group, &bh_desc);
+   if (!gdesc) {
+      printk(KERN_ERR "luci : Free block :%lu failed. Error reading group "
+         "descriptor table for group :%u", block, block_group);
+      return -EIO;
+   }
+   le16_add_cpu(&gdesc->bg_free_blocks_count, 1);
+   mark_buffer_dirty(bh_desc);
+   // Cannot release group descriptor buffer head
+   // brelse(bh_desc);
+   return 0;
+}
+
+/*
+ *  Tree walk to free the leaf block
+ *
+ */
+static int
+luci_free_branch(struct inode *inode,
+    long current_block,
+    long *delta_blocks,
+    int depth)
+{
+    int err = 0;
+    int nr_entries;
+    uint32_t *p, *q;
+    struct buffer_head *bh;
+    struct super_block *sb = inode->i_sb;
+
+    if (depth == 0) {
+        return luci_free_block(inode, current_block);
+    }
+
+    nr_entries = LUCI_ADDR_PER_BLOCK(sb);
+    bh = sb_bread(sb, current_block);
+    if (bh == NULL) {
+        printk(KERN_ERR "luci : failed to read block :%ld during free branch",
+	    current_block);
+        return -EIO;
+    }
+    p = (uint32_t*)bh->b_data;
+    q = (uint32_t*)bh->b_size - sizeof(uint32_t);
+    for (;q >= p; q--) {
+       if (*delta_blocks == 0) {
+	   printk(KERN_INFO "luci : no remaining blocks to free");
+           break;
+       }
+       // track valid entries in indirect block
+       nr_entries--;
+       if (!*q) {
+          continue;
+       }
+       err = luci_free_branch(inode, *q, delta_blocks, depth - 1);
+       if (err) {
+          printk(KERN_ERR "luci : failed to free branch at depth:%d block:%d",
+	     depth - 1, *q);
+          goto out;
+       }
+       // clear entry
+       *q = 0;
+       mark_buffer_dirty(bh);
+       delta_blocks--;
+       printk(KERN_INFO "luci : clearing entry %d for indirect block %ld",
+          nr_entries, current_block);
+    }
+
+    // block has entries for block address
+    if (nr_entries > 0) {
+        goto out;
+    }
+
+    // Free the indirect block
+    err = luci_free_block(inode, current_block);
+    if (err) {
+       printk(KERN_ERR "luci : error freeing indirect block %ld",
+	   current_block);
+       goto out;
+    }
+
+out:
+    brelse(bh);
+    return err;
+}
+
+static int
+luci_free_direct(struct inode *inode, long *delta_blocks)
+{
+    int i; // loop through all direct blocks
+    struct luci_inode_info *li = LUCI_I(inode);
+    for (i = LUCI_NDIR_BLOCKS - 1; i >= 0 && *delta_blocks; i--) {
+       if (!li->i_data[i]) {
+          continue;
+       }
+       if (luci_free_block(inode, li->i_data[i]) < 0) {
+           printk(KERN_ERR "luci : error freeing direct block %d", i);
+           return -EIO;
+       }
+       printk(KERN_INFO "luci : freed direct block [%d] %u", i, li->i_data[i]);
+      *delta_blocks -= 1;
+    }
+    return 0;
+}
+
+static int
+luci_free_blocks(struct inode *inode, long delta_blocks)
+{
+    long ret;
+    int i, level;
+    unsigned long cur_block;
+    struct luci_inode_info *li = LUCI_I(inode);
+
+    // Free blocks from bottom up
+    for (i = LUCI_TIND_BLOCK - 1, level = 3; level; i--, level--) {
+       cur_block = li->i_data[i];
+       if (cur_block == 0) {
+          printk(KERN_INFO "luci : indirect block index %d empty", i);
+          continue;
+       }
+       ret = luci_free_branch(inode, cur_block, &delta_blocks, level);
+       if (ret < 0) {
+          printk(KERN_ERR "luci : Error freeing blocks from indirect level %lu",
+             cur_block);
+          return ret;
+       }
+       // clear the root block from i_data array
+       li->i_data[i] = 0;
+       if (delta_blocks == 0) {
+          printk(KERN_INFO "luci : no remaining blocks to free");
+          goto done;
+       }
+    }
+
+    ret = luci_free_direct(inode, &delta_blocks);
+    if (ret < 0) {
+        printk(KERN_ERR "luci : error freeing direct blocks");
+        return ret;
+    }
+
+done:
+    //BUG_ON(delta_blocks);
+    printk(KERN_INFO "Freed delta blocks sucessfully :%ld", delta_blocks);
+    return 0;
+}
+
+static int
+luci_grow_blocks(struct inode *inode, long from, long to)
+{
+ // TBD
+    long i;
+    int err = 0;
+    for (i = from + 1; i <= to; i++) {
+        // We avoid mapping in get_block, so bh is NULL
+        err = luci_get_block(inode, i, NULL, 1);
+        if (err) {
+           printk(KERN_ERR "luci : failed to grow blocks, error in fetching "
+	       "block %lu", i);
+	   break;
+        }
+    }
+    return err;
+}
+
+int
+luci_truncate(struct inode *inode, loff_t size)
+{
+    struct super_block *sb = inode->i_sb;
+    long n_blocks = (size + sb->s_blocksize - 1)/ sb->s_blocksize;
+    long i_blocks = (inode->i_size + sb->s_blocksize - 1)/
+       sb->s_blocksize;
+    long delta_blocks = n_blocks - i_blocks;
+    printk (KERN_INFO "luci : truncate blocks :%ld", delta_blocks);
+    printk (KERN_INFO "luci : blocksize :%lu %lu-%lu", sb->s_blocksize, n_blocks, i_blocks);
+    if(!delta_blocks) {
+       return 0;
+    } else if (delta_blocks > 0) {
+       printk (KERN_INFO "luci : adding %ld blocks on truncate", delta_blocks);
+       return luci_grow_blocks(inode, i_blocks, n_blocks);
+    } else {
+       printk (KERN_INFO "luci : freeing %ld blocks on truncate", delta_blocks);
+       return luci_free_blocks(inode, -delta_blocks);
+    }
+}
+
+// invoked when i_count (in-memory references) drops to zero
+static int
+luci_drop_inode(struct inode *inode)
+{
+   printk(KERN_INFO "luci : dropping inode %lu, refcount :%d, nlink :%d",
+      inode->i_ino, atomic_read(&inode->i_count), inode->i_nlink);
+   return generic_drop_inode(inode);
+}
+
+// invoked when i_nlink and i_count both drops to zero.
+// This shall reclaim all disk blocks
+static void
+luci_evict_inode(struct inode * inode)
+{
+   printk(KERN_INFO "luci : evicting inode :%lu",  inode->i_ino);
+   // invalidate the radix tree in page-cache
+   truncate_inode_pages_final(&inode->i_data);
+   // walk internal and leaf blocks, free, update block-bitmap
+   if (!inode->i_nlink) {
+      inode->i_size = 0;
+      luci_truncate(inode, 0);
+   }
+   invalidate_inode_buffers(inode);
+   clear_inode(inode);
+   // free inode bitmap, update inode-bitmap
+   // clear the inode state and update inode-table
+   if (!inode->i_nlink) {
+      luci_free_inode(inode);
+   }
+}
+
 static void
 init_once(void *foo)
 {
@@ -93,6 +338,8 @@ static const struct super_operations luci_sops = {
     .destroy_inode  = luci_destroy_inode,
     .put_super = luci_put_super,
     .write_inode = luci_write_inode,
+    .drop_inode = luci_drop_inode,
+    .evict_inode = luci_evict_inode,
 };
 
 static void

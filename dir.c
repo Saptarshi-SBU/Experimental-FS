@@ -28,7 +28,7 @@ luci_get_page(struct inode *dir, unsigned long n)
     // Makes an internal call to luci_get_block
     struct page *page = read_mapping_page(mapping, n, NULL);
     if (IS_ERR(page)) {
-        printk (KERN_ERR "Luci:error during get pag, page no %lu", n);
+        printk (KERN_ERR "luci : read mapping page failed, page no %lu", n);
         return page;
     }
     kmap(page);
@@ -113,12 +113,19 @@ luci_find_entry (struct inode * dir,
         if (IS_ERR(page))
             continue;
         kaddr = (char*)page_address(page);
-        limit = (struct luci_dir_entry_2*) (kaddr + luci_last_byte(dir, n) - reclen);
-        for (de = (struct luci_dir_entry_2*)kaddr; de <= limit; de = luci_next_entry(de)) {
+        limit = (struct luci_dir_entry_2*)
+		(kaddr + luci_last_byte(dir, n) - reclen);
+        for (de = (struct luci_dir_entry_2*)kaddr; de <= limit;
+	    de = luci_next_entry(de)) {
             if (de->rec_len == 0) {
                 printk(KERN_ERR "Luci:invalid directory record length");
                 goto out;
-            } else if (luci_match(namelen, name, de)) {
+            }
+
+            printk(KERN_INFO "Luci: dentry name :%s, inode :%u, reclen :%u",
+	        de->name, de->inode, luci_rec_len_from_disk(de->rec_len));
+
+	    if (luci_match(namelen, name, de)) {
                 printk(KERN_INFO "Luci:directory entry found %s", name);
                 goto found;
             }
@@ -137,8 +144,9 @@ luci_delete_entry(struct luci_dir_entry_2* de, struct page *page)
 {
     int err;
     struct inode * inode = page->mapping->host;
+    // Fix : an invalid ~, while computing the offset
     unsigned from = ((char*)de - (char*)page_address(page)) &
-	    ~(luci_chunk_size(inode) - 1);
+	    (luci_chunk_size(inode) - 1);
     unsigned to = (char*)de - (char*)page_address(page) +
 	    luci_rec_len_from_disk(de->rec_len);
     loff_t pos = page_offset(page) + from;
@@ -185,8 +193,8 @@ luci_readdir(struct file *file, struct dir_context *ctx)
         struct luci_dir_entry_2 *de;
         struct page *page = luci_get_page(inode, n);
         if (IS_ERR(page)) {
-            printk(KERN_ERR "Luci:page error during readdir, error :%ld",
-	        PTR_ERR(page));
+            printk(KERN_ERR "luci : failed to load page during readdir on "
+	       "inode :%lu, error :%ld", inode->i_ino, PTR_ERR(page));
             ctx->pos += PAGE_SIZE - offset;
             return PTR_ERR(page);
         }
@@ -195,19 +203,26 @@ luci_readdir(struct file *file, struct dir_context *ctx)
         de = (struct luci_dir_entry_2*) (kaddr + offset);
         limit = kaddr + luci_last_byte(inode, n) - LUCI_DIR_REC_LEN(1);
         for (; (char*)de <= limit; de = luci_next_entry(de)) {
-            printk(KERN_INFO "Luci:%s name:%s, reclen:%u pos:%llu",
-	        __func__, de->name, luci_rec_len_from_disk(de->rec_len), ctx->pos);
             if (de->rec_len == 0) {
-                printk(KERN_ERR "LUCI: invalid directory entry, page:%lu offset:%u", n, offset);
+                printk(KERN_ERR "LUCI: invalid directory entry, page:%lu "
+		   "offset:%u", n, offset);
                 luci_put_page(page);
                 return -EIO;
             }
             if (de->inode) {
                 unsigned char d_type = DT_UNKNOWN;
+		// The VFS framework will call the iterate member of the struct
+		// file_operations. Inside your iterate implementation, use dir_emit()
+		// to provide VFS with the contents of the requested directory.
+		// VFS will continue to call iterate until your implementation
+		// returns without calling dir_emit().
                 if (!dir_emit(ctx, de->name, de->name_len, le32_to_cpu(de->inode), d_type)) {
+	            printk(KERN_ERR "luci : failed to emit dir for :%s", de->name);
                     luci_put_page(page);
                     return 0;
                 }
+                printk(KERN_INFO "Luci: dentry name :%s, inode :%u, reclen :%u pos :%llu",
+	           de->name, de->inode, luci_rec_len_from_disk(de->rec_len), ctx->pos);
             }
             ctx->pos += luci_rec_len_from_disk(de->rec_len);
         }

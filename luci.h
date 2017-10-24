@@ -538,6 +538,7 @@ luci_get_group_desc(struct super_block *sb,
    unsigned int block_group, struct buffer_head **bh);
 int
 luci_write_inode(struct inode *inode, struct writeback_control *wbc);
+int luci_truncate(struct inode *inode, loff_t size);
 
 /* dir.c */
 ino_t luci_inode_by_name(struct inode *, const struct qstr *);
