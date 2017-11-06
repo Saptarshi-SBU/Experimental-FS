@@ -563,6 +563,7 @@ int luci_commit_chunk(struct page *page, loff_t pos, unsigned len);
 /* inode.c */
 extern struct inode *luci_iget (struct super_block *, unsigned long);
 extern int luci_get_block(struct inode *, sector_t, struct buffer_head *, int);
+extern int luci_dump_layout(struct inode * inode);
 
 /* ialloc.c */
 extern struct buffer_head *

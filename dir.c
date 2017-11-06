@@ -98,41 +98,45 @@ dir_pages(struct inode *inode)
 
 struct luci_dir_entry_2 *
 luci_find_entry (struct inode * dir,
-        const struct qstr * child, struct page ** res) {
+    const struct qstr * child, struct page ** res) {
     struct page *page = NULL;
     struct luci_dir_entry_2 *de = NULL;
-    const char * name = child->name;
-    int namelen = child->len;
-    unsigned reclen = LUCI_DIR_REC_LEN(namelen);
     unsigned long n, npages = dir_pages(dir);
 
     for (n = 0; n < npages; n++) {
-        char *kaddr;
-        struct luci_dir_entry_2 *limit;
+        struct luci_dir_entry_2 *kaddr, *limit;
+
         page = luci_get_page(dir, n);
-        if (IS_ERR(page))
-            continue;
-        kaddr = (char*)page_address(page);
+        if (IS_ERR(page)) {
+            printk(KERN_ERR "luci:bad dentry page inode :%lu page :%ld err:%ld",
+	       dir->i_ino, n, PTR_ERR(page));
+	    goto fail;
+	}
+
+        kaddr = (struct luci_dir_entry_2*) page_address(page);
         limit = (struct luci_dir_entry_2*)
-		(kaddr + luci_last_byte(dir, n) - reclen);
-        for (de = (struct luci_dir_entry_2*)kaddr; de <= limit;
-	    de = luci_next_entry(de)) {
+		((char*) kaddr + luci_last_byte(dir, n) - LUCI_DIR_REC_LEN(child->len));
+
+	// limit takes care of page boundary issues
+        for (de = kaddr; de <= limit; de = luci_next_entry(de)) {
             if (de->rec_len == 0) {
-                printk(KERN_ERR "Luci:invalid directory record length");
-                goto out;
+	        // check page boundary
+                printk(KERN_ERR "luci:invalid dir record length at %p", (char*)de);
+	        luci_put_page(page);
+	        goto fail;
             }
 
-            printk(KERN_INFO "Luci: dentry name :%s, inode :%u, reclen :%u",
-	        de->name, de->inode, luci_rec_len_from_disk(de->rec_len));
-
-	    if (luci_match(namelen, name, de)) {
-                printk(KERN_INFO "Luci:directory entry found %s", name);
+	    if (luci_match(child->len, child->name, de)) {
+                printk(KERN_INFO "luci : dentry found %s", child->name);
                 goto found;
             }
+
+            printk(KERN_INFO "luci: %s dentry name :%s, inode :%u, reclen :%u",
+	       __func__, de->name, de->inode, luci_rec_len_from_disk(de->rec_len));
         }
         luci_put_page(page);
     }
-out:
+fail:
     return NULL;
 found:
     *res = page;
@@ -182,31 +186,31 @@ static int
 luci_readdir(struct file *file, struct dir_context *ctx)
 {
     loff_t pos = ctx->pos;
-    struct inode * inode = file_inode(file);
+    struct inode * dir = file_inode(file);
     unsigned int offset = pos & ~PAGE_MASK;
     unsigned long n = pos >> PAGE_SHIFT;
-    unsigned long npages = dir_pages(inode);
+    unsigned long npages = dir_pages(dir);
 
     printk(KERN_INFO "%s", __func__);
     for (; n < npages; n++, offset = 0) {
-        char *kaddr, *limit;
-        struct luci_dir_entry_2 *de;
-        struct page *page = luci_get_page(inode, n);
+        char *kaddr;
+        struct luci_dir_entry_2 *de, *limit;
+        struct page *page = luci_get_page(dir, n);
         if (IS_ERR(page)) {
-            printk(KERN_ERR "luci : failed to load page during readdir on "
-	       "inode :%lu, error :%ld", inode->i_ino, PTR_ERR(page));
+            printk(KERN_ERR "luci:bad dentry page inode :%lu page :%ld err:%ld",
+	       dir->i_ino, n, PTR_ERR(page));
             ctx->pos += PAGE_SIZE - offset;
             return PTR_ERR(page);
         }
 
         kaddr = page_address(page);
         de = (struct luci_dir_entry_2*) (kaddr + offset);
-        limit = kaddr + luci_last_byte(inode, n) - LUCI_DIR_REC_LEN(1);
-        for (; (char*)de <= limit; de = luci_next_entry(de)) {
+        limit = (struct luci_dir_entry_2*)
+	    ((char*)kaddr + luci_last_byte(dir, n) - LUCI_DIR_REC_LEN(1));
+        for (; de <= limit; de = luci_next_entry(de)) {
             if (de->rec_len == 0) {
-                printk(KERN_ERR "LUCI: invalid directory entry, page:%lu "
-		   "offset:%u", n, offset);
-                luci_put_page(page);
+                printk(KERN_ERR "luci:invalid dir record length at %p", (char*)de);
+	        luci_put_page(page);
                 return -EIO;
             }
             if (de->inode) {

@@ -289,6 +289,12 @@ static void
 luci_evict_inode(struct inode * inode)
 {
    printk(KERN_INFO "luci : evicting inode :%lu",  inode->i_ino);
+
+   // dump layout here for sanity
+   if (luci_dump_layout(inode) < 0) {
+      printk(KERN_ERR "luci :inode invalid layout detected");
+   }
+
    // invalidate the radix tree in page-cache
    truncate_inode_pages_final(&inode->i_data);
    // walk internal and leaf blocks, free, update block-bitmap

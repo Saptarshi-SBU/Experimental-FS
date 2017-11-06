@@ -322,7 +322,7 @@ gotit:
    mark_buffer_dirty(sbi->s_sbh);
 
    inode->i_mtime = inode->i_atime = current_time(inode);
-   inode->i_blocks++;
+   inode->i_blocks+=2; // sector based (TBD : add a macro for block to sector)
    mark_inode_dirty(inode);
    return block;
 fail:

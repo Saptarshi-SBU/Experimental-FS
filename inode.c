@@ -5,6 +5,7 @@
  *
  * ------------------------------------------------------------------*/
 #include <linux/fs.h>
+#include <linux/kernel.h>
 #include <linux/buffer_head.h>
 #include <linux/version.h>
 #include <linux/writeback.h>
@@ -17,9 +18,9 @@ static int
 luci_setsize(struct inode *inode, loff_t newsize)
 {
     // Cannot modify size of directory
-    if (!(S_ISREG(inode->i_mode)) || (S_ISDIR(inode->i_mode)) ||
-       (S_ISLNK(inode->i_mode))) {
-        return -EINVAL;
+    if (!S_ISREG(inode->i_mode)) {
+       printk (KERN_ERR "luci :setsize not valid for inode :%lu", inode->i_ino);
+       return -EINVAL;
     }
     luci_truncate(inode, newsize);
     truncate_setsize(inode, newsize);
@@ -54,14 +55,15 @@ luci_setattr(struct dentry *dentry, struct iattr *attr)
 
     // check modify size
     if (attr->ia_valid & ATTR_SIZE && attr->ia_size != inode->i_size) {
-       printk(KERN_INFO "luci : setting new size for inode :%lu "
-          "oldsize :%llu newsize :%llu", inode->i_ino, inode->i_size,
-	  attr->ia_size);
+       printk(KERN_INFO "luci : setattr inode :%lu oldsize :%llu newsize :%llu",
+          inode->i_ino, inode->i_size, attr->ia_size);
        err = luci_setsize(inode, attr->ia_size);
        if (err) {
            return err;
        }
     }
+
+    luci_dump_layout(inode);
 
     // TBD : change mode
     return 0;
@@ -79,7 +81,7 @@ luci_getattr(const struct path *path, struct kstat *stat,
     return 0;
 }
 #else
-    static int
+static int
 luci_getattr(struct vfsmount *mnt, struct dentry *dentry,
         struct kstat *stat)
 {
@@ -114,6 +116,7 @@ luci_prepare_chunk(struct page *page, loff_t pos, unsigned len)
     return ret;
 }
 
+// is this specific to directory usage ?
 int
 luci_commit_chunk(struct page *page, loff_t pos, unsigned len)
 {
@@ -123,9 +126,12 @@ luci_commit_chunk(struct page *page, loff_t pos, unsigned len)
 
     dir->i_version++;
     block_write_end(NULL, mapping, pos, len, len, page, NULL);
+    // note directory inode size is updated here
     if (pos + len > dir->i_size) {
         i_size_write(dir, pos + len);
         mark_inode_dirty(dir);
+        printk(KERN_INFO "luci : updating dir inode %lu new size :%llu",
+	    dir->i_ino, dir->i_size);
     }
     if (IS_DIRSYNC(dir)) {
         err = write_one_page(page, 1);
@@ -216,55 +222,62 @@ alloc_branch(struct inode *inode,
              Indirect *branch)
 {
     int n = 0;
-    int err = 0;
-    int curr_block = 0;
-    int prev_block = 0;
-    struct buffer_head *bh;
+    int ret;
+    int curr_block, parent_block;
+    struct buffer_head *bh; // storing parent block buffer head
 
-    curr_block = luci_new_block(inode);
-    if (curr_block < 0) {
-       err = curr_block;
+    ret = luci_new_block(inode);
+    if (ret < 0) {
        goto fail;
     }
-    branch[0].key = curr_block; // branch keys for non-root level
-                               // use entries as index offsets
+    branch[0].key = curr_block = ret;
    *branch[0].p = branch[0].key;
-    prev_block = curr_block;
+    //printk(KERN_INFO "luci: alloc branch for inode :%lu, block :%u : %p",
+    //   inode->i_ino, branch[0].key, branch[0].p);
+
+    // Walk block table for allocating indirect block entries
     for (n = 1; n < num; n++) {
-        /* Allocate the next block */
-        curr_block = luci_new_block(inode);
-        if (curr_block < 0) {
-           err = curr_block;
+        ret = luci_new_block(inode);
+        if (ret < 0) {
            goto fail;
         }
-        branch[n].key = curr_block;
-        bh = sb_getblk(inode->i_sb, prev_block);
-        if (!bh) {
-           err = -EIO;
+        parent_block = curr_block;
+        curr_block = ret;
+	// will locate and if necessary create buffer head
+        bh = sb_getblk(inode->i_sb, parent_block);
+        if (bh == NULL) {
+	   printk(KERN_ERR "luci : failed to read parent block :%d for inode "
+	      "%lu", parent_block, inode->i_ino);
+           ret = -EIO;
            goto fail;
         }
         lock_buffer(bh);
-        // Zero the new allocated block
-        memset(bh->b_data, 0, bh->b_size);
-        // Store block address at page offset p
+	// clear the newly allocated parent block
+	memset(bh->b_data, 0, bh->b_size);
+	printk(KERN_INFO "luci : zeroing newly allocated parent block :%d for "
+           " inode :%lu", parent_block, inode->i_ino);
+        branch[n].key = curr_block;
+        // offset to indirect block table to store block address entry
         branch[n].p = (__le32*) bh->b_data + offsets[n];
-	// Imp : i_data array updated here
+	// imp : i_data array updated here
        *branch[n].p = branch[n].key;
+        // note this is buffer head of previous block
         branch[n].bh = bh;
         set_buffer_uptodate(bh);
         unlock_buffer(bh);
         mark_buffer_dirty_inode(bh, inode);
-        // We are doing page walk
-        prev_block = curr_block;
+        //printk(KERN_INFO "luci: alloc branch for inode :%lu, block :%u",
+        //   inode->i_ino, branch[n].key);
+	//brelse(bh);
     }
 
-    printk(KERN_INFO "luci: allocated blocks for inode :%lu, leaf block :%d",
-       inode->i_ino, curr_block);
+    printk(KERN_INFO "luci: allocated blocks for inode :%lu, depth : %d "
+       "leaf block :%d", inode->i_ino, num, curr_block);
     return 0;
 fail:
     printk(KERN_ERR "luci: failed to alloc full path for branch, "
        "inode :%lu path length :%d", inode->i_ino, n);
-    return err;
+    return ret;
 }
 
 static inline Indirect *
@@ -282,10 +295,12 @@ luci_get_branch(struct inode *inode,
 
     add_chain (p, NULL, LUCI_I(inode)->i_data + *ipaths);
     if (!p->key) {
+        //printk(KERN_INFO "luci: root chain for inode :%lu : ipath :%ld : %p",
+        //inode->i_ino, *ipaths, p->p);
         goto no_block;
     }
-
-    while (--depth) {
+    i++;
+    while (i < depth) {
         if ((bh = sb_bread(sb, p->key)) == NULL)  {
             printk(KERN_ERR "Luci: failed block walk path for inode %lu, "
 	       "ipath[%d] %d read failed", inode->i_ino, i, p->key);
@@ -446,6 +461,8 @@ luci_iget(struct super_block *sb, unsigned long ino) {
         return ERR_PTR(-ESTALE);
     }
 
+    printk(KERN_INFO "ino :%lu nr_blocks:%lu", ino,
+       (inode->i_blocks*512)/sb->s_blocksize);
     for (n = 0; n < LUCI_N_BLOCKS; n++) {
         li->i_data[n] = raw_inode->i_block[n];
         printk(KERN_INFO "ino :%lu i_data[%d]:%u", ino, n, li->i_data[n]);
@@ -516,14 +533,15 @@ static int
 luci_add_link(struct dentry *dentry, struct inode *inode) {
     int err;
     loff_t pos;  // offset in page with empty dentry
-    int req_len;  // name length of the new entry
+    int new_dentry_len;  // name length of the new entry
     int rec_len  = 0;
-    struct page *page;
+    struct page *page = NULL;
     unsigned long n, npages;
-    struct luci_dir_entry_2 *de;  //dentry iterator
+    struct luci_dir_entry_2 *de = NULL;  //dentry iterator
     struct inode *dir;  // directory inode storing dentries
     unsigned chunk_size = luci_chunk_size(inode);
 
+    // sanity check for new inode
     BUG_ON(inode->i_ino == 0);
 
     dir = d_inode(dentry->d_parent);
@@ -531,127 +549,114 @@ luci_add_link(struct dentry *dentry, struct inode *inode) {
     // Note block size may not be the same as page size
     npages = dir_pages(dir);
 
-    req_len = LUCI_DIR_REC_LEN(dentry->d_name.len);
+    new_dentry_len = LUCI_DIR_REC_LEN(dentry->d_name.len);
 
     printk(KERN_INFO "Luci :%s dir npages :%lu add dentry :%s len :%d",
-       __func__, npages, dentry->d_name.name, req_len);
+       __func__, npages, dentry->d_name.name, new_dentry_len);
 
     for (n = 0; n < npages; n++) {
-        char *kaddr, *limit, *dir_end;
-        // Get page n
+        char *kaddr, *page_boundary;
         page = luci_get_page(dir, n);
         if (IS_ERR(page)) {
             err = PTR_ERR(page);
             printk(KERN_ERR "Luci: Error getting page %lu :%d", n, err);
             return err;
         }
-        // Let's lock the page
         lock_page(page);
         kaddr = page_address(page);
-
         // We do not want dentry to be across page boundary
-        limit = kaddr + PAGE_SIZE - req_len;
-
-        // based on inode size
-        dir_end = kaddr + luci_last_byte(dir, n);
-
+        page_boundary = kaddr + PAGE_SIZE - new_dentry_len;
+        printk(KERN_INFO "luci : dentries lookup in dir inode:%lu", dir->i_ino);
         de = (struct luci_dir_entry_2*)((char*)kaddr);
-
-        printk(KERN_INFO "luci : searching dentries in dir inode to add link :"
-	   "%lu", dir->i_ino);
-        // Iterate over dentries in the page
-        while ((char*)de <= limit) {
-
-            // points to the end of the block, last entry
-            if ((char*)de == dir_end){
-               de->inode = 0;
-               de->rec_len = luci_rec_len_to_disk(chunk_size);
-               goto gotit;
+	// Note : multiple dentry blocks can reside in a page
+        while ((char*)de <= page_boundary) {
+	    // dentry rolls over to next block
+            // terminal dentry in this block
+            if (de->rec_len == 0) {
+                de->inode = 0;
+                de->rec_len = luci_rec_len_to_disk(chunk_size);
+                goto gotit;
             }
-
-            // invalid dentry
-            if (!de->rec_len) {
-                printk(KERN_ERR "luci : failed to add link,zero-length dentry");
-                err = -EIO;
-                goto outunlock;
-            }
-
             // entry already exists
             if (luci_match(dentry->d_name.len, dentry->d_name.name, de)) {
                 err = -EEXIST;
-                printk(KERN_ERR "luci : failed to add link, file exists %s :%s",
-		    dentry->d_name.name, de->name);
+                printk(KERN_ERR "luci : failed to add link, file exists %s",
+		    dentry->d_name.name);
                 goto outunlock;
             }
-
+            // offset to next valid dentry from current de
             rec_len = luci_rec_len_from_disk(de->rec_len);
-            printk(KERN_INFO "luci : dname :%s inode :%u next_len :%u",
-	       de->name, de->inode, rec_len);
-
-            if (!de->inode && rec_len >= req_len) {
+            //printk(KERN_INFO "luci : dname :%s inode :%u next_len :%u",
+	    //   de->name, de->inode, rec_len);
+	    // if new dentry record can be acommodated in this block
+            if (!de->inode && rec_len >= new_dentry_len) {
                goto gotit;
             }
-
             if (rec_len >= (LUCI_DIR_REC_LEN(de->name_len) +
                LUCI_DIR_REC_LEN(dentry->d_name.len))) {
                goto gotit;
             }
-
             de = (struct luci_dir_entry_2*)((char*)de + rec_len);
         }
         unlock_page(page);
         luci_put_page(page);
+        printk(KERN_INFO "luci : dentry page %ld nr_pages :%ld ", n, npages);
     }
-    printk(KERN_ERR "luci : failed to add link, unable to find dentry space");
-    return -EINVAL;
+
+    // extend the directory to accomodate new dentry
+    page = luci_get_page(dir, n);
+    if (IS_ERR(page)) {
+       err = -ENOSPC;
+       printk(KERN_ERR "Luci: Error getting page %lu :%ld", n, PTR_ERR(page));
+       printk(KERN_ERR "luci: failed to adding new link entry, no space");
+       return err;
+    }
+
+    lock_page(page);
+    de = (struct luci_dir_entry_2*) page_address(page);
+    de->inode = 0;
+    de->rec_len = luci_rec_len_to_disk(chunk_size);
+    goto gotit;
 
 outunlock:
+    BUG_ON(page == NULL);
     unlock_page(page);
     luci_put_page(page);
     return err;
 
 gotit:
-    printk(KERN_INFO "Luci: empty dentry found, adding new link entry");
-#if 0
-    pos = page_offset(page) +
-        (char*)de - (char*)page_address(page);
-    err = luci_prepare_chunk(page, pos, req_len);
-    if (err) {
-        printk(KERN_ERR "Luci : Failed to prepare chunk");
-        goto outunlock;
-    }
-#endif
-
+    printk(KERN_INFO "luci: empty dentry found, adding new link entry");
     // Previous entry have to be modified
     if (de->inode) {
-        struct luci_dir_entry_2 * de_new = (struct luci_dir_entry_2*) ((char*) de +
-           LUCI_DIR_REC_LEN(de->name_len));
+        struct luci_dir_entry_2 * de_new = (struct luci_dir_entry_2*)
+	   ((char*) de + LUCI_DIR_REC_LEN(de->name_len));
 	de_new->inode = inode->i_ino;
-        de_new->rec_len = luci_rec_len_to_disk(rec_len - req_len);
+        de_new->rec_len = luci_rec_len_to_disk(rec_len - new_dentry_len);
         de->rec_len = luci_rec_len_to_disk(LUCI_DIR_REC_LEN(de->name_len));
         de = de_new;
     }
 
     pos = page_offset(page) +
         (char*)de - (char*)page_address(page);
-    err = luci_prepare_chunk(page, pos, req_len);
+    err = luci_prepare_chunk(page, pos, new_dentry_len);
     if (err) {
-        printk(KERN_ERR "Luci : Failed to prepare chunk");
+        printk(KERN_ERR "luci : error to prepare chunk during dentry insert");
         goto outunlock;
     }
     de->name_len = dentry->d_name.len;
     memcpy(de->name, dentry->d_name.name, de->name_len);
     de->inode = cpu_to_le32(inode->i_ino);
     luci_set_de_type(de, inode);
-    err = luci_commit_chunk(page, pos, req_len);
+    err = luci_commit_chunk(page, pos, new_dentry_len);
     if (err) {
-        printk(KERN_ERR "Luci : Failed to commit chunk");
+        printk(KERN_ERR "luci : error to commit chunk during dentry insert");
     }
     dir->i_mtime = dir->i_ctime = current_time(dir);
     mark_inode_dirty(dir);
     luci_put_page(page);
-    printk(KERN_INFO "luci : sucessfully added link for %s, inode :%lu",
-	dentry->d_name.name, inode->i_ino);
+    printk(KERN_INFO "luci : sucessfully inserted dentry %s for inode :%lu"
+	" record_len :%d next_record :%d", dentry->d_name.name, inode->i_ino,
+	LUCI_DIR_REC_LEN(de->name_len), de->rec_len);
     return err;
 }
 
@@ -682,6 +687,7 @@ __luci_write_inode(struct inode *inode, int do_sync)
     raw_inode->i_ctime = cpu_to_le32(inode->i_ctime.tv_sec);
     raw_inode->i_mtime = cpu_to_le32(inode->i_mtime.tv_sec);
 
+    // i_blocks count is sector based (512 bytes)
     raw_inode->i_blocks = cpu_to_le32(inode->i_blocks);
     raw_inode->i_dtime = cpu_to_le32(ei->i_dtime);
     raw_inode->i_flags = cpu_to_le32(ei->i_flags);
@@ -756,13 +762,21 @@ luci_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
     return 0;
 }
 
+static void
+luci_track_size(struct inode * inode) {
+   loff_t size = inode->i_blocks * 512;
+   printk(KERN_INFO "luci: %s inode: %lu size :%llu phy size :%llu blocks :%lu",
+      __func__, inode->i_ino, inode->i_size, size, inode->i_blocks);
+   // TBD : Check cases when this becomes true
+   BUG_ON(size < inode->i_size);
+}
+
 static int
 luci_create(struct inode *dir, struct dentry *dentry, umode_t mode,
         bool excl)
 {
     int err;
     struct inode * inode;
-    printk(KERN_INFO "%s",__func__);
     // create inode
     inode = luci_new_inode(dir, mode, &dentry->d_name);
     if (IS_ERR(inode)) {
@@ -775,7 +789,7 @@ luci_create(struct inode *dir, struct dentry *dentry, umode_t mode,
     inode->i_fop = &luci_file_operations;
     inode->i_mapping ->a_ops = &luci_aops;
     mark_inode_dirty(inode);
-
+    luci_track_size(dir);
     err = luci_add_link(dentry, inode);
     if (err) {
        inode_dec_link_count(inode);
@@ -981,6 +995,46 @@ luci_readpage(struct file *file, struct page *page)
 {
     printk(KERN_INFO "luci : %s", __func__);
     return mpage_readpage(page, luci_get_block);
+}
+
+// Depth first traversal of blocks
+// assumes file is not truncated during this operation
+int
+luci_dump_layout(struct inode * inode) {
+    ino_t ino;
+    int err, depth;
+    unsigned long i, nr_blocks;
+    long ipaths[LUCI_MAX_DEPTH];
+    Indirect ichain[LUCI_MAX_DEPTH];
+
+    ino = inode->i_ino;
+    nr_blocks = inode->i_size/luci_chunk_size(inode);
+    printk(KERN_INFO "luci : inode layout %lu nr_blocks :%lu", ino, nr_blocks);
+
+    for (i = 0; i < nr_blocks; i++) {
+       memset((char*)ipaths, 0, sizeof(long) * LUCI_MAX_DEPTH);
+       // depth for i_block
+       depth = luci_block_to_path(inode, i, ipaths);
+       if (!depth) {
+          printk(KERN_ERR "luci : invalid block depth %ld inode :%lu", i, ino);
+          return -EIO;
+       }
+       //  walk blocks in the path and store in ichain
+       memset((char*)ichain, 0, sizeof(Indirect) * LUCI_MAX_DEPTH);
+       if (luci_get_branch(inode, depth, ipaths, ichain, &err) != NULL) {
+          // all blocks must be allocated in the path
+          BUG();
+       }
+       if (err < 0) {
+          printk(KERN_ERR "luci : error reading path %ld inode :%lu", i, ino);
+          return err;
+       }
+       // dump path
+       printk(KERN_INFO "Luci : block_path, inode %lu i_block :%lu path "
+          "%u %u %u %u", inode->i_ino, i, ichain[0].key, ichain[1].key,
+	  ichain[2].key, ichain[3].key);
+    }
+    return 0;
 }
 
 const struct inode_operations luci_dir_inode_operations = {
