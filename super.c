@@ -65,14 +65,13 @@ static int
 luci_free_block(struct inode *inode, unsigned long block)
 {
    unsigned block_group;
-   struct super_block *sb;
-   struct luci_inode_info *li;
-   struct luci_group_desc *gdesc;
-   struct buffer_head *bh_block, *bh_desc;
+   struct super_block *sb = inode->i_sb;
+   struct luci_sb_info *sbi = sb->s_fs_info;
+   struct luci_group_desc *gdesc = NULL;
+   struct buffer_head *bh_block = NULL, *bh_desc = NULL;
 
-   sb = inode->i_sb;
-   li = LUCI_I(inode);
-   block_group = li->i_block_group;
+   BUG_ON(block == 0);
+   block_group = (block - 1) / sbi->s_blocks_per_group;
 
    printk(KERN_INFO "luci : Freeing block %lu in block group :%u",
       block, block_group);
@@ -241,7 +240,10 @@ luci_grow_blocks(struct inode *inode, long from, long to)
  // TBD
     long i;
     int err = 0;
-    for (i = from + 1; i <= to; i++) {
+
+    // Fix : include 0th block when growing from zero size
+    i = inode->i_size ? from + 1 : 0;
+    for (; i <= to; i++) {
         // We avoid mapping in get_block, so bh is NULL
         err = luci_get_block(inode, i, NULL, 1);
         if (err) {
@@ -424,6 +426,7 @@ luci_dump_blockbitmap(struct super_block *sb) {
    struct luci_sb_info *sbi = sb->s_fs_info;
    for (; i < sbi->s_groups_count; i++) {
       read_block_bitmap(sb, i);
+      read_inode_bitmap(sb, i);
    }
 }
 

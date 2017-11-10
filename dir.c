@@ -151,9 +151,12 @@ luci_delete_entry(struct luci_dir_entry_2* de, struct page *page)
     // Fix : an invalid ~, while computing the offset
     unsigned from = ((char*)de - (char*)page_address(page)) &
 	    (luci_chunk_size(inode) - 1);
-    unsigned to = (char*)de - (char*)page_address(page) +
-	    luci_rec_len_from_disk(de->rec_len);
+    //unsigned to = (char*)de - (char*)page_address(page) +
+    //	    luci_rec_len_from_disk(de->rec_len);
+    unsigned to = luci_rec_len_from_disk(de->rec_len);
     loff_t pos = page_offset(page) + from;
+    printk(KERN_INFO "luci : %s dentry :%s pos : %llu", __func__,
+       de->name, pos);
     de->inode = 0;
     lock_page(page);
     err = luci_prepare_chunk(page, pos, to - from);

@@ -62,9 +62,7 @@ luci_setattr(struct dentry *dentry, struct iattr *attr)
            return err;
        }
     }
-
-    luci_dump_layout(inode);
-
+    //luci_dump_layout(inode);
     // TBD : change mode
     return 0;
 }
@@ -110,9 +108,9 @@ int
 luci_prepare_chunk(struct page *page, loff_t pos, unsigned len)
 {
     int ret = 0;
-    ret =  __block_write_begin(page, pos, len, luci_get_block);
     printk(KERN_INFO "luci : block write begin, pos :%llu len :%u ret :%d",
        pos, len, ret);
+    ret =  __block_write_begin(page, pos, len, luci_get_block);
     return ret;
 }
 
@@ -165,7 +163,7 @@ luci_block_to_path(struct inode *inode,
     const long nr_dindirect = (1 << (LUCI_ADDR_PER_BLOCK_BITS(inode->i_sb) * 2));
 
     if (i_block < 0) {
-        printk(KERN_ERR "warning: %s: block < 0", __func__);
+        printk(KERN_ERR "warning: %s: invalid i_block :%ld", __func__, i_block);
         return -EINVAL;
     }
 
@@ -211,7 +209,8 @@ luci_block_to_path(struct inode *inode,
 
     printk(KERN_ERR "warning: %s: block is too big", __func__);
 done:
-    printk(KERN_INFO "%s, n:%d", __func__, n);
+    printk(KERN_INFO "%s inode :%lu i_block :%lu n:%d paths :%ld :%ld :%ld :%ld",
+       __func__, inode->i_ino, i_block, n, path[0], path[1], path[2], path[3]);
     return n;
 }
 
@@ -226,12 +225,13 @@ alloc_branch(struct inode *inode,
     int curr_block, parent_block;
     struct buffer_head *bh; // storing parent block buffer head
 
+    BUG_ON(branch[0].key);
     ret = luci_new_block(inode);
     if (ret < 0) {
        goto fail;
     }
     branch[0].key = curr_block = ret;
-   *branch[0].p = branch[0].key;
+    *branch[0].p = branch[0].key;
     //printk(KERN_INFO "luci: alloc branch for inode :%lu, block :%u : %p",
     //   inode->i_ino, branch[0].key, branch[0].p);
 
@@ -254,8 +254,8 @@ alloc_branch(struct inode *inode,
         lock_buffer(bh);
 	// clear the newly allocated parent block
 	memset(bh->b_data, 0, bh->b_size);
-	printk(KERN_INFO "luci : zeroing newly allocated parent block :%d for "
-           " inode :%lu", parent_block, inode->i_ino);
+	//printk(KERN_INFO "luci : zeroing newly allocated parent block :%d for "
+        //   " inode :%lu", parent_block, inode->i_ino);
         branch[n].key = curr_block;
         // offset to indirect block table to store block address entry
         branch[n].p = (__le32*) bh->b_data + offsets[n];
@@ -271,8 +271,8 @@ alloc_branch(struct inode *inode,
 	//brelse(bh);
     }
 
-    printk(KERN_INFO "luci: allocated blocks for inode :%lu, depth : %d "
-       "leaf block :%d", inode->i_ino, num, curr_block);
+    //printk(KERN_INFO "luci: allocated blocks for inode :%lu, depth : %d "
+    //   "leaf block :%d", inode->i_ino, num, curr_block);
     return 0;
 fail:
     printk(KERN_ERR "luci: failed to alloc full path for branch, "
@@ -311,8 +311,8 @@ luci_get_branch(struct inode *inode,
             goto no_block;
         }
         i++;
-        printk(KERN_INFO "luci : block walk path : inode :%lu ipath[%d] %d",
-	   inode->i_ino, i, p->key);
+        //printk(KERN_INFO "luci : block walk path : inode :%lu ipath[%d] %d",
+	//   inode->i_ino, i, p->key);
     }
     return NULL;
 
@@ -342,8 +342,11 @@ luci_get_block(struct inode *inode, sector_t iblock,
     long ipaths[LUCI_MAX_DEPTH];
     Indirect ichain[LUCI_MAX_DEPTH];
 
-    printk(KERN_INFO "luci : Fetch block for inode :%lu, i_block :%lu "
-      "create :%s", inode->i_ino, iblock, create ? "alloc" : "noalloc");
+    //printk(KERN_INFO "luci : Fetch block for inode :%lu, i_block :%lu "
+    //  "create :%s", inode->i_ino, iblock, create ? "alloc" : "noalloc");
+
+    memset((char*)ipaths, 0, sizeof(long)*LUCI_MAX_DEPTH);
+    memset((char*)ichain, 0, sizeof(Indirect)*LUCI_MAX_DEPTH);
 
     depth = luci_block_to_path(inode, iblock, ipaths);
     if (!depth) {
@@ -360,25 +363,29 @@ luci_get_block(struct inode *inode, sector_t iblock,
     if (!partial) {
 gotit:
         block_no = ichain[depth - 1].key;
-        printk(KERN_ERR "luci : get block ino %lu found block: %lu for "
-	   "i_block :%u", inode->i_ino, iblock, block_no);
+        //printk(KERN_INFO "luci : get block ino %lu found block: %u for "
+	//   "i_block :%lu", inode->i_ino, block_no, iblock);
         if (bh_result) {
            map_bh(bh_result, inode->i_sb, block_no);
         }
         return 0;
     } else {
         if (create) {
-            printk(KERN_INFO "luci : get block allocating block for inode %lu",
-	       inode->i_ino);
+            //printk(KERN_INFO "luci : get block allocating block for inode %lu"
+	    //   " i_block :%lu", inode->i_ino, iblock);
             nr_blocks = (ichain + depth) - partial;
-            err = alloc_branch(inode, nr_blocks, ipaths + (partial - ichain), partial);
+            err = alloc_branch(inode, nr_blocks, ipaths + (partial - ichain),
+	        partial);
             if (!err) {
                 // note inode is still not updated
                 goto gotit;
             }
-            printk(KERN_ERR "Luci:block allocation failed, err :%d", err);
+            printk(KERN_ERR "luci : block allocation failed, err :%d", err);
             return err;
-        }
+        } else {
+            printk(KERN_ERR "luci : can't find block for inode : %lu "
+	       "i_block :%lu", inode->i_ino, iblock);
+	}
     }
     return -EINVAL;
 }
@@ -1023,6 +1030,7 @@ luci_dump_layout(struct inode * inode) {
        memset((char*)ichain, 0, sizeof(Indirect) * LUCI_MAX_DEPTH);
        if (luci_get_branch(inode, depth, ipaths, ichain, &err) != NULL) {
           // all blocks must be allocated in the path
+          printk(KERN_ERR "luci : BUG! %ld inode :%lu", i, ino);
           BUG();
        }
        if (err < 0) {
