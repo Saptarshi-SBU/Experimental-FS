@@ -77,13 +77,17 @@ luci_dir_entry_2 *luci_next_entry(struct luci_dir_entry_2 *p)
         luci_rec_len_from_disk(p->rec_len));
 }
 
+// Other than last page, return page size
 unsigned
 luci_last_byte(struct inode *inode, unsigned long page_nr)
 {
-    // Other than last page, return page size
-    unsigned last_byte = PAGE_SIZE;
-    if (page_nr == (inode->i_size >> PAGE_SHIFT)) {
-        last_byte = inode->i_size & (PAGE_SIZE - 1);
+    unsigned last_byte;
+    if (inode->i_size < PAGE_SIZE) {
+       last_byte = inode->i_size;
+    } else if (page_nr == (inode->i_size >> PAGE_SHIFT)) {
+       last_byte = inode->i_size & (PAGE_SIZE - 1);
+    } else {
+       last_byte = PAGE_SIZE;
     }
     return last_byte;
 }

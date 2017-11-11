@@ -56,6 +56,9 @@ luci_put_super(struct super_block *sb) {
         brelse(sbi->s_group_desc[i]);
     }
     kfree(sbi->s_group_desc);
+    percpu_counter_destroy(&sbi->s_freeblocks_counter);
+    percpu_counter_destroy(&sbi->s_freeinodes_counter);
+    percpu_counter_destroy(&sbi->s_dirs_counter);
     brelse(sbi->s_sbh);
     sb->s_fs_info = NULL;
     kfree(sbi);
@@ -313,6 +316,28 @@ luci_evict_inode(struct inode * inode)
    }
 }
 
+static int
+luci_statfs(struct dentry *dentry, struct kstatfs *buf)
+{
+   struct super_block *sb = dentry->d_sb;
+   struct luci_sb_info *sbi = LUCI_SB(sb);
+   struct luci_super_block *lsb = sbi->s_lsb;
+   u64 id = huge_encode_dev(sb->s_bdev->bd_dev);
+   buf->f_type = sb->s_magic;
+   buf->f_bsize = sb->s_blocksize;
+   // TBD : calculate metadata overhead
+   buf->f_blocks = lsb->s_blocks_count;
+   buf->f_files  = lsb->s_inodes_count;
+   buf->f_bfree = percpu_counter_read(&sbi->s_freeblocks_counter);
+   buf->f_ffree = percpu_counter_read(&sbi->s_freeinodes_counter);
+   buf->f_bavail = buf->f_bfree;
+   buf->f_namelen = LUCI_NAME_LEN;
+   // TBD : currently we do not use lsb uuid label
+   buf->f_fsid.val[0] = (u32)id;
+   buf->f_fsid.val[1] = (u32)(id >> 32);
+   return 0;
+}
+
 static void
 init_once(void *foo)
 {
@@ -348,6 +373,7 @@ static const struct super_operations luci_sops = {
     .write_inode = luci_write_inode,
     .drop_inode = luci_drop_inode,
     .evict_inode = luci_evict_inode,
+    .statfs = luci_statfs,
 };
 
 static void

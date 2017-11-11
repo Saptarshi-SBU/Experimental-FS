@@ -62,8 +62,10 @@ luci_setattr(struct dentry *dentry, struct iattr *attr)
            return err;
        }
     }
+    // does not mark inode dirty so explicitly marked dirty
+    setattr_copy(inode, attr);
+    mark_inode_dirty(inode);
     //luci_dump_layout(inode);
-    // TBD : change mode
     return 0;
 }
 
@@ -638,8 +640,8 @@ gotit:
         struct luci_dir_entry_2 * de_new = (struct luci_dir_entry_2*)
 	   ((char*) de + LUCI_DIR_REC_LEN(de->name_len));
 	de_new->inode = inode->i_ino;
-        de_new->rec_len = luci_rec_len_to_disk(rec_len - new_dentry_len);
         de->rec_len = luci_rec_len_to_disk(LUCI_DIR_REC_LEN(de->name_len));
+        de_new->rec_len = luci_rec_len_to_disk(rec_len - de->rec_len);
         de = de_new;
     }
 
@@ -949,6 +951,9 @@ static int
 luci_rmdir(struct inode * dir, struct dentry *dentry)
 {
     printk(KERN_INFO "%s", __func__);
+    //struct super_block *sb = dir->i_sb;
+    //struct luci_sb_info *sbi = sb->f_fs_info;
+    //percpu_counter_dec(&sbi->s_dirs_counter);
     return 0;
 }
 
