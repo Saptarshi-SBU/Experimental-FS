@@ -549,6 +549,8 @@ struct luci_dir_entry_2 * luci_find_entry (struct inode * dir,
         const struct qstr * child, struct page ** res);
 int luci_delete_entry(struct luci_dir_entry_2*, struct page*);
 unsigned luci_chunk_size(struct inode *inode);
+unsigned luci_sectors_per_block(struct inode *inode);
+int luci_empty_dir(struct inode *dir);
 
 struct page *
 luci_get_page(struct inode *dir, unsigned long n);

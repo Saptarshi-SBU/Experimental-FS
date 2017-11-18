@@ -99,6 +99,12 @@ luci_chunk_size(struct inode *inode)
     return inode->i_sb->s_blocksize;
 }
 
+inline unsigned
+luci_sectors_per_block(struct inode *inode)
+{
+    return luci_chunk_size(inode)/512;
+}
+
 static inline void
 luci_set_de_type(struct luci_dir_entry_2 *de, struct inode *inode)
 {
@@ -234,8 +240,8 @@ alloc_branch(struct inode *inode,
     }
     branch[0].key = curr_block = ret;
     *branch[0].p = branch[0].key;
-    //printk(KERN_INFO "luci: alloc branch for inode :%lu, block :%u : %p",
-    //   inode->i_ino, branch[0].key, branch[0].p);
+    printk(KERN_INFO "luci: alloc branch for inode :%lu, block :%u : %p",
+       inode->i_ino, branch[0].key, branch[0].p);
 
     // Walk block table for allocating indirect block entries
     for (n = 1; n < num; n++) {
@@ -268,8 +274,8 @@ alloc_branch(struct inode *inode,
         set_buffer_uptodate(bh);
         unlock_buffer(bh);
         mark_buffer_dirty_inode(bh, inode);
-        //printk(KERN_INFO "luci: alloc branch for inode :%lu, block :%u",
-        //   inode->i_ino, branch[n].key);
+        printk(KERN_INFO "luci: alloc branch for inode :%lu, block :%u",
+           inode->i_ino, branch[n].key);
 	//brelse(bh);
     }
 
@@ -370,6 +376,9 @@ gotit:
         if (bh_result) {
            map_bh(bh_result, inode->i_sb, block_no);
         }
+        printk(KERN_INFO "%s inode :%lu i_block :%lu paths :%d :%d :%d :%d",
+          __func__, inode->i_ino, iblock, ichain[0].key, ichain[1].key,
+	  ichain[2].key, ichain[3].key);
         return 0;
     } else {
         if (create) {
@@ -933,6 +942,14 @@ luci_unlink(struct inode * dir, struct dentry *dentry)
        goto out;
     }
 
+    err = luci_truncate(inode, 0);
+    if (err) {
+       err = -EIO;
+       printk(KERN_ERR "Luci : %s name :%s failed to free blocks",
+           __func__, dentry->d_name.name);
+       goto out;
+    }
+
     err = luci_delete_entry(de, page);
     if (err) {
        err = -EIO;
@@ -950,11 +967,20 @@ out:
 static int
 luci_rmdir(struct inode * dir, struct dentry *dentry)
 {
-    printk(KERN_INFO "%s", __func__);
-    //struct super_block *sb = dir->i_sb;
-    //struct luci_sb_info *sbi = sb->f_fs_info;
-    //percpu_counter_dec(&sbi->s_dirs_counter);
-    return 0;
+    int err = -ENOTEMPTY;
+    struct inode * inode = d_inode(dentry);
+    printk(KERN_INFO "luci : rmdir on inode :%lu", inode->i_ino);
+    if (luci_empty_dir(inode) == 0) {
+        err = luci_unlink(dir, dentry);
+	if (err) {
+            printk(KERN_INFO "luci : rmdir failed for inode %lu", inode->i_ino);
+	    return err;
+	}
+        inode_dec_link_count(inode);
+        inode_dec_link_count(dir);
+	return 0;
+    }
+    return err;
 }
 
 static int
@@ -1027,6 +1053,7 @@ luci_dump_layout(struct inode * inode) {
        memset((char*)ipaths, 0, sizeof(long) * LUCI_MAX_DEPTH);
        // depth for i_block
        depth = luci_block_to_path(inode, i, ipaths);
+       printk(KERN_INFO "luci : %s %ld inode :%lu", __func__, i, ino);
        if (!depth) {
           printk(KERN_ERR "luci : invalid block depth %ld inode :%lu", i, ino);
           return -EIO;
@@ -1036,6 +1063,7 @@ luci_dump_layout(struct inode * inode) {
        if (luci_get_branch(inode, depth, ipaths, ichain, &err) != NULL) {
           // all blocks must be allocated in the path
           printk(KERN_ERR "luci : BUG! %ld inode :%lu", i, ino);
+	  return -EIO;
           BUG();
        }
        if (err < 0) {

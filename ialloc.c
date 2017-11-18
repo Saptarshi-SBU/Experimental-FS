@@ -224,7 +224,7 @@ gotit:
    le16_add_cpu(&gdb->bg_free_inodes_count, -1);
    if (S_ISDIR(mode)) {
       percpu_counter_inc(&sbi->s_dirs_counter);
-      le16_add_cpu(&gdb->bg_used_dirs_count, -1);
+      le16_add_cpu(&gdb->bg_used_dirs_count, 1);
    }
    mark_buffer_dirty(bh);
 
@@ -341,7 +341,7 @@ gotit:
    mark_buffer_dirty(sbi->s_sbh);
 
    inode->i_mtime = inode->i_atime = current_time(inode);
-   inode->i_blocks+=2; // sector based (TBD : add a macro for block to sector)
+   inode->i_blocks+=luci_sectors_per_block(inode); // sector based (TBD : add a macro for block to sector)
    mark_inode_dirty(inode);
    return block + (block_group * sbi->s_blocks_per_group);
 fail:

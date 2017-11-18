@@ -135,8 +135,9 @@ luci_find_entry (struct inode * dir,
                 goto found;
             }
 
-            printk(KERN_INFO "luci: %s dentry name :%s, inode :%u, reclen :%u",
-	       __func__, de->name, de->inode, luci_rec_len_from_disk(de->rec_len));
+            printk(KERN_INFO "luci: %s dentry name :%s, inode :%u, namelen :%u "
+	       "reclen :%u", __func__, de->name, de->inode, de->name_len,
+	       luci_rec_len_from_disk(de->rec_len));
         }
         luci_put_page(page);
     }
@@ -148,24 +149,77 @@ found:
 }
 
 int
+luci_empty_dir(struct inode *dir)
+{
+    unsigned long n;
+    unsigned long npages = dir_pages(dir);
+
+    for (n = 0; n < npages; n++) {
+        char *kaddr;
+        struct page *page;
+        struct luci_dir_entry_2 *de, *limit;
+
+        page = luci_get_page(dir, n);
+        if (IS_ERR(page)) {
+            printk(KERN_ERR "luci:bad dentry page inode :%lu page :%ld err:%ld",
+	       dir->i_ino, n, PTR_ERR(page));
+            return -PTR_ERR(page);
+        }
+
+        kaddr = page_address(page);
+        de = (struct luci_dir_entry_2*)(kaddr);
+        limit = (struct luci_dir_entry_2*)
+	    ((char*)kaddr + luci_last_byte(dir, n) - LUCI_DIR_REC_LEN(1));
+
+        for (; de <= limit; de = luci_next_entry(de)) {
+
+            if (de->rec_len == 0) {
+                printk(KERN_ERR "luci:invalid dir rec length at %p", (char*)de);
+	        luci_put_page(page);
+                return -EIO;
+            }
+
+            if (de->inode) {
+                if (de->name[0] != '.') {
+		    goto not_empty;
+	        }
+	        if (de->name_len > 1) {
+		    if (de->name[1] != '.') {
+                        goto not_empty;
+		    }
+		    if (de->name_len >= 2) {
+                        goto not_empty;
+		    }
+	        }
+	    }
+        }
+        luci_put_page(page);
+    }
+    return 1;
+
+not_empty:
+    return 0;
+}
+
+int
 luci_delete_entry(struct luci_dir_entry_2* de, struct page *page)
 {
     int err;
+    loff_t pos;
     struct inode * inode = page->mapping->host;
     // Fix : an invalid ~, while computing the offset
     unsigned from = ((char*)de - (char*)page_address(page)) &
 	    (luci_chunk_size(inode) - 1);
-    //unsigned to = (char*)de - (char*)page_address(page) +
-    //	    luci_rec_len_from_disk(de->rec_len);
-    unsigned to = luci_rec_len_from_disk(de->rec_len);
-    loff_t pos = page_offset(page) + from;
-    printk(KERN_INFO "luci : %s dentry :%s pos : %llu", __func__,
-       de->name, pos);
+    // Fix : rec_len can be smaller than 'from', since it's an offset
+    unsigned length = luci_rec_len_from_disk(de->rec_len);
+    pos = page_offset(page) + from;
+    printk(KERN_INFO "luci:%s dentry:%s pos:%llu from :%u len :%u",
+       __func__, de->name, pos, from, length);
     de->inode = 0;
     lock_page(page);
-    err = luci_prepare_chunk(page, pos, to - from);
+    err = luci_prepare_chunk(page, pos, length);
     BUG_ON(err);
-    err = luci_commit_chunk(page, pos, to - from);
+    err = luci_commit_chunk(page, pos, length);
     if (err) {
         printk(KERN_ERR "Luci:error in commiting page chunk");
     }
@@ -232,8 +286,9 @@ luci_readdir(struct file *file, struct dir_context *ctx)
                     luci_put_page(page);
                     return 0;
                 }
-                printk(KERN_INFO "Luci: dentry name :%s, inode :%u, reclen :%u pos :%llu",
-	           de->name, de->inode, luci_rec_len_from_disk(de->rec_len), ctx->pos);
+                printk(KERN_INFO "Luci: dentry name :%s, inode :%u, namelen :%u reclen :%u "
+		   "pos :%llu", de->name, de->inode, de->name_len,
+		   luci_rec_len_from_disk(de->rec_len), ctx->pos);
             }
             ctx->pos += luci_rec_len_from_disk(de->rec_len);
         }
