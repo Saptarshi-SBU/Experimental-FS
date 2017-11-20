@@ -14,7 +14,7 @@
 #include <linux/path.h>
 #include <linux/mpage.h>
 
-//#define DEBUG
+extern int debug;
 
 struct luci_group_desc *
 luci_get_group_desc(struct super_block *sb,
@@ -25,12 +25,12 @@ luci_get_group_desc(struct super_block *sb,
    struct luci_sb_info *sbi =  LUCI_SB(sb);
 
    if (sbi == NULL) {
-      printk(KERN_ERR "luci super block info not found");
+      luci_err("super block info not found");
       goto badsuper;
    }
 
    if (block_group > sbi->s_groups_count) {
-      printk(KERN_ERR "Invalid block group :%u", block_group);
+      luci_err("Invalid block group :%u", block_group);
       goto badsuper;
    }
 
@@ -63,7 +63,7 @@ read_inode_bitmap(struct super_block *sb, unsigned long block_group) {
    }
    bmap_block = gdesc->bg_inode_bitmap;
    if (!(bh_bmap = sb_bread(sb, bmap_block))) {
-      printk(KERN_ERR "Unable to read inode bitmap for block group :%lu"
+      luci_err("Unable to read inode bitmap for block group :%lu"
          " block no :%u", block_group, bmap_block);
    }
    return bh_bmap;
@@ -71,7 +71,7 @@ read_inode_bitmap(struct super_block *sb, unsigned long block_group) {
 
 struct buffer_head *
 read_block_bitmap(struct super_block *sb, unsigned long block_group) {
-#ifdef DEBUG
+#ifdef DEBUG_BMAP
    int i = 0;
 #endif
    uint32_t bmap_block;
@@ -82,17 +82,17 @@ read_block_bitmap(struct super_block *sb, unsigned long block_group) {
       return NULL;
    }
    bmap_block = gdesc->bg_block_bitmap;
-   printk(KERN_INFO "luci : %s block group :%lu nr_free blocks : %u",
-      __func__, block_group, gdesc->bg_free_blocks_count);
+   luci_dbg("block group :%lu nr_free blocks : %u", block_group,
+      gdesc->bg_free_blocks_count);
    if (!(bh_bmap = sb_bread(sb, bmap_block))) {
-      printk(KERN_ERR "Unable to read block bitmap for block group :%lu"
+      luci_err("Unable to read block bitmap for block group :%lu"
          " block no :%u", block_group, bmap_block);
       goto out;
    }
-#ifdef DEBUG
+#ifdef DEBUG_BMAP
    for (i = 0; i < bh_bmap->b_size/sizeof(uint32_t); i++) {
-      printk(KERN_INFO "%s block_group :%ld [%d] : 0x%08x", __func__,
-         block_group, i, *((uint32_t*)bh_bmap->b_data + i));
+      luci_dbg("block_group :%ld [%d] : 0x%08x", block_group, i,
+         *((uint32_t*)bh_bmap->b_data + i));
    }
 #endif
 out:
@@ -106,7 +106,7 @@ luci_free_inode (struct inode * inode) {
    struct luci_group_desc *gdesc;
    unsigned long ino, bit, block_group;
    struct buffer_head *bh_bitmap, *bh;
-#ifdef DEBUG
+#ifdef DEBUG_BMAP
    int i;
    char *p;
 #endif
@@ -118,7 +118,7 @@ luci_free_inode (struct inode * inode) {
    BUG_ON(ino == 0);
    if (ino < LUCI_FIRST_INO(sb) ||
       ino > sbi->s_lsb->s_inodes_count) {
-      printk(KERN_ERR "luci : cannot free inode, reserved inode :%lu",
+      luci_err("cannot free inode, reserved inode :%lu",
          ino);
       return;
    }
@@ -127,29 +127,29 @@ luci_free_inode (struct inode * inode) {
    bit = (ino - 1) % (sbi->s_lsb->s_inodes_per_group);
 
    block_group = ino/(sbi->s_lsb->s_inodes_per_group);
-   printk(KERN_INFO "luci : freeing inode:%lu in group:%lu", ino, block_group);
+   luci_dbg("freeing inode:%lu in group:%lu", ino, block_group);
    bh_bitmap = read_inode_bitmap(sb, block_group);
    if (bh_bitmap == NULL) {
-      printk(KERN_ERR "luci : failed to free inode, error reading inode bitmap");
+      luci_err("failed to free inode, error reading inode bitmap");
       return;
    }
 
-#ifdef DEBUG
+#ifdef DEBUG_BMAP
    p = (char*)bh_bitmap->b_data;
    for (i = 0; i < 8; i++) {
-      printk(KERN_INFO "bitmap :0x%02x", *((unsigned char*)p + i));
+      luci_dbg("bitmap :0x%02x", *((unsigned char*)p + i));
    }
 #endif
 
    if (!(__test_and_clear_bit_le(bit, bh_bitmap->b_data))) {
-      printk(KERN_ERR "luci : free inode failed, bit already unset :%lu!", ino);
+      luci_err("free inode failed, bit already unset :%lu!", ino);
       return;
    }
    mark_buffer_dirty(bh_bitmap);
 
    gdesc = luci_get_group_desc(sb, block_group, &bh);
    if (gdesc == NULL) {
-      printk(KERN_ERR "luci : failed to free inode, erro reading group "
+      luci_err("failed to free inode, erro reading group "
          "descriptor for group :%lu", block_group);
       goto out;
    }
@@ -181,7 +181,7 @@ luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
 
    inode = new_inode(sb);
    if (!inode) {
-      printk(KERN_ERR "Luci : create inode failed, oom!");
+      luci_err("create inode failed, oom!");
       return ERR_PTR(-ENOMEM);
    }
 
@@ -192,7 +192,7 @@ luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
       }
       bitmap_bh = read_inode_bitmap(sb, i);
       if (bitmap_bh == NULL) {
-         printk(KERN_ERR "Luci : create inode failed, read inode bitmap "
+         luci_err("create inode failed, read inode bitmap "
 	    "failed for group :%d", i);
          err = -EIO;
          goto fail;
@@ -210,7 +210,7 @@ luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
       brelse(bitmap_bh);
    }
    err = -ENOSPC;
-   printk (KERN_ERR "Luci : create inode failed, group is full");
+    luci_err("create inode failed, group is full");
    goto fail;
 
 gotit:
@@ -230,7 +230,7 @@ gotit:
 
    inode_init_owner(inode, dir, mode);
    inode->i_ino = ino;
-   printk(KERN_INFO "Luci : new inode :%lu in group :%d", ino, group);
+   luci_dbg("new inode :%lu in group :%d", ino, group);
    inode->i_blocks = 0;
    inode->i_mtime = inode->i_atime = inode->i_ctime = current_time(inode);
 
@@ -248,7 +248,7 @@ gotit:
    li->i_state = LUCI_STATE_NEW;
    inode->i_generation = sbi->s_next_generation++;
    if (insert_inode_locked(inode) < 0) {
-      printk (KERN_ERR "Luci :inode locked during create inode :%lu", ino);
+      luci_dbg("inode locked during create inode :%lu", ino);
       err = -EIO;
       goto fail;
    }
@@ -292,7 +292,7 @@ luci_new_block(struct inode *inode)
 
       bitmap_bh = read_block_bitmap(sb, block_group);
       if (bitmap_bh == NULL) {
-         printk(KERN_ERR "luci : error reading block bmap gp :%d",block_group);
+         luci_err("error reading block bmap gp :%d",block_group);
          err = -EIO;
          goto fail;
       }
@@ -301,21 +301,19 @@ luci_new_block(struct inode *inode)
       block = find_next_zero_bit((unsigned long*)bitmap_bh->b_data,
          LUCI_BLOCKS_PER_GROUP(sb), 0);
 
-      #ifdef DEBUG
-      printk(KERN_INFO "Finding zero bit in group %d(%d)", block_group, block);
-      printk(KERN_INFO "%lx", *(unsigned long*)bitmap_bh->b_data);
+      #ifdef DEBUG_BMAP
+      luci_dbg("Finding zero bit in group %d(%d)", block_group, block);
+      luci_dbg("%lx", *(unsigned long*)bitmap_bh->b_data);
       #endif
 
       if (block < LUCI_BLOCKS_PER_GROUP(sb)) {
          if (!(__test_and_set_bit_le(block, bitmap_bh->b_data))) {
-            printk(KERN_INFO "Luci :found new block %d block_group :%d",
-	       block, block_group);
+            luci_dbg("found new block %d block_group :%d", block, block_group);
             goto gotit;
          }
       } else {
-         printk(KERN_ERR "luci : fetch new block failed, no blocks found in "
-            "block group :%d nr free blocks :%u", block_group,
-	    gdb->bg_free_blocks_count);
+         luci_dbg("fetch new block failed, no blocks found in block group :%d "
+            "nr free blocks :%u", block_group, gdb->bg_free_blocks_count);
       }
 
       brelse(bitmap_bh);

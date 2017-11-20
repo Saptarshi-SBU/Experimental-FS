@@ -1,0 +1,27 @@
+Single Thread
+
+Multiple Files:
+sysbench --test=fileio --file-num=32 --file-total-size=1G --file-test-mode=rndrw --file-block-size=4K --num-threads=1 prepare
+sysbench --test=fileio --file-num=32 --file-total-size=1G --file-test-mode=rndrw --file-block-size=4K --num-threads=1 --max-time=60 run 
+sysbench --test=fileio --file-num=32 --file-total-size=1G --file-test-mode=rndrw --file-block-size=4K --num-threads=1 cleanup
+
+                         LUCI           EXT2
+                        ---------   ----------
+    reads/s:              34.96         45.00 
+    writes/s:             23.30          30.00
+    fsyncs/s:             18.12          23.61
+    read, MiB/s:           0.14           0.18
+    written, MiB/s:        0.09           0.12
+
+Single File:
+sysbench --test=fileio --file-num=1 --file-total-size=512M --file-test-mode=rndrw --file-block-size=4K --num-threads=1 prepare
+sysbench --test=fileio --file-num=1 --file-total-size=512M --file-test-mode=rndrw --file-block-size=4K --num-threads=1 --max-time=60 run 
+sysbench --test=fileio --file-num=1 --file-total-size=512M --file-test-mode=rndrw --file-block-size=4K --num-threads=1 cleanup
+
+                         LUCI           EXT2
+                        ---------   ----------
+    reads/s:             203.79         171.45
+    writes/s:            135.86         114.30
+    fsyncs/s:              3.40           2.86
+    read, MiB/s:           0.80           0.67
+    written, MiB/s:        0.53           0.45

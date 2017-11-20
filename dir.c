@@ -13,6 +13,8 @@
 #include <linux/buffer_head.h>
 #include <linux/version.h>
 
+extern int debug;
+
 //Must be called in pair with get page
 inline void
 luci_put_page(struct page *page)
@@ -28,7 +30,7 @@ luci_get_page(struct inode *dir, unsigned long n)
     // Makes an internal call to luci_get_block
     struct page *page = read_mapping_page(mapping, n, NULL);
     if (IS_ERR(page)) {
-        printk (KERN_ERR "luci : read mapping page failed, page no %lu", n);
+        luci_err("read mapping page failed, page no %lu", n);
         return page;
     }
     kmap(page);
@@ -36,7 +38,7 @@ luci_get_page(struct inode *dir, unsigned long n)
     if (unlikely(!PageChecked(page))) {
         // Can be set by internal buffer code during failed write
         if (PageError(page)) {
-            printk (KERN_ERR "Luci:mapped page with error, page no %lu", n);
+            luci_err("mapped page with error, page no %lu", n);
             goto fail;
         }
     }
@@ -112,8 +114,8 @@ luci_find_entry (struct inode * dir,
 
         page = luci_get_page(dir, n);
         if (IS_ERR(page)) {
-            printk(KERN_ERR "luci:bad dentry page inode :%lu page :%ld err:%ld",
-	       dir->i_ino, n, PTR_ERR(page));
+            luci_err_inode(dir, "bad dentry page page :%ld err:%ld",
+               n, PTR_ERR(page));
 	    goto fail;
 	}
 
@@ -125,19 +127,18 @@ luci_find_entry (struct inode * dir,
         for (de = kaddr; de <= limit; de = luci_next_entry(de)) {
             if (de->rec_len == 0) {
 	        // check page boundary
-                printk(KERN_ERR "luci:invalid dir record length at %p", (char*)de);
+                luci_err("invalid dir record length at %p", (char*)de);
 	        luci_put_page(page);
 	        goto fail;
             }
 
 	    if (luci_match(child->len, child->name, de)) {
-                printk(KERN_INFO "luci : dentry found %s", child->name);
+                luci_dbg("dentry found %s", child->name);
                 goto found;
             }
 
-            printk(KERN_INFO "luci: %s dentry name :%s, inode :%u, namelen :%u "
-	       "reclen :%u", __func__, de->name, de->inode, de->name_len,
-	       luci_rec_len_from_disk(de->rec_len));
+            luci_dbg("dentry name :%s, inode :%u, namelen :%u reclen :%u",
+	       de->name, de->inode, de->name_len, luci_rec_len_from_disk(de->rec_len));
         }
         luci_put_page(page);
     }
@@ -161,8 +162,8 @@ luci_empty_dir(struct inode *dir)
 
         page = luci_get_page(dir, n);
         if (IS_ERR(page)) {
-            printk(KERN_ERR "luci:bad dentry page inode :%lu page :%ld err:%ld",
-	       dir->i_ino, n, PTR_ERR(page));
+            luci_err_inode(dir, "bad dentry page page :%ld err:%ld", n,
+               PTR_ERR(page));
             return -PTR_ERR(page);
         }
 
@@ -174,7 +175,7 @@ luci_empty_dir(struct inode *dir)
         for (; de <= limit; de = luci_next_entry(de)) {
 
             if (de->rec_len == 0) {
-                printk(KERN_ERR "luci:invalid dir rec length at %p", (char*)de);
+                luci_err("invalid dir rec length at %p", (char*)de);
 	        luci_put_page(page);
                 return -EIO;
             }
@@ -213,15 +214,14 @@ luci_delete_entry(struct luci_dir_entry_2* de, struct page *page)
     // Fix : rec_len can be smaller than 'from', since it's an offset
     unsigned length = luci_rec_len_from_disk(de->rec_len);
     pos = page_offset(page) + from;
-    printk(KERN_INFO "luci:%s dentry:%s pos:%llu from :%u len :%u",
-       __func__, de->name, pos, from, length);
+    luci_dbg("dentry %s pos %llu from %u len %u", de->name, pos, from, length);
     de->inode = 0;
     lock_page(page);
     err = luci_prepare_chunk(page, pos, length);
     BUG_ON(err);
     err = luci_commit_chunk(page, pos, length);
     if (err) {
-        printk(KERN_ERR "Luci:error in commiting page chunk");
+        luci_err("error in commiting page chunk");
     }
     inode->i_ctime = inode->i_mtime = current_time(inode);
     mark_inode_dirty(inode);
@@ -252,14 +252,14 @@ luci_readdir(struct file *file, struct dir_context *ctx)
     unsigned long n = pos >> PAGE_SHIFT;
     unsigned long npages = dir_pages(dir);
 
-    printk(KERN_INFO "%s", __func__);
+    luci_dbg("reading directory");
     for (; n < npages; n++, offset = 0) {
         char *kaddr;
         struct luci_dir_entry_2 *de, *limit;
         struct page *page = luci_get_page(dir, n);
         if (IS_ERR(page)) {
-            printk(KERN_ERR "luci:bad dentry page inode :%lu page :%ld err:%ld",
-	       dir->i_ino, n, PTR_ERR(page));
+            luci_err_inode(dir, "bad dentry page page :%ld err:%ld", n,
+	       PTR_ERR(page));
             ctx->pos += PAGE_SIZE - offset;
             return PTR_ERR(page);
         }
@@ -270,7 +270,7 @@ luci_readdir(struct file *file, struct dir_context *ctx)
 	    ((char*)kaddr + luci_last_byte(dir, n) - LUCI_DIR_REC_LEN(1));
         for (; de <= limit; de = luci_next_entry(de)) {
             if (de->rec_len == 0) {
-                printk(KERN_ERR "luci:invalid dir record length at %p", (char*)de);
+                luci_err("invalid dir record length at %p", (char*)de);
 	        luci_put_page(page);
                 return -EIO;
             }
@@ -282,11 +282,11 @@ luci_readdir(struct file *file, struct dir_context *ctx)
 		// VFS will continue to call iterate until your implementation
 		// returns without calling dir_emit().
                 if (!dir_emit(ctx, de->name, de->name_len, le32_to_cpu(de->inode), d_type)) {
-	            printk(KERN_ERR "luci : failed to emit dir for :%s", de->name);
+	            luci_err("failed to emit dir for :%s", de->name);
                     luci_put_page(page);
                     return 0;
                 }
-                printk(KERN_INFO "Luci: dentry name :%s, inode :%u, namelen :%u reclen :%u "
+                luci_dbg("dentry name :%s, inode :%u, namelen :%u reclen :%u "
 		   "pos :%llu", de->name, de->inode, de->name_len,
 		   luci_rec_len_from_disk(de->rec_len), ctx->pos);
             }

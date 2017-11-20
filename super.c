@@ -23,6 +23,9 @@ MODULE_ALIAS_FS("luci");
 MODULE_DESCRIPTION("File System for Linux");
 MODULE_LICENSE("GPL");
 
+int debug;
+module_param(debug, int, 0);
+
 static struct kmem_cache* luci_inode_cachep;
 
 static struct inode *
@@ -64,6 +67,25 @@ luci_put_super(struct super_block *sb) {
     kfree(sbi);
 }
 
+// Only leaf blocks affect inode size
+static void
+luci_dec_size(struct inode *inode, unsigned nr_blocks)
+{
+   size_t size = nr_blocks * luci_chunk_size(inode);
+
+   BUG_ON(!nr_blocks);
+   BUG_ON(!inode->i_size);
+
+   if (inode->i_size >= size) {
+      inode->i_size -= size;
+   } else {
+      BUG_ON(nr_blocks > 1);
+      inode->i_size = 0;
+   }
+   mark_inode_dirty(inode);
+}
+
+// Use to free both leaf and internal blocks
 static int
 luci_free_block(struct inode *inode, unsigned long block)
 {
@@ -78,17 +100,16 @@ luci_free_block(struct inode *inode, unsigned long block)
    block_group = (block - 1) / sbi->s_blocks_per_group;
    bitpos = block - (block_group * sbi->s_blocks_per_group);
 
-   printk(KERN_INFO "luci : Freeing block %lu in block group :%u",
-      block, block_group);
+   luci_dbg("Freeing block %lu in block group :%u", block, block_group);
 
    bh_block = read_block_bitmap(sb, block_group);
    if (!bh_block) {
-      printk(KERN_ERR "luci : Free block :%lu failed. Error reading block "
+      luci_err("Free block :%lu failed. Error reading block "
          "bitmap for group :%u", block, block_group);
       return -EIO;
    }
    if (!(__test_and_clear_bit_le(bitpos, bh_block->b_data))) {
-      printk(KERN_ERR "luci : Free block :%lu failed."
+      luci_err("Free block :%lu failed."
          "block marked not in use! : blockbit :%u", block, bitpos);
       return -EIO;
    }
@@ -97,7 +118,7 @@ luci_free_block(struct inode *inode, unsigned long block)
 
    gdesc = luci_get_group_desc(sb, block_group, &bh_desc);
    if (!gdesc) {
-      printk(KERN_ERR "luci : Free block :%lu failed. Error reading group "
+      luci_err("Free block :%lu failed. Error reading group "
          "descriptor table for group :%u", block, block_group);
       return -EIO;
    }
@@ -109,16 +130,7 @@ luci_free_block(struct inode *inode, unsigned long block)
    }
 
    mark_buffer_dirty(bh_desc);
-
    inode->i_blocks -= luci_sectors_per_block(inode);
-
-   BUG_ON(inode->i_size == 0);
-   if (inode->i_size >= luci_chunk_size(inode)) {
-      inode->i_size -= luci_chunk_size(inode);
-   } else {
-      inode->i_size = 0;
-   }
-
    mark_inode_dirty(inode);
    // Cannot release group descriptor buffer head
    // brelse(bh_desc);
@@ -143,15 +155,18 @@ luci_free_branch(struct inode *inode,
 
     if (depth == 0) {
 	// Fix : This is a leaf block
-        *delta_blocks -= 1;
-        return luci_free_block(inode, current_block);
+        err = luci_free_block(inode, current_block);
+	if (!err) {
+           luci_dec_size(inode, 1);
+           *delta_blocks -= 1;
+	}
+	return err;
     }
 
     nr_entries = LUCI_ADDR_PER_BLOCK(sb);
     bh = sb_bread(sb, current_block);
     if (bh == NULL) {
-        printk(KERN_ERR "luci : failed to read block :%ld during free branch",
-	    current_block);
+        luci_err("failed to read block :%ld during free branch", current_block);
         return -EIO;
     }
     p = (uint32_t*)bh->b_data;
@@ -164,7 +179,7 @@ luci_free_branch(struct inode *inode,
 
        if (*delta_blocks == 0) {
 	   err = 0;
-	   printk(KERN_INFO "luci : no remaining blocks to free");
+	   luci_dbg("no remaining blocks to free");
            break;
        }
 
@@ -176,17 +191,16 @@ luci_free_branch(struct inode *inode,
 
        err = luci_free_branch(inode, *q, delta_blocks, depth - 1);
        if (err) {
-          printk(KERN_ERR "luci : failed to free branch at depth:%d block:%d",
-	     depth - 1, *q);
+          luci_err("failed to free branch at depth:%d block:%d", depth - 1, *q);
           goto out;
        }
 
        // clear entry
        *q = 0;
        mark_buffer_dirty(bh);
-       printk(KERN_INFO "luci : freed indirect block :%lu level :%d "
-          "blockptr[%d] %d for inode :%lu nrblocks :%ld", current_block, depth,
-	  nr_entries, entry, inode->i_ino, *delta_blocks);
+       luci_dbg_inode(inode, "freed indirect block %lu depth %d block[%d] %d "
+          "nrblocks :%ld i_size :%llu", current_block, depth, nr_entries, entry,
+	  *delta_blocks, inode->i_size);
     }
 
     // block has entries for block address
@@ -197,8 +211,7 @@ luci_free_branch(struct inode *inode,
     // Free the indirect block
     err = luci_free_block(inode, current_block);
     if (err) {
-       printk(KERN_ERR "luci : error freeing indirect block %ld for inode :%lu",
-          current_block, inode->i_ino);
+       luci_err_inode(inode, "error freeing indirect block %ld", current_block);
        goto out;
     }
 
@@ -214,25 +227,21 @@ luci_free_direct(struct inode *inode, long *delta_blocks)
     uint32_t cur_block;
     struct luci_inode_info *li = LUCI_I(inode);
     for (i = LUCI_NDIR_BLOCKS - 1; i >= 0 && *delta_blocks; i--) {
-
        cur_block = li->i_data[i];
        if (cur_block == 0) {
           continue;
        }
-
        if (luci_free_block(inode, cur_block) < 0) {
-           printk(KERN_ERR "luci : error freeing direct block for inode "
-              "%lu :%d", inode->i_ino, i);
+           luci_err_inode(inode, "error freeing direct block %d", i);
            return -EIO;
        }
-
+       luci_dec_size(inode, 1);
        // clear entry
        li->i_data[i] = 0;
        mark_inode_dirty(inode);
-      *delta_blocks -= 1;
-
-       printk(KERN_INFO "luci: freed i_data[%d] %u for inode %lu nrblocks %ld",
-          i, cur_block, inode->i_ino, *delta_blocks);
+       *delta_blocks -= 1;
+       luci_dbg_inode(inode, "freed i_data[%d] %u nrblocks %ld size :%llu", i,
+          cur_block, *delta_blocks, inode->i_size);
     }
     return 0;
 }
@@ -251,14 +260,14 @@ luci_free_blocks(struct inode *inode, long delta_blocks)
 
        cur_block = li->i_data[i];
        if (cur_block == 0) {
-          printk(KERN_INFO "luci: indirect block[%d] level %d empty", i, level);
+          luci_dbg("indirect block[%d] level %d empty", i, level);
           continue;
        }
 
        ret = luci_free_branch(inode, cur_block, &delta_blocks, level);
        if (ret < 0) {
-           printk(KERN_ERR "luci: error freeing ino :%lu indirect block[%d] "
-	      "block :%lu level :%d", inode->i_ino, i, cur_block, level);
+           luci_err_inode(inode, "error freeing inode indirect block[%d] "
+	      "block :%lu level :%d", i, cur_block, level);
           return ret;
        }
 
@@ -266,21 +275,19 @@ luci_free_blocks(struct inode *inode, long delta_blocks)
        li->i_data[i] = 0;
        mark_inode_dirty(inode);
 
-       printk(KERN_INFO "luci: freed i_data[%d] %lu level :%d for inode :%lu "
-	  "nrblocks :%ld", i, cur_block, level, inode->i_ino, delta_blocks);
+       luci_dbg("freed i_data[%d] %lu level :%d for inode :%lu nrblocks :%ld",
+          i, cur_block, level, inode->i_ino, delta_blocks);
     }
 
     // Free direct blocks
     ret = luci_free_direct(inode, &delta_blocks);
     if (ret < 0) {
-        printk(KERN_ERR "luci : error freeing direct blocks for inode :%lu",
-           inode->i_ino);
+        luci_err_inode(inode, "error freeing direct blocks");
         return ret;
     }
 
     BUG_ON(delta_blocks);
-    printk(KERN_INFO "luci : freed delta blocks for inode :%lu sucessfully",
-       inode->i_ino);
+    luci_dbg("freed delta blocks for inode :%lu sucessfully", inode->i_ino);
     return 0;
 }
 
@@ -291,15 +298,12 @@ luci_grow_blocks(struct inode *inode, long from, long to)
     long i;
     int err = 0;
 
-    // Fix : include 0th block when growing from zero size
-    //i = inode->i_size ? from + 1 : 0;
     // i_block is 0-based but from and to are 1-based
     for (i = from; i < to; i++) {
         // We avoid mapping in get_block, so bh is NULL
         err = luci_get_block(inode, i, NULL, 1);
         if (err) {
-           printk(KERN_ERR "luci : failed to grow blocks, error in fetching "
-	       "block %lu", i);
+           luci_err("failed to grow blocks, error in fetching block %lu", i);
 	   break;
         }
     }
@@ -314,15 +318,15 @@ luci_truncate(struct inode *inode, loff_t size)
     long i_blocks = (inode->i_size + sb->s_blocksize - 1)/
        sb->s_blocksize;
     long delta_blocks = n_blocks - i_blocks;
-    printk (KERN_INFO "luci : truncate blocks :%ld", delta_blocks);
-    printk (KERN_INFO "luci : blocksize :%lu %lu-%lu", sb->s_blocksize, n_blocks, i_blocks);
+    luci_dbg("truncate blocks :%ld blocksize :%lu %lu-%lu",
+       delta_blocks, sb->s_blocksize, n_blocks, i_blocks);
     if(!delta_blocks) {
        return 0;
     } else if (delta_blocks > 0) {
-       printk (KERN_INFO "luci : adding %ld blocks on truncate", delta_blocks);
+       luci_dbg("adding %ld blocks on truncate", delta_blocks);
        return luci_grow_blocks(inode, i_blocks, n_blocks);
     } else {
-       printk (KERN_INFO "luci : freeing %ld blocks on truncate", delta_blocks);
+       luci_dbg("freeing %ld blocks on truncate", delta_blocks);
        return luci_free_blocks(inode, -delta_blocks);
     }
 }
@@ -331,7 +335,7 @@ luci_truncate(struct inode *inode, loff_t size)
 static int
 luci_drop_inode(struct inode *inode)
 {
-   printk(KERN_INFO "luci : dropping inode %lu, refcount :%d, nlink :%d",
+   luci_dbg("dropping inode %lu, refcount :%d, nlink :%d",
       inode->i_ino, atomic_read(&inode->i_count), inode->i_nlink);
    return generic_drop_inode(inode);
 }
@@ -341,11 +345,11 @@ luci_drop_inode(struct inode *inode)
 static void
 luci_evict_inode(struct inode * inode)
 {
-   printk(KERN_INFO "luci : evicting inode :%lu",  inode->i_ino);
+   luci_dbg("evicting inode :%lu",  inode->i_ino);
 
    // dump layout here for sanity
    if (inode->i_size && (luci_dump_layout(inode) < 0)) {
-      printk(KERN_ERR "luci :inode invalid layout detected");
+      luci_err("inode invalid layout detected");
    }
 
    // invalidate the radix tree in page-cache
@@ -428,7 +432,7 @@ static void
 luci_print_sbinfo(struct super_block *sb) {
     if (sb && sb->s_fs_info) {
         struct luci_sb_info *sbi = sb->s_fs_info;
-        printk(KERN_INFO "LUCI: desc_per_block :%lu "
+        luci_dbg("desc_per_block :%lu "
                 "gdb :%lu blocks_count :%u inodes_count :%u "
                 "block_size :%lu blocks_per_group :%lu "
                 "first_data_block :%u groups_count :%lu", sbi->s_desc_per_block,
@@ -467,24 +471,24 @@ luci_check_descriptors(struct super_block *sb) {
                 (bh->b_data +  j * sizeof(struct luci_group_desc));
 
             block_map = le32_to_cpu(gdesc->bg_block_bitmap);
-            printk(KERN_DEBUG " block bitmap for group[%u]:%u", gp, block_map);
+            luci_dbg("block bitmap for group[%u]:%u", gp, block_map);
             if ((block_map < first_block) || (block_map > last_block)) {
-                printk(KERN_ERR "%s failed, block bitmap for group %d invalid block"
-                        " no %u", __func__, (i + 1) * j, block_map);
+                luci_err("failed, block bitmap for group %d invalid block"
+                   " no %u", (i + 1) * j, block_map);
                 return -EINVAL;
             }
 
             inode_map = le32_to_cpu(gdesc->bg_inode_bitmap);
             if ((inode_map < first_block) || (inode_map > last_block)) {
-                printk(KERN_ERR "%s failed, inode bitmap for group %d invalid block"
-                        " no %u", __func__, (i + 1) * j, inode_map);
+                luci_err("failed, inode bitmap for group %d invalid block"
+                   " no %u", (i + 1) * j, inode_map);
                 return -EINVAL;
             }
 
             inode_tbl = le32_to_cpu(gdesc->bg_inode_table);
             if ((inode_tbl < first_block) || (inode_tbl > last_block)) {
-                printk(KERN_ERR "%s failed, inode table for group %d invalid block"
-                        " no %u", __func__, (i + 1) * j, inode_tbl);
+                luci_err("failed, inode table for group %d invalid block"
+                   " no %u", (i + 1) * j, inode_tbl);
                 return -EINVAL;
             }
         }
@@ -525,8 +529,8 @@ luci_check_superblock_backups(struct super_block *sb) {
                 bh = sb_bread(sb, first_block);
                 lsb = (struct luci_super_block*)((char*) bh->b_data);
                 if (le16_to_cpu(lsb->s_magic) == LUCI_SUPER_MAGIC) {
-                    printk(KERN_INFO "LUCI: superblock backup at block %lu "
-                            "group %u ", first_block, (i + 1) *j);
+                    luci_dbg("superblock backup at block %lu group %u ",
+                       first_block, (i + 1) *j);
                 }
                 brelse(bh);
             }
@@ -553,7 +557,7 @@ luci_file_maxsize(struct super_block *sb) {
     dindir = indir * LUCI_ADDR_PER_BLOCK(sb);
     tindir = dindir * LUCI_ADDR_PER_BLOCK(sb);
     size = (dir + indir + dindir + tindir) * sb->s_blocksize;
-    printk(KERN_INFO "Luci:%s maxsize :%lu", __func__, size);
+    luci_dbg("maxsize :%lu", size);
     return size;
 }
 
@@ -589,13 +593,13 @@ restart:
     }
 
     if (!(bh = sb_bread(sb, block_no))) {
-        printk(KERN_ERR "LUCI: error reading super block");
+        luci_err("error reading super block");
         ret = -EIO;
         goto failed_sbi;
     }
 
     if (sb->s_blocksize != bh->b_size) {
-        printk(KERN_ERR "LUCI: invalid block-size in buffer-head");
+        luci_err("invalid block-size in buffer-head");
         brelse(bh);
         ret = -EIO;
         goto failed_sbi;
@@ -607,12 +611,12 @@ restart:
 
     sb->s_magic = le16_to_cpu(lsb->s_magic);
     if (sb->s_magic != LUCI_SUPER_MAGIC) {
-        printk(KERN_ERR "LUCI: invalid magic number on super-block");
+        luci_err("invalid magic number on super-block");
         ret = -EINVAL;
         goto failed_mount;
     }
 
-    printk(KERN_DEBUG "LUCI: magic number on block:%lu(%lu)",block_no, block_of);
+    luci_dbg("magic number on block:%lu(%lu)",block_no, block_of);
 
     // get the on-disk block size
     block_size = BLOCK_SIZE << le32_to_cpu(lsb->s_log_block_size);
@@ -622,7 +626,7 @@ restart:
             ret = -EPERM;
             goto failed_mount;
         }
-        printk(KERN_INFO "LUCI: default block size mismatch! re-reading...");
+        luci_dbg("default block size mismatch! re-reading...");
         goto restart;
     }
 
@@ -635,15 +639,14 @@ restart:
     if ((sbi->s_inode_size < LUCI_GOOD_OLD_INODE_SIZE) ||
             (sbi->s_inode_size > sb->s_blocksize) ||
             (!is_power_of_2(sbi->s_inode_size))) {
-        printk(KERN_ERR "LUCI: invalid inode size in super block :%d",
-                sbi->s_inode_size);
+        luci_err("invalid inode size in super block :%d", sbi->s_inode_size);
         ret = -EINVAL;
         goto failed_mount;
     }
 
     sbi->s_inodes_per_block = sb->s_blocksize/sbi->s_inode_size;
     if (sbi->s_inodes_per_block == 0) {
-        printk(KERN_ERR "LUCI: invalid inodes per block");
+        luci_err("invalid inodes per block");
         ret = -EINVAL;
         goto failed_mount;
     }
@@ -651,7 +654,7 @@ restart:
     // fragment size
     sbi->s_frag_size = LUCI_MIN_FRAG_SIZE << le32_to_cpu(lsb->s_log_frag_size);
     if (sbi->s_frag_size == 0) {
-        printk(KERN_ERR "LUCI: fragment size invalid");
+        luci_err("fragment size invalid");
         ret = -EINVAL;
         goto failed_mount;
     }
@@ -664,7 +667,7 @@ restart:
     // check based on bits per block
     if ((sbi->s_frags_per_group == 0) ||
             (sbi->s_frags_per_group > sb->s_blocksize * 8)) {
-        printk(KERN_ERR "LUCI: invalid frags per group");
+        luci_err("invalid frags per group");
         ret = -EINVAL;
         goto failed_mount;
     }
@@ -673,14 +676,14 @@ restart:
     // check based on bits per block
     if ((sbi->s_blocks_per_group == 0) ||
             (sbi->s_blocks_per_group > sb->s_blocksize * 8)) {
-        printk(KERN_ERR "LUCI: invalid blocks per group");
+        luci_err("invalid blocks per group");
         ret = -EINVAL;
         goto failed_mount;
     }
     sbi->s_inodes_per_group = le32_to_cpu(lsb->s_inodes_per_group);
     if ((sbi->s_inodes_per_group == 0) ||
             (sbi->s_inodes_per_group > sb->s_blocksize * 8)) {
-        printk(KERN_ERR "LUCI: invalid inodes per group");
+        luci_err("invalid inodes per group");
         ret = -EINVAL;
         goto failed_mount;
     }
@@ -705,7 +708,7 @@ restart:
         (sbi->s_gdb_count * sizeof(struct buffer_head *), GFP_KERNEL);
     if (sbi->s_group_desc == NULL) {
         ret = -ENOMEM;
-        printk(KERN_ERR "LUCI: cannot allocate memory for group descriptors");
+        luci_err("cannot allocate memory for group descriptors");
         goto failed_mount;
     }
 
@@ -713,7 +716,7 @@ restart:
         // Meta-bg not supported
         sbi->s_group_desc[i] = sb_bread(sb, block_no + i + 1);
         if (sbi->s_group_desc[i] == NULL) {
-            printk(KERN_ERR "LUCI: failed to read group descriptors");
+            luci_err("failed to read group descriptors");
             ret = -EIO;
             goto failed_gdb;
         }
@@ -738,7 +741,7 @@ restart:
     mark_buffer_dirty(sbi->s_sbh);
     sync_dirty_buffer(sbi->s_sbh);
 
-    printk(KERN_INFO "LUCI: super_block read successfull");
+    luci_dbg("super_block read successfull");
     return 0;
 
 failed_layoutcheck:
@@ -753,7 +756,7 @@ failed_mount:
     brelse(bh);
 failed_sbi:
     kfree(sbi);
-    printk(KERN_ERR "LUCI: luci super block read error");
+    luci_err("luci super block read error");
     return ret;
 }
 
@@ -764,13 +767,13 @@ luci_read_rootinode(struct super_block *sb) {
 
     root_inode = luci_iget(sb, LUCI_ROOT_INO);
     if (IS_ERR(root_inode)) {
-        printk(KERN_ERR "LUCI: failed to read root dir inode\n");
+        luci_err("failed to read root dir inode");
         return ERR_PTR(-EIO);
     }
 
     if (!S_ISDIR(root_inode->i_mode) || !root_inode->i_blocks ||
             !root_inode->i_size) {
-        printk(KERN_ERR "LUCI: corrupt root dir inode.\n");
+        luci_err("corrupt root dir inode.");
         iput(root_inode);
         return ERR_PTR(-EINVAL);
     }
@@ -786,7 +789,7 @@ luci_read_rootinode(struct super_block *sb) {
 #endif
 
     if (IS_ERR(dentry)) {
-        printk(KERN_ERR "LUCI: root dir inode dentry error.");
+        luci_err("root dir inode dentry error.");
     }
 
     return dentry;
@@ -809,7 +812,7 @@ luci_fill_super(struct super_block *sb, void *data, int silent)
     }
 
     sb->s_root = dentry;
-    printk(KERN_INFO "LUCI: luci super block read sucess");
+    luci_dbg("luci super block read sucess");
     return 0;
 }
 
@@ -841,7 +844,7 @@ __init init_luci_fs(void)
     if (err)
         goto failed;
 
-    printk(KERN_INFO "LUCI FS loaded\n");
+    luci_dbg("LUCI FS loaded");
     return 0;
 
 failed:

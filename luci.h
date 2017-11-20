@@ -511,21 +511,35 @@ static inline void verify_offsets(void)
 /*
  * Define LUCIFS_DEBUG to produce debug messages
  */
-#undef LUCIFS_DEBUG
-
 /*
  * Debug code
  */
+
+//#define LUCIFS_DEBUG
+//#define DEBUG_BMAP
+
 #ifdef LUCIFS_DEBUG
-#   define luci_debug(f, a...)  { \
-                    printk ("LUCI-fs DEBUG (%s, %d): %s:", \
-                        __FILE__, __LINE__, __func__); \
-                    printk (f, ## a); \
+#   define luci_dbg(f, a...)  { \
+	            if (debug) \
+                       printk (KERN_INFO "LUCI-FS %s :"f, __func__, ## a); \
+                    }
+#   define luci_dbg_inode(inode, f, a...)  { \
+	            if (debug) \
+                       printk (KERN_INFO "LUCI-FS %s :inode :%lu :"f, __func__, \
+                          inode->i_ino, ## a); \
                     }
 #else
-#   define luci_debug(f, a...)  /**/
+#   define luci_dbg(f, a...)  /**/
+#   define luci_dbg_inode(inode, f, a...)  /**/
 #endif
 
+#define luci_err(f, a...)  { \
+                       printk (KERN_INFO "LUCI-FS %s : error "f, __func__, ## a); \
+                    }
+#define luci_err_inode(inode, f, a...)  { \
+                    printk (KERN_ERR "LUCI-FS %s : error inode :%lu :"f, __func__, \
+                       inode->i_ino, ## a); \
+                    }
 typedef struct {
    __le32 *p;
    __le32 key;
