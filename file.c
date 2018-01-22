@@ -11,8 +11,6 @@
 #include <linux/fs.h>
 #include <linux/uio.h>
 
-extern int debug;
-
 loff_t
 luci_llseek(struct file * file, loff_t off, int whence) {
    loff_t ret;

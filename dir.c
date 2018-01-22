@@ -13,8 +13,6 @@
 #include <linux/buffer_head.h>
 #include <linux/version.h>
 
-extern int debug;
-
 //Must be called in pair with get page
 inline void
 luci_put_page(struct page *page)

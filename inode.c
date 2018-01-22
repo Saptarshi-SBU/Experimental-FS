@@ -15,8 +15,6 @@
 #include <linux/delay.h>
 #include "luci.h"
 
-extern int debug;
-
 static int
 luci_setsize(struct inode *inode, loff_t newsize)
 {

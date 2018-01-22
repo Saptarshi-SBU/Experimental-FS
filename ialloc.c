@@ -14,8 +14,6 @@
 #include <linux/path.h>
 #include <linux/mpage.h>
 
-extern int debug;
-
 struct luci_group_desc *
 luci_get_group_desc(struct super_block *sb,
    unsigned int block_group, struct buffer_head **bh) {
@@ -168,6 +166,16 @@ out:
    brelse(bh_bitmap);
 }
 
+// Behaviour Control Flags based on module parameters
+void
+luci_init_inode_flags(struct inode *inode) {
+   struct luci_sb_info *sbi = LUCI_SB(inode->i_sb);
+   if (S_ISREG(inode->i_mode)) {
+      struct luci_inode_info *li = LUCI_I(inode);
+      li->i_flags |= sbi->s_mount_opt;
+   }
+}
+
 struct inode *
 luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
    ino_t ino;
@@ -229,6 +237,7 @@ gotit:
    mark_buffer_dirty(bh);
 
    inode_init_owner(inode, dir, mode);
+   luci_init_inode_flags(inode);
    inode->i_ino = ino;
    luci_dbg("new inode :%lu in group :%d", ino, group);
    inode->i_blocks = 0;

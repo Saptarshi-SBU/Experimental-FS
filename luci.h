@@ -428,6 +428,10 @@ enum {
 #define LUCI_MOUNT_USRQUOTA     0x020000  /* user quota */
 #define LUCI_MOUNT_GRPQUOTA     0x040000  /* group quota */
 #define LUCI_MOUNT_RESERVATION      0x080000  /* Preallocation */
+#define LUCI_MOUNT_EXTENTS      0x100000  /* Extent allocation */
+
+#define clear_opt(o, opt)       o &= ~opt
+#define set_opt(o, opt)         o |= opt
 
 /*
  * Maximal mount counts between two filesystem checks
@@ -515,23 +519,18 @@ static inline void verify_offsets(void)
  * Debug code
  */
 
-//#define LUCIFS_DEBUG
 //#define DEBUG_BMAP
+extern int debug;
 
-#ifdef LUCIFS_DEBUG
-#   define luci_dbg(f, a...)  { \
+#define luci_dbg(f, a...)  { \
 	            if (debug) \
                        printk (KERN_INFO "LUCI-FS %s :"f, __func__, ## a); \
                     }
-#   define luci_dbg_inode(inode, f, a...)  { \
+#define luci_dbg_inode(inode, f, a...)  { \
 	            if (debug) \
                        printk (KERN_INFO "LUCI-FS %s :inode :%lu :"f, __func__, \
                           inode->i_ino, ## a); \
                     }
-#else
-#   define luci_dbg(f, a...)  /**/
-#   define luci_dbg_inode(inode, f, a...)  /**/
-#endif
 
 #define luci_err(f, a...)  { \
                        printk (KERN_INFO "LUCI-FS %s : error "f, __func__, ## a); \

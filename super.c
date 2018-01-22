@@ -15,6 +15,8 @@
 #include <linux/backing-dev.h>
 #include <linux/buffer_head.h>
 #include <linux/log2.h>
+#include <linux/string.h>
+#include <linux/parser.h>
 #include "luci.h"
 #include "kern_feature.h"
 
@@ -24,7 +26,6 @@ MODULE_DESCRIPTION("File System for Linux");
 MODULE_LICENSE("GPL");
 
 int debug;
-module_param(debug, int, 0);
 
 static struct kmem_cache* luci_inode_cachep;
 
@@ -760,6 +761,34 @@ failed_sbi:
     return ret;
 }
 
+void
+luci_free_super(struct super_block * sb) {
+    struct luci_sb_info *sbi;
+
+    if (sb->s_root) {
+       struct inode * root_inode = d_inode(sb->s_root);
+       iput(root_inode);
+       sb->s_root = NULL;
+    }
+
+    sbi = sb->s_fs_info;
+    if (sbi) {
+       if (sbi->s_group_desc) {
+	  int i;
+          for (i = 0; i < sbi->s_gdb_count; i++) {
+             struct buffer_head *bh = sbi->s_group_desc[i];
+             brelse(bh);
+          }
+          kfree(sbi->s_group_desc);
+       }
+
+       if (sbi->s_sbh) {
+          brelse(sbi->s_sbh);
+       }
+       kfree(sbi);
+    }
+}
+
 static struct dentry*
 luci_read_rootinode(struct super_block *sb) {
     struct dentry *dentry;
@@ -795,6 +824,47 @@ luci_read_rootinode(struct super_block *sb) {
     return dentry;
 }
 
+enum {
+    Opt_debug, Opt_extents
+};
+
+static const match_table_t tokens = {
+    {Opt_debug, "debug"},
+    {Opt_extents, "extents"},
+};
+
+static int parse_options(char *options, struct super_block *sb)
+{
+    char *p;
+    struct luci_sb_info *sbi = LUCI_SB(sb);
+    substring_t args[MAX_OPT_ARGS];
+
+    if (!options)
+        return 1;
+
+    while ((p = strsep (&options, ",")) != NULL) {
+        int token;
+        if (!*p)
+            continue;
+
+        token = match_token(p, tokens, args);
+        switch (token) {
+        case Opt_debug:
+	    debug = 1;
+            set_opt (sbi->s_mount_opt, LUCI_MOUNT_DEBUG);
+            break;
+	case Opt_extents:
+            set_opt (sbi->s_mount_opt, LUCI_MOUNT_EXTENTS);
+	    luci_dbg("extent allocation enabled for files");
+            break;
+	default:
+	    luci_err("Unrecognized mount option : %s", p);
+	    return 0;
+        }
+    }
+    return 1;
+}
+
 static int
 luci_fill_super(struct super_block *sb, void *data, int silent)
 {
@@ -803,17 +873,26 @@ luci_fill_super(struct super_block *sb, void *data, int silent)
 
     ret = luci_read_superblock(sb);
     if (ret != 0) {
-        return ret;
+       goto free_sb;
+    }
+
+    if (!parse_options((char *)data, sb)) {
+       ret = -EINVAL;
+       goto free_sb;
     }
 
     dentry = luci_read_rootinode(sb);
     if (IS_ERR(dentry)) {
-        return PTR_ERR(dentry);
+       ret = PTR_ERR(dentry);
+       goto free_sb;
     }
-
     sb->s_root = dentry;
     luci_dbg("luci super block read sucess");
     return 0;
+
+free_sb:
+    luci_free_super(sb);
+    return ret;
 }
 
 static struct dentry *
