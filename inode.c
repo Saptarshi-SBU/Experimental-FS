@@ -25,7 +25,11 @@ luci_setsize(struct inode *inode, loff_t newsize)
     }
     luci_truncate(inode, newsize);
     truncate_setsize(inode, newsize);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
+    inode->i_mtime = inode->i_ctime = CURRENT_TIME;
+#else
     inode->i_mtime = inode->i_ctime = current_time(inode);
+#endif
     // sync
     if (inode_needs_sync(inode)) {
        sync_mapping_buffers(inode->i_mapping);
@@ -41,15 +45,23 @@ static int
 luci_setattr(struct dentry *dentry, struct iattr *attr)
 {
     int err;
-    struct inode *inode = d_inode(dentry);
-    luci_dbg_inode(inode, "setattr");
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
+    struct inode *inode = dentry->d_inode;
+    err = inode_change_ok(inode, attr);
+    if (err) {
+        return err;
+    }
+#else
+    struct inode *inode = d_inode(dentry);
     // check we have permissions to change attributes
     err = setattr_prepare(dentry, attr);
     if (err) {
        return err;
     }
+#endif
 
+    luci_dbg_inode(inode, "setattr");
     // Wait for all pending direct I/O requests so that
     // we can proceed with a truncate
     inode_dio_wait(inode);
@@ -89,7 +101,7 @@ luci_getattr(struct vfsmount *mnt, struct dentry *dentry,
     struct super_block *sb = dentry->d_sb;
     generic_fillattr(dentry->d_inode, stat);
     stat->blksize = sb->s_blocksize;
-    luci_dbg(dentry->d_inode, "get attributes");
+    luci_dbg_inode(dentry->d_inode, "get attributes");
     return 0;
 }
 #endif
@@ -215,7 +227,7 @@ luci_block_to_path(struct inode *inode,
 
     luci_err_inode(inode, "warning block is too big");
 done:
-    luci_dbg_inode(inode,"i_block :%lu n:%d paths :%ld :%ld :%ld :%ld", i_block,
+    luci_dbg_inode(inode,"i_block :%lu n:%d indexes :%ld :%ld :%ld :%ld", i_block,
        n, path[0], path[1], path[2], path[3]);
     return n;
 }
@@ -311,8 +323,8 @@ luci_get_branch(struct inode *inode,
         if (!p->key) {
             goto no_block;
         }
-        i++;
         luci_dbg_inode(inode, "block walk path ipath[%d] %d", i, p->key);
+        i++;
     }
     return NULL;
 
@@ -368,25 +380,27 @@ gotit:
         }
         luci_dbg_inode(inode, "i_block :%lu paths :%d :%d :%d :%d", iblock,
            ichain[0].key, ichain[1].key, ichain[2].key, ichain[3].key);
+        err = 0;
 	//msleep(2);
-        return 0;
     } else {
-        if (create) {
-            luci_dbg_inode(inode, "get block allocating i_block :%lu", iblock);
-            nr_blocks = (ichain + depth) - partial;
-            err = alloc_branch(inode, nr_blocks, ipaths + (partial - ichain),
-	        partial);
-            if (!err) {
-                // note inode is still not updated
-                goto gotit;
-            }
-            luci_err_inode(inode, "block allocation failed, err :%d", err);
-            return err;
-        } else {
-            luci_err_inode(inode, "can't find block i_block %lu", iblock);
-	}
+        // Fix: We ignore create flag for dealing with holes.
+        // Since disk images are sparse files, although we do not
+        // not create blocks when copying the file, but on VM startup
+        // do makes request to fetch the holes. This trigerred a no
+        // key found error in the indirect indexes and an error. So
+        // we allocate the block if it is not present even on a fetch
+        // request.
+        luci_dbg_inode(inode, "get block allocating i_block :%lu", iblock);
+        nr_blocks = (ichain + depth) - partial;
+        err = alloc_branch(inode, nr_blocks, ipaths + (partial - ichain),
+	    partial);
+        if (!err) {
+            // note inode is still not updated
+            goto gotit;
+        }
+        luci_err_inode(inode, "block allocation failed, err :%d", err);
     }
-    return -EINVAL;
+    return err;
 }
 
 struct inode *
@@ -441,6 +455,8 @@ luci_iget(struct super_block *sb, unsigned long ino) {
     if (S_ISREG(inode->i_mode)) {
         inode->i_size |= (((uint64_t)(le32_to_cpu(raw_inode->i_dir_acl))) << 32);
     }
+    luci_info_inode(inode, "inode size low :%u high :%u",
+        raw_inode->i_size, raw_inode->i_dir_acl);
     if (i_size_read(inode) < 0) {
         return ERR_PTR(-EFSCORRUPTED);
     }
@@ -533,6 +549,14 @@ Egdp:
     return ERR_PTR(-EIO);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
+static inline unsigned long
+dir_pages(struct inode *inode)
+{
+    return (inode->i_size + PAGE_CACHE_SIZE-1) >> PAGE_CACHE_SHIFT;
+}
+#endif
+
 static int
 luci_add_link(struct dentry *dentry, struct inode *inode) {
     int err;
@@ -548,7 +572,11 @@ luci_add_link(struct dentry *dentry, struct inode *inode) {
     // sanity check for new inode
     BUG_ON(inode->i_ino == 0);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
+    dir = dentry->d_parent->d_inode;
+#else
     dir = d_inode(dentry->d_parent);
+#endif
 
     // Note block size may not be the same as page size
     npages = dir_pages(dir);
@@ -652,7 +680,11 @@ gotit:
     if (err) {
         luci_err("error to commit chunk during dentry insert");
     }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
+    dir->i_mtime = dir->i_ctime = CURRENT_TIME;
+#else
     dir->i_mtime = dir->i_ctime = current_time(dir);
+#endif
     mark_inode_dirty(dir);
     luci_put_page(page);
     luci_dbg_inode(inode, "sucessfully inserted dentry %s record_len :%d "
@@ -684,6 +716,9 @@ __luci_write_inode(struct inode *inode, int do_sync)
 
     raw_inode->i_links_count = cpu_to_le16(inode->i_nlink);
     raw_inode->i_size = cpu_to_le32(inode->i_size);
+    // Use dir_acl for storing high bits for files > 4GB
+    // Note inode->i_size is lofft , but luci inode i_size is 32bits
+    raw_inode->i_dir_acl = cpu_to_le32(inode->i_size >> 32);
     raw_inode->i_atime = cpu_to_le32(inode->i_atime.tv_sec);
     raw_inode->i_ctime = cpu_to_le32(inode->i_ctime.tv_sec);
     raw_inode->i_mtime = cpu_to_le32(inode->i_mtime.tv_sec);
@@ -729,13 +764,10 @@ luci_lookup(struct inode * dir, struct dentry *dentry,
         unsigned int flags) {
     ino_t ino;
     struct inode * inode = NULL;
-
     luci_dbg_inode(dir, "dir lookup");
-
     if (dentry->d_name.len > LUCI_NAME_LEN) {
         return ERR_PTR(-ENAMETOOLONG);
     }
-
     ino = luci_inode_by_name(dir, &dentry->d_name);
     if (ino) {
         inode = luci_iget(dir->i_sb,  ino);
@@ -908,7 +940,11 @@ fail_dir:
 static int
 luci_unlink(struct inode * dir, struct dentry *dentry)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
+    struct inode * inode = dentry->d_inode;
+#else
     struct inode * inode = d_inode(dentry);
+#endif
     struct luci_dir_entry_2 * de;
     struct page * page;
     int err;
@@ -946,7 +982,12 @@ static int
 luci_rmdir(struct inode * dir, struct dentry *dentry)
 {
     int err = -ENOTEMPTY;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
+    struct inode * inode = dentry->d_inode;
+#else
     struct inode * inode = d_inode(dentry);
+#endif
+
     luci_dbg_inode(inode, "rmdir on inode");
     if (luci_empty_dir(inode) == 0) {
         err = luci_unlink(dir, dentry);
@@ -1016,40 +1057,40 @@ luci_readpage(struct file *file, struct page *page)
 // assumes file is not truncated during this operation
 int
 luci_dump_layout(struct inode * inode) {
-    ino_t ino;
     int err, depth;
-    unsigned long i, nr_blocks;
+    unsigned long i, nr_blocks, nr_holes;
     long ipaths[LUCI_MAX_DEPTH];
     Indirect ichain[LUCI_MAX_DEPTH];
 
-    ino = inode->i_ino;
     nr_blocks = inode->i_size/luci_chunk_size(inode);
-    luci_dbg_inode(inode, "inode dump nr_blocks :%lu", nr_blocks);
 
-    for (i = 0; i < nr_blocks; i++) {
+    for (i = 0, nr_holes = 0; i < nr_blocks; i++) {
        memset((char*)ipaths, 0, sizeof(long) * LUCI_MAX_DEPTH);
-       // depth for i_block
+
        depth = luci_block_to_path(inode, i, ipaths);
-       luci_dbg("%ld inode :%lu", i, ino);
        if (!depth) {
           luci_err_inode(inode, "invalid block depth, iblock %ld", i);
           return -EIO;
        }
-       //  walk blocks in the path and store in ichain
+
+       // walk blocks in the path and store in ichain
        memset((char*)ichain, 0, sizeof(Indirect) * LUCI_MAX_DEPTH);
+
        if (luci_get_branch(inode, depth, ipaths, ichain, &err) != NULL) {
-          // all blocks must be allocated in the path
-          luci_err_inode(inode, "BUG! iblock %ld", i);
-          BUG();
+          luci_dbg_inode(inode, "detected hole at iblock %ld", i);
+          nr_holes++;
        }
+
        if (err < 0) {
           luci_err_inode(inode, "error reading path iblock : %ld", i);
           return err;
        }
-       // dump path
+
        luci_dbg_inode(inode, "block_path iblock %lu path %u %u %u %u", i,
           ichain[0].key, ichain[1].key, ichain[2].key, ichain[3].key);
     }
+
+    luci_info_inode(inode, "total blocks :%lu holes :%lu", nr_blocks, nr_holes);
     return 0;
 }
 

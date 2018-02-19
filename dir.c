@@ -221,7 +221,11 @@ luci_delete_entry(struct luci_dir_entry_2* de, struct page *page)
     if (err) {
         luci_err("error in commiting page chunk");
     }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
+    inode->i_ctime = inode->i_mtime = CURRENT_TIME;
+#else
     inode->i_ctime = inode->i_mtime = current_time(inode);
+#endif
     mark_inode_dirty(inode);
     luci_put_page(page);
     return err;

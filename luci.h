@@ -429,6 +429,7 @@ enum {
 #define LUCI_MOUNT_GRPQUOTA     0x040000  /* group quota */
 #define LUCI_MOUNT_RESERVATION      0x080000  /* Preallocation */
 #define LUCI_MOUNT_EXTENTS      0x100000  /* Extent allocation */
+#define LUCI_MOUNT_LAYOUTINFO   0x200000  /* Dump layout of inodes */
 
 #define clear_opt(o, opt)       o &= ~opt
 #define set_opt(o, opt)         o |= opt
@@ -524,19 +525,25 @@ extern int debug;
 
 #define luci_dbg(f, a...)  { \
 	            if (debug) \
-                       printk (KERN_INFO "LUCI-FS %s :"f, __func__, ## a); \
+                       printk (KERN_DEBUG "LUCI-FS %s :"f"\n", __func__, ## a); \
                     }
 #define luci_dbg_inode(inode, f, a...)  { \
 	            if (debug) \
-                       printk (KERN_INFO "LUCI-FS %s :inode :%lu :"f, __func__, \
+                       printk (KERN_DEBUG "LUCI-FS %s :inode :%lu :"f"\n", __func__, \
                           inode->i_ino, ## a); \
                     }
-
+#define luci_info(f, a...)  { \
+                    printk (KERN_INFO "LUCI-FS %s : "f"\n", __func__, ## a); \
+                    }
+#define luci_info_inode(inode, f, a...)  { \
+                    printk (KERN_INFO "LUCI-FS %s :inode :%lu :"f"\n", __func__, \
+                        inode->i_ino, ## a); \
+                    }
 #define luci_err(f, a...)  { \
-                       printk (KERN_INFO "LUCI-FS %s : error "f, __func__, ## a); \
+                    printk (KERN_ERR "LUCI-FS %s : error "f"\n", __func__, ## a); \
                     }
 #define luci_err_inode(inode, f, a...)  { \
-                    printk (KERN_ERR "LUCI-FS %s : error inode :%lu :"f, __func__, \
+                    printk (KERN_ERR "LUCI-FS %s : error inode :%lu :"f"\n", __func__, \
                        inode->i_ino, ## a); \
                     }
 typedef struct {

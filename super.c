@@ -86,6 +86,23 @@ luci_dec_size(struct inode *inode, unsigned nr_blocks)
    mark_inode_dirty(inode);
 }
 
+// For some reason, lsb->s_free_blocks_count on mkfs
+// does not reflect valid free blocks; even ext2
+// does not rely upon the on-disk counter
+static unsigned long
+luci_count_free_blocks(struct super_block *sb)
+{
+   int i;
+   unsigned long count = 0;
+   struct luci_group_desc *gdesc;
+   struct luci_sb_info *sbi = sb->s_fs_info;
+   for (i = 0; i < sbi->s_groups_count; i++) {
+       gdesc = luci_get_group_desc(sb, i, NULL);
+       count += le16_to_cpu(gdesc->bg_free_blocks_count);
+   }
+   return count;
+}
+
 // Use to free both leaf and internal blocks
 static int
 luci_free_block(struct inode *inode, unsigned long block)
@@ -94,6 +111,7 @@ luci_free_block(struct inode *inode, unsigned long block)
    unsigned block_group;
    struct super_block *sb = inode->i_sb;
    struct luci_sb_info *sbi = sb->s_fs_info;
+   struct luci_super_block *lsb = sbi->s_lsb;
    struct luci_group_desc *gdesc = NULL;
    struct buffer_head *bh_block = NULL, *bh_desc = NULL;
 
@@ -124,7 +142,8 @@ luci_free_block(struct inode *inode, unsigned long block)
       return -EIO;
    }
    le16_add_cpu(&gdesc->bg_free_blocks_count, 1);
-   percpu_counter_add(&sbi->s_freeinodes_counter, 1);
+   percpu_counter_add(&sbi->s_freeblocks_counter, 1);
+   lsb->s_free_blocks_count++;
    if (S_ISDIR(inode->i_mode)) {
       le16_add_cpu(&gdesc->bg_used_dirs_count, -1);
       percpu_counter_dec(&sbi->s_dirs_counter);
@@ -287,7 +306,11 @@ luci_free_blocks(struct inode *inode, long delta_blocks)
         return ret;
     }
 
-    BUG_ON(delta_blocks);
+    if (delta_blocks) {
+        luci_err_inode(inode, "detected blocks with possible holes, nr :%lu",
+            delta_blocks);
+        //BUG_ON(delta_blocks);
+    }
     luci_dbg("freed delta blocks for inode :%lu sucessfully", inode->i_ino);
     return 0;
 }
@@ -346,11 +369,14 @@ luci_drop_inode(struct inode *inode)
 static void
 luci_evict_inode(struct inode * inode)
 {
-   luci_dbg("evicting inode :%lu",  inode->i_ino);
+   struct super_block *sb = inode->i_sb;
+   struct luci_sb_info *sbi = LUCI_SB(sb);
+   luci_dbg_inode(inode, "evicting inode");
 
    // dump layout here for sanity
-   if (inode->i_size && (luci_dump_layout(inode) < 0)) {
-      luci_err("inode invalid layout detected");
+   if (sbi->s_mount_opt & LUCI_MOUNT_LAYOUTINFO &&
+       inode->i_size && (luci_dump_layout(inode) < 0)) {
+       luci_err("inode invalid layout detected");
    }
 
    // invalidate the radix tree in page-cache
@@ -388,6 +414,7 @@ luci_statfs(struct dentry *dentry, struct kstatfs *buf)
    // TBD : currently we do not use lsb uuid label
    buf->f_fsid.val[0] = (u32)id;
    buf->f_fsid.val[1] = (u32)(id >> 32);
+   luci_dbg("free blocks :%llu", buf->f_bfree);
    return 0;
 }
 
@@ -433,7 +460,7 @@ static void
 luci_print_sbinfo(struct super_block *sb) {
     if (sb && sb->s_fs_info) {
         struct luci_sb_info *sbi = sb->s_fs_info;
-        luci_dbg("desc_per_block :%lu "
+        luci_info("desc_per_block :%lu "
                 "gdb :%lu blocks_count :%u inodes_count :%u "
                 "block_size :%lu blocks_per_group :%lu "
                 "first_data_block :%u groups_count :%lu", sbi->s_desc_per_block,
@@ -444,23 +471,40 @@ luci_print_sbinfo(struct super_block *sb) {
     }
 }
 
+static void
+luci_print_bh(struct buffer_head *bh) {
+    luci_dbg("bh dump : block :%lu size :%lu", bh->b_blocknr, bh->b_size);
+}
+
 static int
 luci_check_descriptors(struct super_block *sb) {
-    int i, j;
-    uint32_t block_map, inode_map, inode_tbl;
+    uint32_t block, entry;
     struct luci_sb_info *sbi = sb->s_fs_info;
 
-    for (i = 0; i < sbi->s_gdb_count; i++) {
-        struct buffer_head *bh = sbi->s_group_desc[i];
-        for (j = 0; j < sbi->s_desc_per_block; j++) {
+    // blocks having group desc entries
+    for (block = 0; block < sbi->s_gdb_count; block++) {
+        struct buffer_head *bh = sbi->s_group_desc[block];
+        if (bh == NULL) {
+            BUG();
+        }
+
+        luci_print_bh(bh);
+
+        // entry per block
+        for (entry = 0; entry < sbi->s_desc_per_block; entry++) {
             struct luci_group_desc *gdesc;
-            luci_fsblk_t first_block, last_block;
-            uint32_t gp = (i * sbi->s_desc_per_block) + j + 1;
+            luci_fsblk_t block_map, inode_map, inode_tbl,
+                         first_block, last_block;
+            // compute group number
+            // Fix : with large devices, when gp desc rolled across blocks
+            // saw an issue where we were not computing gp correctly.
+            uint32_t gp = (block * sbi->s_desc_per_block) + entry + 1;
+            // completed
             if (gp > sbi->s_groups_count) {
                 goto done;
             }
 
-            first_block = luci_group_first_block_no(sb, (i + 1)* j);
+            first_block = luci_group_first_block_no(sb, gp - 1);
 
             if (gp == sbi->s_groups_count - 1) {
                 last_block = sbi->s_lsb->s_blocks_count - 1;
@@ -468,35 +512,39 @@ luci_check_descriptors(struct super_block *sb) {
                 last_block = first_block + sbi->s_blocks_per_group - 1;
             }
 
+            //printk(KERN_INFO "group [%u] first block :0x%lx last block :0x%lx",
+            //    gp - 1, first_block, last_block);
+
             gdesc = (struct luci_group_desc*)
-                (bh->b_data +  j * sizeof(struct luci_group_desc));
+                (bh->b_data +  entry * sizeof(struct luci_group_desc));
 
             block_map = le32_to_cpu(gdesc->bg_block_bitmap);
-            luci_dbg("block bitmap for group[%u]:%u", gp, block_map);
             if ((block_map < first_block) || (block_map > last_block)) {
-                luci_err("failed, block bitmap for group %d invalid block"
-                   " no %u", (i + 1) * j, block_map);
-                return -EINVAL;
+                luci_err("failed, invalid block nr for bitmap, group=%d "
+                    "block=%lu", gp - 1, block_map);
+                goto fail;
             }
 
             inode_map = le32_to_cpu(gdesc->bg_inode_bitmap);
             if ((inode_map < first_block) || (inode_map > last_block)) {
-                luci_err("failed, inode bitmap for group %d invalid block"
-                   " no %u", (i + 1) * j, inode_map);
-                return -EINVAL;
+                luci_err("failed, invalid block nr for inodemap, group=%d "
+                    "block=%lu", gp - 1, inode_map);
+                goto fail;
             }
 
             inode_tbl = le32_to_cpu(gdesc->bg_inode_table);
             if ((inode_tbl < first_block) || (inode_tbl > last_block)) {
-                luci_err("failed, inode table for group %d invalid block"
-                   " no %u", (i + 1) * j, inode_tbl);
-                return -EINVAL;
+                luci_err("failed, invalid block nr for inodetable, group=%d "
+                    "block=%lu", gp - 1, inode_tbl);
+                goto fail;
             }
         }
     }
 
 done:
     return 0;
+fail:
+    return -1;
 }
 
 static void
@@ -596,14 +644,14 @@ restart:
     if (!(bh = sb_bread(sb, block_no))) {
         luci_err("error reading super block");
         ret = -EIO;
-        goto failed_sbi;
+        goto failed;
     }
 
     if (sb->s_blocksize != bh->b_size) {
         luci_err("invalid block-size in buffer-head");
         brelse(bh);
         ret = -EIO;
-        goto failed_sbi;
+        goto failed;
     }
 
     // luci on-disk super-block format
@@ -614,7 +662,7 @@ restart:
     if (sb->s_magic != LUCI_SUPER_MAGIC) {
         luci_err("invalid magic number on super-block");
         ret = -EINVAL;
-        goto failed_mount;
+        goto failed;
     }
 
     luci_dbg("magic number on block:%lu(%lu)",block_no, block_of);
@@ -625,7 +673,7 @@ restart:
         brelse(bh);
         if (!sb_set_blocksize(sb, block_size)) {
             ret = -EPERM;
-            goto failed_mount;
+            goto failed;
         }
         luci_dbg("default block size mismatch! re-reading...");
         goto restart;
@@ -642,14 +690,14 @@ restart:
             (!is_power_of_2(sbi->s_inode_size))) {
         luci_err("invalid inode size in super block :%d", sbi->s_inode_size);
         ret = -EINVAL;
-        goto failed_mount;
+        goto failed;
     }
 
     sbi->s_inodes_per_block = sb->s_blocksize/sbi->s_inode_size;
     if (sbi->s_inodes_per_block == 0) {
         luci_err("invalid inodes per block");
         ret = -EINVAL;
-        goto failed_mount;
+        goto failed;
     }
 
     // fragment size
@@ -657,7 +705,7 @@ restart:
     if (sbi->s_frag_size == 0) {
         luci_err("fragment size invalid");
         ret = -EINVAL;
-        goto failed_mount;
+        goto failed;
     }
     sbi->s_frags_per_block = sb->s_blocksize/sbi->s_frag_size;
 
@@ -670,7 +718,7 @@ restart:
             (sbi->s_frags_per_group > sb->s_blocksize * 8)) {
         luci_err("invalid frags per group");
         ret = -EINVAL;
-        goto failed_mount;
+        goto failed;
     }
 
     sbi->s_blocks_per_group = le32_to_cpu(lsb->s_blocks_per_group);
@@ -679,14 +727,14 @@ restart:
             (sbi->s_blocks_per_group > sb->s_blocksize * 8)) {
         luci_err("invalid blocks per group");
         ret = -EINVAL;
-        goto failed_mount;
+        goto failed;
     }
     sbi->s_inodes_per_group = le32_to_cpu(lsb->s_inodes_per_group);
     if ((sbi->s_inodes_per_group == 0) ||
             (sbi->s_inodes_per_group > sb->s_blocksize * 8)) {
         luci_err("invalid inodes per group");
         ret = -EINVAL;
-        goto failed_mount;
+        goto failed;
     }
 
     // blocks to store inode table
@@ -710,7 +758,7 @@ restart:
     if (sbi->s_group_desc == NULL) {
         ret = -ENOMEM;
         luci_err("cannot allocate memory for group descriptors");
-        goto failed_mount;
+        goto failed;
     }
 
     for (i = 0; i < sbi->s_gdb_count; i++) {
@@ -719,15 +767,14 @@ restart:
         if (sbi->s_group_desc[i] == NULL) {
             luci_err("failed to read group descriptors");
             ret = -EIO;
-            goto failed_gdb;
+            goto failed;
         }
     }
 
     sb->s_fs_info = sbi;
-
     if (luci_runlayoutchecks(sb)) {
         ret = -EINVAL;
-        goto failed_layoutcheck;
+        goto failed;
     }
 
     luci_dump_blockbitmap(sb);
@@ -739,24 +786,18 @@ restart:
     le16_add_cpu(&lsb->s_mnt_count, 1);
 
     lsb->s_wtime = cpu_to_le32(get_seconds());
+    lsb->s_free_blocks_count = luci_count_free_blocks(sb);
     mark_buffer_dirty(sbi->s_sbh);
     sync_dirty_buffer(sbi->s_sbh);
 
-    luci_dbg("super_block read successfull");
+    // keep df command happy; report correct available size
+    percpu_counter_set(&sbi->s_freeblocks_counter,
+        lsb->s_free_blocks_count);
+    printk(KERN_DEBUG "super_block read successfully");
     return 0;
 
-failed_layoutcheck:
-    i = sbi->s_gdb_count - 1;
-failed_gdb:
-    for (;i >= 0; i--) {
-        brelse(sbi->s_group_desc[i]);
-    }
-    kfree(sbi->s_group_desc);
-failed_mount:
-    sbi->s_sbh = NULL;
-    brelse(bh);
-failed_sbi:
-    kfree(sbi);
+failed:
+    // free super will take care of cleanup sb resources
     luci_err("luci super block read error");
     return ret;
 }
@@ -766,7 +807,11 @@ luci_free_super(struct super_block * sb) {
     struct luci_sb_info *sbi;
 
     if (sb->s_root) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
+       struct inode * root_inode = sb->s_root->d_inode;
+#else
        struct inode * root_inode = d_inode(sb->s_root);
+#endif
        iput(root_inode);
        sb->s_root = NULL;
     }
@@ -780,12 +825,15 @@ luci_free_super(struct super_block * sb) {
              brelse(bh);
           }
           kfree(sbi->s_group_desc);
+          sbi->s_group_desc = NULL;
        }
 
        if (sbi->s_sbh) {
           brelse(sbi->s_sbh);
+          sbi->s_sbh = NULL;
        }
        kfree(sbi);
+       sb->s_fs_info = NULL;
     }
 }
 
@@ -825,12 +873,13 @@ luci_read_rootinode(struct super_block *sb) {
 }
 
 enum {
-    Opt_debug, Opt_extents
+    Opt_debug, Opt_extents, Opt_layout
 };
 
 static const match_table_t tokens = {
     {Opt_debug, "debug"},
     {Opt_extents, "extents"},
+    {Opt_layout, "layout"},
 };
 
 static int parse_options(char *options, struct super_block *sb)
@@ -838,6 +887,9 @@ static int parse_options(char *options, struct super_block *sb)
     char *p;
     struct luci_sb_info *sbi = LUCI_SB(sb);
     substring_t args[MAX_OPT_ARGS];
+
+    // reset it each time, we mount
+    debug = 0;
 
     if (!options)
         return 1;
@@ -855,7 +907,11 @@ static int parse_options(char *options, struct super_block *sb)
             break;
 	case Opt_extents:
             set_opt (sbi->s_mount_opt, LUCI_MOUNT_EXTENTS);
-	    luci_dbg("extent allocation enabled for files");
+	    printk(KERN_DEBUG "extent allocation enabled for files");
+            break;
+        case Opt_layout:
+            set_opt (sbi->s_mount_opt, LUCI_MOUNT_LAYOUTINFO);
+	    printk(KERN_DEBUG "dump layout for files");
             break;
 	default:
 	    luci_err("Unrecognized mount option : %s", p);

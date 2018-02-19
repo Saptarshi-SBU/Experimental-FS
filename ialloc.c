@@ -4,7 +4,6 @@
  * Luci block allocation
  *
  * ----------------------------------------------------------*/
-
 #include "luci.h"
 
 #include <linux/fs.h>
@@ -218,7 +217,7 @@ luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
       brelse(bitmap_bh);
    }
    err = -ENOSPC;
-    luci_err("create inode failed, group is full");
+   luci_err("create inode failed, group is full");
    goto fail;
 
 gotit:
@@ -241,7 +240,11 @@ gotit:
    inode->i_ino = ino;
    luci_dbg("new inode :%lu in group :%d", ino, group);
    inode->i_blocks = 0;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
+   inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME;
+#else
    inode->i_mtime = inode->i_atime = inode->i_ctime = current_time(inode);
+#endif
 
    li = LUCI_I(inode);
    memset(li->i_data, 0, sizeof(li->i_data));
@@ -328,6 +331,7 @@ luci_new_block(struct inode *inode)
       brelse(bitmap_bh);
       //brelse(bh);
    }
+   luci_err("create block failed, space is full");
    return -ENOSPC;
 
 gotit:
@@ -347,8 +351,13 @@ gotit:
    //TBD : We are not updating the super-block across all backups
    mark_buffer_dirty(sbi->s_sbh);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
+   inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME;
+#else
    inode->i_mtime = inode->i_atime = current_time(inode);
-   inode->i_blocks+=luci_sectors_per_block(inode); // sector based (TBD : add a macro for block to sector)
+#endif
+   // sector based (TBD : add a macro for block to sector)
+   inode->i_blocks+=luci_sectors_per_block(inode);
    mark_inode_dirty(inode);
    return block + (block_group * sbi->s_blocks_per_group);
 fail:
