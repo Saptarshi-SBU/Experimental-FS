@@ -14,6 +14,7 @@
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
 #include <linux/aio.h>
 #endif
+#include <linux/ktime.h>
 
 loff_t
 luci_llseek(struct file * file, loff_t off, int whence) {
@@ -25,9 +26,11 @@ luci_llseek(struct file * file, loff_t off, int whence) {
 
 ssize_t luci_read(struct file * file, char *buf, size_t size, loff_t *pos) {
    ssize_t ret;
+   ktime_t start = ktime_get();
    struct inode *inode = file->f_mapping->host;
-   luci_dbg("inode :%lu pos :%llu size :%lu", inode->i_ino, *pos, size);
    ret = new_sync_read(file, buf, size, pos); // use read_iter not aio_read
+   luci_inode_latency(inode, "pos :%llu size :%lu latency(usec) :%llu", *pos,
+       size, ktime_us_delta(ktime_get(), start));
    return ret;
 }
 
@@ -40,9 +43,11 @@ ssize_t luci_read_iter(struct kiocb*iocb, struct iov_iter *iter) {
 
 ssize_t luci_write(struct file * file, const char *buf, size_t size, loff_t *pos) {
    ssize_t ret;
+   ktime_t start = ktime_get();
    struct inode *inode = file->f_mapping->host;
-   luci_dbg("inode :%lu pos :%llu size :%lu", inode->i_ino, *pos, size);
    ret = new_sync_write(file, buf, size, pos); // use write_iter, not aio_write
+   luci_inode_latency(inode, "pos :%llu size :%lu latency(usec) :%llu", *pos,
+       size, ktime_us_delta(ktime_get(), start));
    return ret;
 }
 

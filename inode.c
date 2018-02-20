@@ -13,6 +13,7 @@
 #include <linux/path.h>
 #include <linux/mpage.h>
 #include <linux/delay.h>
+#include <linux/ktime.h>
 #include "luci.h"
 
 static int
@@ -353,6 +354,7 @@ luci_get_block(struct inode *inode, sector_t iblock,
     Indirect *partial;
     long ipaths[LUCI_MAX_DEPTH];
     Indirect ichain[LUCI_MAX_DEPTH];
+    ktime_t start;
 
     luci_dbg("Fetch block for inode :%lu, i_block :%lu "
       "create :%s", inode->i_ino, iblock, create ? "alloc" : "noalloc");
@@ -392,14 +394,18 @@ gotit:
         // request.
         luci_dbg_inode(inode, "get block allocating i_block :%lu", iblock);
         nr_blocks = (ichain + depth) - partial;
+        start = ktime_get();
         err = alloc_branch(inode, nr_blocks, ipaths + (partial - ichain),
 	    partial);
+        luci_inode_latency(inode, "i_block %lu allocation latency :%llu(usecs)",
+            iblock, ktime_us_delta(ktime_get(), start));
         if (!err) {
             // note inode is still not updated
             goto gotit;
         }
         luci_err_inode(inode, "block allocation failed, err :%d", err);
     }
+
     return err;
 }
 

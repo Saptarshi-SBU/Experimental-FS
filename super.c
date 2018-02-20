@@ -17,6 +17,7 @@
 #include <linux/log2.h>
 #include <linux/string.h>
 #include <linux/parser.h>
+#include <linux/debugfs.h>
 #include "luci.h"
 #include "kern_feature.h"
 
@@ -25,7 +26,7 @@ MODULE_ALIAS_FS("luci");
 MODULE_DESCRIPTION("File System for Linux");
 MODULE_LICENSE("GPL");
 
-int debug;
+debugfs_t dbgfsparam;
 
 static struct kmem_cache* luci_inode_cachep;
 
@@ -369,13 +370,11 @@ luci_drop_inode(struct inode *inode)
 static void
 luci_evict_inode(struct inode * inode)
 {
-   struct super_block *sb = inode->i_sb;
-   struct luci_sb_info *sbi = LUCI_SB(sb);
    luci_dbg_inode(inode, "evicting inode");
 
    // dump layout here for sanity
-   if (sbi->s_mount_opt & LUCI_MOUNT_LAYOUTINFO &&
-       inode->i_size && (luci_dump_layout(inode) < 0)) {
+   if (dbgfsparam.layout && inode->i_size &&
+       (luci_dump_layout(inode) < 0)) {
        luci_err("inode invalid layout detected");
    }
 
@@ -877,9 +876,7 @@ enum {
 };
 
 static const match_table_t tokens = {
-    {Opt_debug, "debug"},
     {Opt_extents, "extents"},
-    {Opt_layout, "layout"},
 };
 
 static int parse_options(char *options, struct super_block *sb)
@@ -889,8 +886,6 @@ static int parse_options(char *options, struct super_block *sb)
     substring_t args[MAX_OPT_ARGS];
 
     // reset it each time, we mount
-    debug = 0;
-
     if (!options)
         return 1;
 
@@ -901,17 +896,9 @@ static int parse_options(char *options, struct super_block *sb)
 
         token = match_token(p, tokens, args);
         switch (token) {
-        case Opt_debug:
-	    debug = 1;
-            set_opt (sbi->s_mount_opt, LUCI_MOUNT_DEBUG);
-            break;
 	case Opt_extents:
             set_opt (sbi->s_mount_opt, LUCI_MOUNT_EXTENTS);
 	    printk(KERN_DEBUG "extent allocation enabled for files");
-            break;
-        case Opt_layout:
-            set_opt (sbi->s_mount_opt, LUCI_MOUNT_LAYOUTINFO);
-	    printk(KERN_DEBUG "dump layout for files");
             break;
 	default:
 	    luci_err("Unrecognized mount option : %s", p);
@@ -967,6 +954,41 @@ struct file_system_type luci_fs = {
 };
 
 static int
+init_debugfs(void) {
+    dbgfsparam.dirent = debugfs_create_dir("luci", NULL);
+    if (dbgfsparam.dirent == NULL) {
+        printk(KERN_ERR "failed to init debugfs params");
+        return (-ENODEV);
+    }
+    dbgfsparam.dirent_dbg = debugfs_create_u32("debug", 0644,
+        dbgfsparam.dirent, &dbgfsparam.debug);
+    if (dbgfsparam.dirent_dbg == NULL) {
+        printk(KERN_ERR "error creating file");
+        return (-ENODEV);
+    }
+    dbgfsparam.dirent_layout = debugfs_create_u32("layout", 0644,
+        dbgfsparam.dirent, &dbgfsparam.layout);
+    if (dbgfsparam.dirent_layout == NULL) {
+        printk(KERN_ERR "error creating file");
+        return (-ENODEV);
+    }
+    dbgfsparam.dirent_lat = debugfs_create_u64("latency", 0644,
+        dbgfsparam.dirent, &dbgfsparam.latency);
+    if (dbgfsparam.dirent_lat == NULL) {
+        printk(KERN_ERR "error creating file");
+        return (-ENODEV);
+    }
+    return 0;
+}
+
+static void
+exit_debugfs(void) {
+    if (dbgfsparam.dirent) {
+        debugfs_remove_recursive(dbgfsparam.dirent);
+    }
+}
+
+static int
 __init init_luci_fs(void)
 {
     int err;
@@ -979,17 +1001,24 @@ __init init_luci_fs(void)
     if (err)
         goto failed;
 
+    err = init_debugfs();
+    if (err)
+        goto failed_debugfs;
+
     luci_dbg("LUCI FS loaded");
     return 0;
 
 failed:
     destroy_inodecache();
+failed_debugfs:
+    unregister_filesystem(&luci_fs);
     return err;
 }
 
 static void
 __exit exit_luci_fs(void)
 {
+    exit_debugfs();
     unregister_filesystem(&luci_fs);
     destroy_inodecache();
 }

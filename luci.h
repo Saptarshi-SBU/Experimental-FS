@@ -23,6 +23,7 @@
 #include <linux/blockgroup_lock.h>
 #include <linux/percpu_counter.h>
 #include <linux/rbtree.h>
+#include <linux/debugfs.h>
 
 /* data type for block offset of block group */
 typedef int luci_grpblk_t;
@@ -429,7 +430,6 @@ enum {
 #define LUCI_MOUNT_GRPQUOTA     0x040000  /* group quota */
 #define LUCI_MOUNT_RESERVATION      0x080000  /* Preallocation */
 #define LUCI_MOUNT_EXTENTS      0x100000  /* Extent allocation */
-#define LUCI_MOUNT_LAYOUTINFO   0x200000  /* Dump layout of inodes */
 
 #define clear_opt(o, opt)       o &= ~opt
 #define set_opt(o, opt)         o |= opt
@@ -521,14 +521,26 @@ static inline void verify_offsets(void)
  */
 
 //#define DEBUG_BMAP
-extern int debug;
+
+//debugfs params
+typedef struct debugfs {
+    struct dentry *dirent;
+    u32 debug;
+    struct dentry *dirent_dbg;
+    u32 layout;
+    struct dentry *dirent_layout;
+    u64 latency;
+    struct dentry *dirent_lat;
+}debugfs_t;
+
+extern debugfs_t dbgfsparam;
 
 #define luci_dbg(f, a...)  { \
-	            if (debug) \
+	            if (dbgfsparam.debug) \
                        printk (KERN_DEBUG "LUCI-FS %s :"f"\n", __func__, ## a); \
                     }
 #define luci_dbg_inode(inode, f, a...)  { \
-	            if (debug) \
+	            if (dbgfsparam.debug) \
                        printk (KERN_DEBUG "LUCI-FS %s :inode :%lu :"f"\n", __func__, \
                           inode->i_ino, ## a); \
                     }
@@ -545,6 +557,11 @@ extern int debug;
 #define luci_err_inode(inode, f, a...)  { \
                     printk (KERN_ERR "LUCI-FS %s : error inode :%lu :"f"\n", __func__, \
                        inode->i_ino, ## a); \
+                    }
+#define luci_inode_latency(inode, f, a...)  { \
+                    if (dbgfsparam.latency) \
+                         printk (KERN_INFO "LUCI-FS %s : inode :%lu :"f"\n", \
+                             __func__, inode->i_ino, ## a); \
                     }
 typedef struct {
    __le32 *p;
