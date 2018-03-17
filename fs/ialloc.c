@@ -5,6 +5,7 @@
  *
  * ----------------------------------------------------------*/
 #include "luci.h"
+#include "kern_feature.h"
 
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
@@ -240,11 +241,7 @@ gotit:
    inode->i_ino = ino;
    luci_dbg("new inode :%lu in group :%d", ino, group);
    inode->i_blocks = 0;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
-   inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME;
-#else
-   inode->i_mtime = inode->i_atime = inode->i_ctime = current_time(inode);
-#endif
+   inode->i_mtime = inode->i_atime = inode->i_ctime = LUCI_CURR_TIME;
 
    li = LUCI_I(inode);
    memset(li->i_data, 0, sizeof(li->i_data));
@@ -351,11 +348,7 @@ gotit:
    //TBD : We are not updating the super-block across all backups
    mark_buffer_dirty(sbi->s_sbh);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
-   inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME;
-#else
-   inode->i_mtime = inode->i_atime = current_time(inode);
-#endif
+   inode->i_mtime = inode->i_atime = inode->i_ctime = LUCI_CURR_TIME;
    // sector based (TBD : add a macro for block to sector)
    inode->i_blocks+=luci_sectors_per_block(inode);
    mark_inode_dirty(inode);

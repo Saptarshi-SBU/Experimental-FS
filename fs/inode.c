@@ -15,6 +15,7 @@
 #include <linux/delay.h>
 #include <linux/ktime.h>
 #include "luci.h"
+#include "kern_feature.h"
 
 static int
 luci_setsize(struct inode *inode, loff_t newsize)
@@ -26,11 +27,7 @@ luci_setsize(struct inode *inode, loff_t newsize)
     }
     luci_truncate(inode, newsize);
     truncate_setsize(inode, newsize);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
-    inode->i_mtime = inode->i_ctime = CURRENT_TIME;
-#else
-    inode->i_mtime = inode->i_ctime = current_time(inode);
-#endif
+    inode->i_mtime = inode->i_ctime = LUCI_CURR_TIME;
     // sync
     if (inode_needs_sync(inode)) {
        sync_mapping_buffers(inode->i_mapping);
@@ -46,21 +43,16 @@ static int
 luci_setattr(struct dentry *dentry, struct iattr *attr)
 {
     int err;
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
-    struct inode *inode = dentry->d_inode;
+    struct inode *inode = DENTRY_INODE(dentry);
+    // check we have permissions to change attributes
+#ifdef HAVE_CHECKINODEPERM
     err = inode_change_ok(inode, attr);
+#else
+    err = setattr_prepare(dentry, attr);
+#endif
     if (err) {
         return err;
     }
-#else
-    struct inode *inode = d_inode(dentry);
-    // check we have permissions to change attributes
-    err = setattr_prepare(dentry, attr);
-    if (err) {
-       return err;
-    }
-#endif
 
     luci_dbg_inode(inode, "setattr");
     // Wait for all pending direct I/O requests so that
@@ -83,27 +75,30 @@ luci_setattr(struct dentry *dentry, struct iattr *attr)
     return 0;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,8)
 static int
-luci_getattr(const struct path *path, struct kstat *stat,
-        u32 request_mask, unsigned int query_flags) {
-    struct super_block *sb = path->dentry->d_sb;
-    struct inode *inode = d_inode(path->dentry);
+luci_getattr_private(const struct dentry *dentry, struct kstat *stat)
+{
+    struct super_block *sb = dentry->d_sb;
+    struct inode *inode = DENTRY_INODE(dentry);
     generic_fillattr(inode, stat);
     stat->blksize = sb->s_blocksize;
     luci_dbg_inode(inode, "get attributes");
     return 0;
+}
+
+#ifdef HAVE_NEW_GETATTR
+static int
+luci_getattr(const struct path *path, struct kstat *stat,
+        u32 request_mask, unsigned int query_flags)
+{
+    return luci_getattr_private(path->dentry, stat);
 }
 #else
 static int
 luci_getattr(struct vfsmount *mnt, struct dentry *dentry,
         struct kstat *stat)
 {
-    struct super_block *sb = dentry->d_sb;
-    generic_fillattr(dentry->d_inode, stat);
-    stat->blksize = sb->s_blocksize;
-    luci_dbg_inode(dentry->d_inode, "get attributes");
-    return 0;
+    return luci_getattr_private(dentry, stat);
 }
 #endif
 
@@ -578,14 +573,6 @@ Egdp:
     return ERR_PTR(-EIO);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
-static inline unsigned long
-dir_pages(struct inode *inode)
-{
-    return (inode->i_size + PAGE_CACHE_SIZE-1) >> PAGE_CACHE_SHIFT;
-}
-#endif
-
 static int
 luci_add_link(struct dentry *dentry, struct inode *inode) {
     int err;
@@ -600,13 +587,7 @@ luci_add_link(struct dentry *dentry, struct inode *inode) {
 
     // sanity check for new inode
     BUG_ON(inode->i_ino == 0);
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
-    dir = dentry->d_parent->d_inode;
-#else
-    dir = d_inode(dentry->d_parent);
-#endif
-
+    dir = DENTRY_INODE(dentry->d_parent);
     // Note block size may not be the same as page size
     npages = dir_pages(dir);
     new_dentry_len = LUCI_DIR_REC_LEN(dentry->d_name.len);
@@ -709,11 +690,7 @@ gotit:
     if (err) {
         luci_err("error to commit chunk during dentry insert");
     }
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
-    dir->i_mtime = dir->i_ctime = CURRENT_TIME;
-#else
-    dir->i_mtime = dir->i_ctime = current_time(dir);
-#endif
+    dir->i_mtime = dir->i_ctime = LUCI_CURR_TIME;
     mark_inode_dirty(dir);
     luci_put_page(page);
     luci_dbg_inode(inode, "sucessfully inserted dentry %s record_len :%d "
@@ -969,11 +946,7 @@ fail_dir:
 static int
 luci_unlink(struct inode * dir, struct dentry *dentry)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
-    struct inode * inode = dentry->d_inode;
-#else
-    struct inode * inode = d_inode(dentry);
-#endif
+    struct inode * inode = DENTRY_INODE(dentry);
     struct luci_dir_entry_2 * de;
     struct page * page;
     int err;
@@ -1011,11 +984,7 @@ static int
 luci_rmdir(struct inode * dir, struct dentry *dentry)
 {
     int err = -ENOTEMPTY;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
-    struct inode * inode = dentry->d_inode;
-#else
-    struct inode * inode = d_inode(dentry);
-#endif
+    struct inode * inode = DENTRY_INODE(dentry);
 
     luci_dbg_inode(inode, "rmdir on inode");
     if (luci_empty_dir(inode) == 0) {
@@ -1031,17 +1000,23 @@ luci_rmdir(struct inode * dir, struct dentry *dentry)
     return err;
 }
 
+#ifdef HAVE_NEW_RENAME
 static int
 luci_rename(struct inode * old_dir, struct dentry *old_dentry,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,8)
         struct inode * new_dir, struct dentry *new_dentry, unsigned int flags)
-#else
-    struct inode * new_dir, struct dentry *new_dentry)
-#endif
 {
     luci_dbg_inode(old_dir, "renaming");
     return 0;
 }
+#else
+static int
+luci_rename(struct inode * old_dir, struct dentry *old_dentry,
+    struct inode * new_dir, struct dentry *new_dentry)
+{
+    luci_dbg_inode(old_dir, "renaming");
+    return 0;
+}
+#endif
 
 static int
 luci_writepage(struct page *page, struct writeback_control *wbc)

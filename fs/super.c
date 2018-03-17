@@ -806,11 +806,7 @@ luci_free_super(struct super_block * sb) {
     struct luci_sb_info *sbi;
 
     if (sb->s_root) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
-       struct inode * root_inode = sb->s_root->d_inode;
-#else
-       struct inode * root_inode = d_inode(sb->s_root);
-#endif
+       struct inode * root_inode = DENTRY_INODE(sb->s_root);
        iput(root_inode);
        sb->s_root = NULL;
     }
@@ -858,7 +854,7 @@ luci_read_rootinode(struct super_block *sb) {
     root_inode->i_op = &luci_dir_inode_operations;
     root_inode->i_mapping->a_ops = &luci_aops;
 
-#if HAVE_D_OBTAIN_ROOT
+#ifdef HAVE_D_OBTAIN_ROOT
     dentry = d_obtain_root(root_inode);
 #else
     dentry = d_make_root(root_inode);
