@@ -1,7 +1,7 @@
-Linux implementation of a COW File System.
+Linux implementation of a Write-Inplace File System.
 
- -Initial efforts to have a base stable COW implementation.
+ -Initial efforts to have a base stable implementation.
 
  -Benchmark performance with Random Read/Writes
 
- -Experiment with data-structures for reduced write-amplification
+ -Compression support

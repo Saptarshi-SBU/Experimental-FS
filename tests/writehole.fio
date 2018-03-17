@@ -1,0 +1,8 @@
+[writeholey]
+bs=4k
+ioengine=libaio
+rw=write:4k
+direct=0
+size=1g
+thread=1
+iodepth=16

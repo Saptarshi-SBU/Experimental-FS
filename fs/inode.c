@@ -176,9 +176,11 @@ add_chain(Indirect *p, struct buffer_head *bh, __le32 *v)
 static int
 luci_block_to_path(struct inode *inode,
         long i_block,
-        long path[LUCI_MAX_DEPTH])
+        long path[LUCI_MAX_DEPTH],
+        int *blocks_to_boundary)
 {
     int n = 0;
+    int final = 0;
     const long nr_direct = LUCI_NDIR_BLOCKS;
     const long nr_indirect = LUCI_ADDR_PER_BLOCK(inode->i_sb);
     const long nr_dindirect = (1 << (LUCI_ADDR_PER_BLOCK_BITS(inode->i_sb) * 2));
@@ -190,6 +192,7 @@ luci_block_to_path(struct inode *inode,
 
     if (i_block < nr_direct) {
         path[n++] = i_block;
+        final = nr_direct;
         luci_dbg("block %ld maps to a direct block", i_block);
         goto done;
     }
@@ -198,6 +201,7 @@ luci_block_to_path(struct inode *inode,
     if (i_block < nr_indirect) {
         path[n++] = LUCI_IND_BLOCK;
         path[n++] = i_block;
+        final = nr_indirect;
         luci_dbg("block %ld maps to an indirect block\n", i_block);
         goto done;
     }
@@ -210,6 +214,7 @@ luci_block_to_path(struct inode *inode,
         path[n++] = LUCI_DIND_BLOCK;
         path[n++] = i_block >> LUCI_ADDR_PER_BLOCK_BITS(inode->i_sb);
         path[n++] = i_block & (LUCI_ADDR_PER_BLOCK(inode->i_sb) - 1);
+        final = nr_indirect;
         luci_dbg("block %ld maps to a double indirect block\n", i_block);
         goto done;
     }
@@ -222,12 +227,16 @@ luci_block_to_path(struct inode *inode,
         path[n++] = (i_block >> LUCI_ADDR_PER_BLOCK_BITS(inode->i_sb)) &
             (LUCI_ADDR_PER_BLOCK(inode->i_sb) - 1);
         path[n++] = i_block & (LUCI_ADDR_PER_BLOCK(inode->i_sb) - 1);
+        final = nr_indirect;
         luci_dbg("block %ld maps to a triple indirect block\n", i_block);
         goto done;
     }
 
     luci_err_inode(inode, "warning block is too big");
 done:
+    if (blocks_to_boundary) {
+        *blocks_to_boundary = final - path[n - 1];
+    }
     luci_dbg_inode(inode,"i_block :%lu n:%d indexes :%ld :%ld :%ld :%ld", i_block,
        n, path[0], path[1], path[2], path[3]);
     return n;
@@ -349,8 +358,9 @@ luci_get_block(struct inode *inode, sector_t iblock,
 {
     int err = 0;
     int depth = 0;
-    u32 block_no = -1;
+    u32 block_no = 0;
     int nr_blocks = 0;
+    int blocks_to_boundary = 0;
     Indirect *partial;
     long ipaths[LUCI_MAX_DEPTH];
     Indirect ichain[LUCI_MAX_DEPTH];
@@ -358,11 +368,13 @@ luci_get_block(struct inode *inode, sector_t iblock,
 
     luci_dbg("Fetch block for inode :%lu, i_block :%lu "
       "create :%s", inode->i_ino, iblock, create ? "alloc" : "noalloc");
-
+    // Standard usage of get_block passes a valid bh_result. This is
+    // done to check if the buffer has an on-disk associated block.
+    BUG_ON(bh_result == NULL);
     memset((char*)ipaths, 0, sizeof(long)*LUCI_MAX_DEPTH);
     memset((char*)ichain, 0, sizeof(Indirect)*LUCI_MAX_DEPTH);
 
-    depth = luci_block_to_path(inode, iblock, ipaths);
+    depth = luci_block_to_path(inode, iblock, ipaths, &blocks_to_boundary);
     if (!depth) {
         luci_err_inode(inode, "get_block, invalid block depth!");
         return -EIO;
@@ -374,6 +386,13 @@ luci_get_block(struct inode *inode, sector_t iblock,
         return err;
     }
 
+    //Buffer forms the boundary of contiguous blocks the next block is
+    //discontinuous (BH_Boundary). We need a new meta data block for fetching
+    //the next leaf block.
+    if (!blocks_to_boundary) {
+        set_buffer_boundary(bh_result);
+    }
+
     if (!partial) {
 gotit:
         block_no = ichain[depth - 1].key;
@@ -383,7 +402,6 @@ gotit:
         luci_dbg_inode(inode, "i_block :%lu paths :%d :%d :%d :%d", iblock,
            ichain[0].key, ichain[1].key, ichain[2].key, ichain[3].key);
         err = 0;
-	//msleep(2);
     } else {
         // Fix: We ignore create flag for dealing with holes.
         // Since disk images are sparse files, although we do not
@@ -392,20 +410,25 @@ gotit:
         // key found error in the indirect indexes and an error. So
         // we allocate the block if it is not present even on a fetch
         // request.
-        luci_dbg_inode(inode, "get block allocating i_block :%lu", iblock);
-        nr_blocks = (ichain + depth) - partial;
-        start = ktime_get();
-        err = alloc_branch(inode, nr_blocks, ipaths + (partial - ichain),
+        if (create) {
+            luci_dbg_inode(inode, "get block allocating i_block :%lu", iblock);
+            nr_blocks = (ichain + depth) - partial;
+            start = ktime_get();
+            err = alloc_branch(inode, nr_blocks, ipaths + (partial - ichain),
 	    partial);
-        luci_inode_latency(inode, "i_block %lu allocation latency :%llu(usecs)",
+            luci_inode_latency(inode, "i_block %lu allocation latency :%llu(usecs)",
             iblock, ktime_us_delta(ktime_get(), start));
-        if (!err) {
-            // note inode is still not updated
-            goto gotit;
+            if (!err) {
+                // note inode is still not updated
+                goto gotit;
+            }
+            luci_err_inode(inode, "block allocation failed, err :%d", err);
+        } else {
+            // We have a hole. mpage API identifies a hole if bh is not mapped.
+            // So we are fine even if we do not have an block created for a hole.
+            luci_dbg_inode(inode, "found hole at block no :%u", block_no);
         }
-        luci_err_inode(inode, "block allocation failed, err :%d", err);
     }
-
     return err;
 }
 
@@ -1073,7 +1096,7 @@ luci_dump_layout(struct inode * inode) {
     for (i = 0, nr_holes = 0; i < nr_blocks; i++) {
        memset((char*)ipaths, 0, sizeof(long) * LUCI_MAX_DEPTH);
 
-       depth = luci_block_to_path(inode, i, ipaths);
+       depth = luci_block_to_path(inode, i, ipaths, NULL);
        if (!depth) {
           luci_err_inode(inode, "invalid block depth, iblock %ld", i);
           return -EIO;
