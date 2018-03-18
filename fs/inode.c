@@ -239,63 +239,71 @@ done:
 
 static int
 alloc_branch(struct inode *inode,
-             int num,
+             unsigned long i_block,
+             int nr,
              long int *offsets,
              Indirect *branch)
 {
-    int n = 0;
-    int ret;
-    int curr_block, parent_block;
-    struct buffer_head *bh; // storing parent block buffer head
+    int ret, i = 0;
+    unsigned long curr_block;
+    struct buffer_head *prevbh = NULL, *currbh = NULL;
 
+    BUG_ON(nr == 0);
     BUG_ON(branch[0].key);
-    ret = luci_new_block(inode);
-    if (ret < 0) {
-       goto fail;
-    }
-    branch[0].key = curr_block = ret;
-    *branch[0].p = branch[0].key;
-    luci_dbg_inode(inode, "alloc branch block :%u : %p", branch[0].key,
-       branch[0].p);
 
+    luci_dbg_inode(inode, "allocating nr blocks :%d", nr);
     // Walk block table for allocating indirect block entries
-    for (n = 1; n < num; n++) {
-        ret = luci_new_block(inode);
-        if (ret < 0) {
-           goto fail;
+    for (i = 0; i < nr; i++) {
+        bool root = (i == 0) ? true : false;
+        if (!root) {
+            BUG_ON(currbh == NULL);
+            prevbh = currbh;
         }
-        parent_block = curr_block;
-        curr_block = ret;
-	// will locate and if necessary create buffer head
-        bh = sb_getblk(inode->i_sb, parent_block);
-        if (bh == NULL) {
-	   luci_err_inode(inode, "failed to read parent block :%d for inode",
-	      parent_block);
-           ret = -EIO;
-           goto fail;
-        }
-        lock_buffer(bh);
-	// clear the newly allocated parent block
-	memset(bh->b_data, 0, bh->b_size);
-	//luci_dbg_inode(inode, "zeroing newly allocated parent block :%d",
-	//   parent_block);
-        branch[n].key = curr_block;
-        // offset to indirect block table to store block address entry
-        branch[n].p = (__le32*) bh->b_data + offsets[n];
-	// imp : i_data array updated here
-       *branch[n].p = branch[n].key;
-        // note this is buffer head of previous block
-        branch[n].bh = bh;
-        set_buffer_uptodate(bh);
-        unlock_buffer(bh);
-        mark_buffer_dirty_inode(bh, inode);
-        luci_dbg_inode(inode, "alloc branch block :%u", branch[n].key);
-	//brelse(bh);
-    }
 
+        ret = luci_new_block(inode, 1, &curr_block);
+        if (ret < 0) {
+           luci_err_inode(inode, "block allocation failed iblock %lu", i_block);
+           goto fail;
+        }
+
+        if ((currbh = sb_getblk(inode->i_sb, curr_block)) == NULL) {
+            ret = -EIO;
+            luci_err_inode(inode, "block read fail %lu iblock %lu",
+                    curr_block, i_block);
+            goto fail;
+        }
+
+        //clear the newly allocated block
+        lock_buffer(currbh);
+        memset(currbh->b_data, 0, currbh->b_size);
+        set_buffer_uptodate(currbh);
+        unlock_buffer(currbh);
+
+        if (prevbh) {
+            lock_buffer(prevbh);
+            branch[i].key = curr_block;
+            // offset to indirect block table to store block address entry
+            branch[i].p = (__le32*) prevbh->b_data + offsets[i];
+            // imp : i_data array updated here
+            *branch[i].p = branch[i].key;
+            // note this is buffer head of previous block
+            branch[i].bh = prevbh;
+            unlock_buffer(prevbh);
+            mark_buffer_dirty_inode(prevbh, inode);
+            luci_dbg_inode(inode, "iblock :%lu block :%u offset :%lu", i_block,
+                branch[i].key, offsets[i]);
+        } else {
+            // root node already has slot for holding block ptr in i_data
+            branch[0].key = curr_block;
+           *branch[0].p = branch[0].key;
+            luci_dbg_inode(inode, "iblock :%lu root block :%u offset :%lu",
+                i_block, branch[i].key, offsets[i]);
+        }
+        //brelse(bh);
+    }
     return 0;
 fail:
-    luci_err_inode(inode, "failed to alloc path for branch, path length %d", n);
+    luci_err_inode(inode, "failed alloc path branch iblock %lu(%d)", i_block, i);
     return ret;
 }
 
@@ -409,15 +417,16 @@ gotit:
             luci_dbg_inode(inode, "get block allocating i_block :%lu", iblock);
             nr_blocks = (ichain + depth) - partial;
             start = ktime_get();
-            err = alloc_branch(inode, nr_blocks, ipaths + (partial - ichain),
-	    partial);
-            luci_inode_latency(inode, "i_block %lu allocation latency :%llu(usecs)",
-            iblock, ktime_us_delta(ktime_get(), start));
+            err = alloc_branch(inode, iblock, nr_blocks,
+                ipaths + (partial - ichain), partial);
             if (!err) {
                 // note inode is still not updated
+                luci_inode_latency(inode, "i_block %lu allocation latency "
+                    ":%llu(usecs)", iblock, ktime_us_delta(ktime_get(), start));
                 goto gotit;
             }
-            luci_err_inode(inode, "block allocation failed, err :%d", err);
+            luci_err_inode(inode, "block allocation failed i_block :%lu err :%d",
+                iblock, err);
         } else {
             // We have a hole. mpage API identifies a hole if bh is not mapped.
             // So we are fine even if we do not have an block created for a hole.
@@ -497,6 +506,8 @@ luci_iget(struct super_block *sb, unsigned long ino) {
     li->i_dtime = 0;
     li->i_state = 0;
     li->i_block_group = (ino - 1)/LUCI_SB(sb)->s_inodes_per_group;
+    li->i_active_block_group = li->i_block_group;
+    luci_info_inode(inode, "active bg :%u", li->i_active_block_group);
     li->i_dir_start_lookup = 0;
     li->i_dtime = le32_to_cpu(raw_inode->i_dtime);
 
@@ -769,18 +780,21 @@ static struct dentry *
 luci_lookup(struct inode * dir, struct dentry *dentry,
         unsigned int flags) {
     ino_t ino;
-    struct inode * inode = NULL;
+    struct inode * inode;
     luci_dbg_inode(dir, "dir lookup");
     if (dentry->d_name.len > LUCI_NAME_LEN) {
         return ERR_PTR(-ENAMETOOLONG);
     }
     ino = luci_inode_by_name(dir, &dentry->d_name);
+    inode = NULL;
     if (ino) {
         inode = luci_iget(dir->i_sb,  ino);
         if (inode == ERR_PTR(-ESTALE)) {
             luci_err("deleted inode referenced %lu", (unsigned long) ino);
             return ERR_PTR(-EIO);
         }
+    } else {
+        luci_err("inode lookup failed for %s", dentry->d_name.name);
     }
     //splice a disconnected dentry into the tree if one exists
     return d_splice_alias(inode, dentry);

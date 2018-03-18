@@ -248,6 +248,8 @@ struct luci_inode_info {
      * near to their parent directory's inode.
      */
     __u32   i_block_group;
+    /* current block group servicing new block allocations */
+    __u32   i_active_block_group;
 
     /* block reservation info */
     struct luci_block_alloc_info *i_block_alloc_info;
@@ -563,8 +565,11 @@ extern debugfs_t dbgfsparam;
                          printk (KERN_INFO "LUCI-FS %s : inode :%lu :"f"\n", \
                              __func__, inode->i_ino, ## a); \
                     }
+
+#define BYTE_BITS 3
+
 typedef struct {
-   __le32 *p;
+   __le32 *p; // block entry
    __le32 key;
    struct buffer_head *bh;
 } Indirect;
@@ -613,7 +618,8 @@ extern void luci_free_inode (struct inode * inode);
 extern void luci_release_inode(struct super_block *sb, int group, int dir);
 extern struct inode *
    luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr);
-int luci_new_block(struct inode *);
+int luci_new_block(struct inode *, unsigned int, unsigned long *);
+int luci_free_block(struct inode *inode, unsigned long block);
 
 extern const struct inode_operations luci_file_inode_operations;
 extern const struct file_operations luci_file_operations;

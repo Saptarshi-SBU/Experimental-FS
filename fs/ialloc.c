@@ -14,6 +14,78 @@
 #include <linux/path.h>
 #include <linux/mpage.h>
 
+static unsigned int
+luci_alloc_bitmap(unsigned long *addr, unsigned int nr_bits,
+    unsigned int max_bits)
+{
+    u8 *ptr;
+    bool found = false;
+    unsigned int byte_nr= 0;
+    unsigned int start_bit = 0, end_bit = 0, next_bit = 0;
+
+    ktime_t start = ktime_get();
+
+    if (nr_bits > (1 << BYTE_BITS)) {
+        luci_err("request for more bits than possible in a byte range");
+        BUG();
+    }
+
+    // loop till you find zero bit position for range to allocate
+    do {
+           start_bit = find_next_zero_bit(addr, max_bits, next_bit);
+           // bitmap range full, no free bit
+           if (start_bit >= max_bits) {
+               goto fail;
+           }
+           end_bit = start_bit + nr_bits - 1;
+           // bitmap cannot accomdate range, bail out
+           if (end_bit >= max_bits) {
+               goto fail;
+           }
+           // translate bitpos to a byte nr
+           byte_nr = start_bit >> BYTE_BITS;
+           // falls in a byte nr, so that CAS works
+           if (byte_nr == (end_bit >> BYTE_BITS)) {
+               // prepare mask for CAS
+               u8 mask = 0, val, old;
+               unsigned int i = byte_nr << BYTE_BITS, lbit = i;
+               while (i <= end_bit) {
+                   if (i >= start_bit) mask |=  1 << (i - lbit);
+                   i++;
+               }
+               ptr = (char*)addr + byte_nr;
+               val = *ptr;
+               // val has no common bits in the mask
+               if (!(val & mask)) {
+                   old = cmpxchg(ptr, val, val | mask);
+                   // CAS is not the best for range finding, since bits
+                   // may get freed without impacting our range, but for
+                   // now this should be ok
+                   if (old == val) {
+                       smp_mb();
+                       found = true;
+                       luci_dbg("mask :0x%x, 0x%x(0x%x) found startb_bit :%d "
+                           "endb_bit :%d", mask, *ptr, old, start_bit, end_bit);
+                       goto done;
+                   }
+               }
+           }
+           // if startb == endb, we keep on looping forever
+           next_bit = end_bit + 1;
+
+    // skip the last bit for now
+    } while (!found && next_bit < max_bits);
+
+fail:
+    return max_bits;
+done:
+    if (ktime_us_delta(ktime_get(), start) > 1000UL) {
+        luci_info("allocation latency(usec) :%llu",
+            ktime_us_delta(ktime_get(), start));
+    }
+    return start_bit;
+}
+
 struct luci_group_desc *
 luci_get_group_desc(struct super_block *sb,
    unsigned int block_group, struct buffer_head **bh) {
@@ -271,12 +343,11 @@ fail:
 }
 
 int
-luci_new_block(struct inode *inode)
+luci_new_block(struct inode *inode, unsigned int nr_blocks,
+     unsigned long *start_block)
 {
    int err = 0;
-   int block;
-   uint32_t gp;
-   int block_group;
+   unsigned long block, block_group, gp;
    struct super_block *sb;
    struct luci_sb_info *sbi;
    struct luci_inode_info *li;
@@ -287,7 +358,10 @@ luci_new_block(struct inode *inode)
    sb = inode->i_sb;
    sbi = LUCI_SB(sb);
    li = LUCI_I(inode);
-   for (gp = 0, block_group = li->i_block_group; gp < sbi->s_groups_count;
+   read_lock(&li->i_meta_lock);
+   block_group = li->i_active_block_group;
+   read_unlock(&li->i_meta_lock);
+   for (gp = 0; gp < sbi->s_groups_count;
       block_group = (block_group + 1) % sbi->s_groups_count, gp++) {
       gdb = luci_get_group_desc(sb, block_group, &bh);
       if (gdb == NULL) {
@@ -295,33 +369,32 @@ luci_new_block(struct inode *inode)
          goto fail;
       }
 
-      if (gdb->bg_free_blocks_count == 0) {
+      if (gdb->bg_free_blocks_count < nr_blocks) {
          continue;
       }
 
       bitmap_bh = read_block_bitmap(sb, block_group);
       if (bitmap_bh == NULL) {
-         luci_err("error reading block bmap gp :%d",block_group);
+         luci_err("error reading block bmap gp :%lu",block_group);
          err = -EIO;
          goto fail;
       }
 
       // returns size if no bits are zero
-      block = find_next_zero_bit((unsigned long*)bitmap_bh->b_data,
-         LUCI_BLOCKS_PER_GROUP(sb), 0);
+      block = luci_alloc_bitmap((unsigned long*)bitmap_bh->b_data, nr_blocks,
+           LUCI_BLOCKS_PER_GROUP(sb));
 
       #ifdef DEBUG_BMAP
-      luci_dbg("Finding zero bit in group %d(%d)", block_group, block);
+      luci_dbg("Finding zero bit in group %u(%lu)", block, block_group);
       luci_dbg("%lx", *(unsigned long*)bitmap_bh->b_data);
       #endif
 
       if (block < LUCI_BLOCKS_PER_GROUP(sb)) {
-         if (!(__test_and_set_bit_le(block, bitmap_bh->b_data))) {
-            luci_dbg("found new block %d block_group :%d", block, block_group);
-            goto gotit;
-         }
+          luci_dbg("found new block in block_group %lu(%lu)", block, block_group);
+         *start_block =  block + luci_group_first_block_no(sb, block_group);
+          goto gotit;
       } else {
-         luci_dbg("fetch new block failed, no blocks found in block group :%d "
+         luci_dbg("fetch new block failed, no blocks found in block group :%lu "
             "nr free blocks :%u", block_group, gdb->bg_free_blocks_count);
       }
 
@@ -329,9 +402,14 @@ luci_new_block(struct inode *inode)
       //brelse(bh);
    }
    luci_err("create block failed, space is full");
-   return -ENOSPC;
+   err = -ENOSPC;
+   goto fail;
 
 gotit:
+   write_lock(&li->i_meta_lock);
+   li->i_active_block_group = block_group;
+   write_unlock(&li->i_meta_lock);
+
    mark_buffer_dirty(bitmap_bh);
    if (sb->s_flags & MS_SYNCHRONOUS) {
       sync_dirty_buffer(bitmap_bh);
@@ -347,13 +425,65 @@ gotit:
    lsb->s_free_blocks_count--;
    //TBD : We are not updating the super-block across all backups
    mark_buffer_dirty(sbi->s_sbh);
-
    inode->i_mtime = inode->i_atime = inode->i_ctime = LUCI_CURR_TIME;
    // sector based (TBD : add a macro for block to sector)
    inode->i_blocks+=luci_sectors_per_block(inode);
    mark_inode_dirty(inode);
-   return block + (block_group * sbi->s_blocks_per_group);
 fail:
    //brelse(bh);
    return err;
+}
+
+// Use to free both leaf and internal blocks
+int
+luci_free_block(struct inode *inode, unsigned long block)
+{
+   unsigned int bitpos;
+   unsigned block_group;
+   struct super_block *sb = inode->i_sb;
+   struct luci_sb_info *sbi = sb->s_fs_info;
+   struct luci_super_block *lsb = sbi->s_lsb;
+   struct luci_group_desc *gdesc = NULL;
+   struct buffer_head *bh_block = NULL, *bh_desc = NULL;
+
+   BUG_ON(block == 0);
+   block_group = (block - 1) / sbi->s_blocks_per_group;
+   bitpos = block - (block_group * sbi->s_blocks_per_group);
+
+   luci_dbg("Freeing block %lu in block group :%u", block, block_group);
+
+   bh_block = read_block_bitmap(sb, block_group);
+   if (!bh_block) {
+      luci_err("Free block :%lu failed. Error reading block "
+         "bitmap for group :%u", block, block_group);
+      return -EIO;
+   }
+   if (!(__test_and_clear_bit_le(bitpos, bh_block->b_data))) {
+      luci_err("Free block :%lu failed."
+         "block marked not in use! : blockbit :%u", block, bitpos);
+      return -EIO;
+   }
+   mark_buffer_dirty(bh_block);
+   brelse(bh_block);
+
+   gdesc = luci_get_group_desc(sb, block_group, &bh_desc);
+   if (!gdesc) {
+      luci_err("Free block :%lu failed. Error reading group "
+         "descriptor table for group :%u", block, block_group);
+      return -EIO;
+   }
+   le16_add_cpu(&gdesc->bg_free_blocks_count, 1);
+   percpu_counter_add(&sbi->s_freeblocks_counter, 1);
+   lsb->s_free_blocks_count++;
+   if (S_ISDIR(inode->i_mode)) {
+      le16_add_cpu(&gdesc->bg_used_dirs_count, -1);
+      percpu_counter_dec(&sbi->s_dirs_counter);
+   }
+
+   mark_buffer_dirty(bh_desc);
+   inode->i_blocks -= luci_sectors_per_block(inode);
+   mark_inode_dirty(inode);
+   // Cannot release group descriptor buffer head
+   // brelse(bh_desc);
+   return 0;
 }

@@ -104,60 +104,6 @@ luci_count_free_blocks(struct super_block *sb)
    return count;
 }
 
-// Use to free both leaf and internal blocks
-static int
-luci_free_block(struct inode *inode, unsigned long block)
-{
-   unsigned int bitpos;
-   unsigned block_group;
-   struct super_block *sb = inode->i_sb;
-   struct luci_sb_info *sbi = sb->s_fs_info;
-   struct luci_super_block *lsb = sbi->s_lsb;
-   struct luci_group_desc *gdesc = NULL;
-   struct buffer_head *bh_block = NULL, *bh_desc = NULL;
-
-   BUG_ON(block == 0);
-   block_group = (block - 1) / sbi->s_blocks_per_group;
-   bitpos = block - (block_group * sbi->s_blocks_per_group);
-
-   luci_dbg("Freeing block %lu in block group :%u", block, block_group);
-
-   bh_block = read_block_bitmap(sb, block_group);
-   if (!bh_block) {
-      luci_err("Free block :%lu failed. Error reading block "
-         "bitmap for group :%u", block, block_group);
-      return -EIO;
-   }
-   if (!(__test_and_clear_bit_le(bitpos, bh_block->b_data))) {
-      luci_err("Free block :%lu failed."
-         "block marked not in use! : blockbit :%u", block, bitpos);
-      return -EIO;
-   }
-   mark_buffer_dirty(bh_block);
-   brelse(bh_block);
-
-   gdesc = luci_get_group_desc(sb, block_group, &bh_desc);
-   if (!gdesc) {
-      luci_err("Free block :%lu failed. Error reading group "
-         "descriptor table for group :%u", block, block_group);
-      return -EIO;
-   }
-   le16_add_cpu(&gdesc->bg_free_blocks_count, 1);
-   percpu_counter_add(&sbi->s_freeblocks_counter, 1);
-   lsb->s_free_blocks_count++;
-   if (S_ISDIR(inode->i_mode)) {
-      le16_add_cpu(&gdesc->bg_used_dirs_count, -1);
-      percpu_counter_dec(&sbi->s_dirs_counter);
-   }
-
-   mark_buffer_dirty(bh_desc);
-   inode->i_blocks -= luci_sectors_per_block(inode);
-   mark_inode_dirty(inode);
-   // Cannot release group descriptor buffer head
-   // brelse(bh_desc);
-   return 0;
-}
-
 /*
  *  Tree walk to free the leaf block
  *
@@ -379,7 +325,11 @@ luci_evict_inode(struct inode * inode)
    }
 
    // invalidate the radix tree in page-cache
+#ifdef HAVE_TRUNCATEPAGES_FINAL
    truncate_inode_pages_final(&inode->i_data);
+#else
+   truncate_inode_pages(&inode->i_data, 0);
+#endif
    // walk internal and leaf blocks, free, update block-bitmap
    if (!inode->i_nlink && inode->i_size) {
       inode->i_size = 0;
@@ -420,8 +370,9 @@ luci_statfs(struct dentry *dentry, struct kstatfs *buf)
 static void
 init_once(void *foo)
 {
-    struct luci_inode_info *ei = (struct luci_inode_info *) foo;
-    inode_init_once(&ei->vfs_inode);
+    struct luci_inode_info *li = (struct luci_inode_info *) foo;
+    rwlock_init(&li->i_meta_lock);
+    inode_init_once(&li->vfs_inode);
 }
 
 static int
