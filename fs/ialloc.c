@@ -25,7 +25,7 @@ luci_alloc_bitmap(unsigned long *addr, unsigned int nr_bits,
 
     ktime_t start = ktime_get();
 
-    if (nr_bits > (1 << BYTE_BITS)) {
+    if (nr_bits > (1 << BYTE_SHIFT)) {
         luci_err("request for more bits than possible in a byte range");
         BUG();
     }
@@ -43,12 +43,12 @@ luci_alloc_bitmap(unsigned long *addr, unsigned int nr_bits,
                goto fail;
            }
            // translate bitpos to a byte nr
-           byte_nr = start_bit >> BYTE_BITS;
+           byte_nr = start_bit >> BYTE_SHIFT;
            // falls in a byte nr, so that CAS works
-           if (byte_nr == (end_bit >> BYTE_BITS)) {
+           if (byte_nr == (end_bit >> BYTE_SHIFT)) {
                // prepare mask for CAS
                u8 mask = 0, val, old;
-               unsigned int i = byte_nr << BYTE_BITS, lbit = i;
+               unsigned int i = byte_nr << BYTE_SHIFT, lbit = i;
                while (i <= end_bit) {
                    if (i >= start_bit) mask |=  1 << (i - lbit);
                    i++;
@@ -434,7 +434,7 @@ fail:
    return err;
 }
 
-// Use to free both leaf and internal blocks
+// Use to free both leaf and internal
 int
 luci_free_block(struct inode *inode, unsigned long block)
 {
@@ -446,11 +446,17 @@ luci_free_block(struct inode *inode, unsigned long block)
    struct luci_group_desc *gdesc = NULL;
    struct buffer_head *bh_block = NULL, *bh_desc = NULL;
 
-   BUG_ON(block == 0);
-   block_group = (block - 1) / sbi->s_blocks_per_group;
-   bitpos = block - (block_group * sbi->s_blocks_per_group);
+   luci_dbg("block :%lu", block);
 
-   luci_dbg("Freeing block %lu in block group :%u", block, block_group);
+   BUG_ON(block <= le32_to_cpu(lsb->s_first_data_block));
+   block_group = (block - le32_to_cpu(lsb->s_first_data_block)) /
+       sbi->s_blocks_per_group;
+   BUG_ON(block_group > sbi->s_groups_count);
+   bitpos = (block - le32_to_cpu(lsb->s_first_data_block)) %
+       sbi->s_blocks_per_group;
+
+   luci_dbg("freeing block %lu in block group :%u bitpos :%u",
+       block, block_group, bitpos);
 
    bh_block = read_block_bitmap(sb, block_group);
    if (!bh_block) {
@@ -459,8 +465,9 @@ luci_free_block(struct inode *inode, unsigned long block)
       return -EIO;
    }
    if (!(__test_and_clear_bit_le(bitpos, bh_block->b_data))) {
-      luci_err("Free block :%lu failed."
-         "block marked not in use! : blockbit :%u", block, bitpos);
+      luci_err("Free block :%lu failed, group :%u."
+         "block marked not in use! : blockbit :%u", block, block_group,
+         bitpos);
       return -EIO;
    }
    mark_buffer_dirty(bh_block);

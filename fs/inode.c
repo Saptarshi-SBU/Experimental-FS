@@ -14,8 +14,9 @@
 #include <linux/mpage.h>
 #include <linux/delay.h>
 #include <linux/ktime.h>
-#include "luci.h"
 #include "kern_feature.h"
+#include "luci.h"
+#include "compression.h"
 
 static int
 luci_setsize(struct inode *inode, loff_t newsize)
@@ -248,14 +249,16 @@ alloc_branch(struct inode *inode,
     unsigned long curr_block;
     struct buffer_head *prevbh = NULL, *currbh = NULL;
 
-    BUG_ON(nr == 0);
+    if (nr == 0) {
+        luci_dbg_inode(inode, "deferring leaf block allocation %lu", i_block);
+        return 0;
+    }
     BUG_ON(branch[0].key);
 
     luci_dbg_inode(inode, "allocating nr blocks :%d", nr);
     // Walk block table for allocating indirect block entries
     for (i = 0; i < nr; i++) {
-        bool root = (i == 0) ? true : false;
-        if (!root) {
+        if (i > 0) {
             BUG_ON(currbh == NULL);
             prevbh = currbh;
         }
@@ -367,7 +370,6 @@ luci_get_block(struct inode *inode, sector_t iblock,
     Indirect *partial;
     long ipaths[LUCI_MAX_DEPTH];
     Indirect ichain[LUCI_MAX_DEPTH];
-    ktime_t start;
 
     luci_dbg("Fetch block for inode :%lu, i_block :%lu "
       "create :%s", inode->i_ino, iblock, create ? "alloc" : "noalloc");
@@ -383,12 +385,6 @@ luci_get_block(struct inode *inode, sector_t iblock,
         return -EIO;
     }
 
-    partial = luci_get_branch(inode, depth, ipaths, ichain, &err);
-    if (err < 0) {
-        luci_err_inode(inode, "error reading block to path :%u", err);
-        return err;
-    }
-
     //Buffer forms the boundary of contiguous blocks the next block is
     //discontinuous (BH_Boundary). We need a new meta data block for fetching
     //the next leaf block.
@@ -396,7 +392,22 @@ luci_get_block(struct inode *inode, sector_t iblock,
         set_buffer_boundary(bh_result);
     }
 
+    partial = luci_get_branch(inode, depth, ipaths, ichain, &err);
+    if (err < 0) {
+        luci_err_inode(inode, "error reading block to path :%u", err);
+        return err;
+    }
+
     if (!partial) {
+insert:
+        if (S_ISREG(inode->i_mode) &&
+           ((create & COMPR_BLK_INSERT) || (create & COMPR_BLK_UPDATE))) {
+            BUG_ON(bh_result == NULL);
+            *ichain[depth - 1].p = bh_result->b_blocknr;
+            luci_dbg_inode(inode, "iblock :%lu data block :%lu", iblock,
+                bh_result->b_blocknr);
+             return 0;
+        }
 gotit:
         block_no = ichain[depth - 1].key;
         if (bh_result) {
@@ -406,27 +417,28 @@ gotit:
            ichain[0].key, ichain[1].key, ichain[2].key, ichain[3].key);
         err = 0;
     } else {
-        // Fix: We ignore create flag for dealing with holes.
-        // Since disk images are sparse files, although we do not
-        // not create blocks when copying the file, but on VM startup
-        // do makes request to fetch the holes. This trigerred a no
-        // key found error in the indirect indexes and an error. So
-        // we allocate the block if it is not present even on a fetch
-        // request.
         if (create) {
+            bool allocLeaf = true;
             luci_dbg_inode(inode, "get block allocating i_block :%lu", iblock);
             nr_blocks = (ichain + depth) - partial;
-            start = ktime_get();
+#ifdef LUCIFS_COMPRESSION
+            // Allocate metadata only, no L0 block allocated
+            if (S_ISREG(inode->i_mode)) {
+                BUG_ON(nr_blocks == 0);
+                nr_blocks -= 1;
+                allocLeaf = false;
+            }
+#endif
             err = alloc_branch(inode, iblock, nr_blocks,
                 ipaths + (partial - ichain), partial);
-            if (!err) {
-                // note inode is still not updated
-                luci_inode_latency(inode, "i_block %lu allocation latency "
-                    ":%llu(usecs)", iblock, ktime_us_delta(ktime_get(), start));
+            if (err) {
+                luci_err_inode(inode, "block allocation failed i_block :%lu "
+                    "err :%d", iblock, err);
+            } else if (allocLeaf) {
                 goto gotit;
+            } else if (create & COMPR_BLK_INSERT) {
+                goto insert;
             }
-            luci_err_inode(inode, "block allocation failed i_block :%lu err :%d",
-                iblock, err);
         } else {
             // We have a hole. mpage API identifies a hole if bh is not mapped.
             // So we are fine even if we do not have an block created for a hole.
@@ -434,6 +446,45 @@ gotit:
         }
     }
     return err;
+}
+
+unsigned long
+luci_find_leaf_block(struct inode * inode, unsigned long i_block)
+{
+    int ret;
+    unsigned long leaf;
+    struct buffer_head bh;
+
+    memset((char*)&bh, 0, sizeof(struct buffer_head));
+    ret = luci_get_block(inode, i_block, &bh, 0);
+    if (ret < 0) {
+        luci_err_inode(inode, "error get leaf block : %lu", i_block);
+        BUG();
+    }
+    if (buffer_mapped(&bh)) {
+        leaf = bh.b_blocknr;
+    } else {
+        leaf  = 0; // a hole
+    }
+    return leaf;
+}
+
+int
+luci_insert_leaf_block(struct inode * inode, unsigned long i_block,
+    unsigned long block)
+{
+    int ret;
+    struct buffer_head bh;
+
+    memset((char*)&bh, 0, sizeof(struct buffer_head));
+    bh.b_blocknr = block;
+
+    ret = luci_get_block(inode, i_block, &bh, COMPR_BLK_UPDATE | COMPR_BLK_INSERT);
+    if (ret < 0) {
+        luci_err_inode(inode, "error inserting leaf i_block : %lu", i_block);
+        return ret;
+    }
+    return 0;
 }
 
 struct inode *
@@ -1035,6 +1086,12 @@ luci_rename(struct inode * old_dir, struct dentry *old_dentry,
 static int
 luci_writepage(struct page *page, struct writeback_control *wbc)
 {
+#ifdef LUCIFS_COMPRESSION
+    struct inode * inode = page->mapping->host;
+    if (S_ISREG(inode->i_mode)) {
+        return luci_write_compressed(page, wbc);
+    }
+#endif
     return block_write_full_page(page, luci_get_block, wbc);
 }
 

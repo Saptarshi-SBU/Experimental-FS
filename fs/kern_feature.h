@@ -8,6 +8,10 @@
 
 #ifdef LINUX_VERSION_CODE
 
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3,12,0))
+    #define HAVE_BIO_ITER
+#endif
+
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3,16,0))
     #include <linux/hrtimer.h>
     #define HAVE_IOV_ITER
@@ -27,6 +31,7 @@
 #else
     #include <linux/dcache.h>
     #define DENTRY_INODE(dentry) (d_inode(dentry))
+    #define NEW_BIO_SUBMIT
 #endif
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4,2,0))

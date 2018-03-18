@@ -566,7 +566,19 @@ extern debugfs_t dbgfsparam;
                              __func__, inode->i_ino, ## a); \
                     }
 
-#define BYTE_BITS 3
+#define BYTE_SHIFT 3
+
+#define SECTOR_SHIFT 9
+
+#define SECTOR_SIZE (1 << SECTOR_SHIFT)
+
+static inline unsigned long
+sector_align(unsigned long n)
+{
+    sector_t nsec = (n + SECTOR_SIZE - 1)/SECTOR_SIZE;
+    return (long)nsec << SECTOR_SHIFT;
+}
+
 
 typedef struct {
    __le32 *p; // block entry
@@ -594,20 +606,24 @@ unsigned luci_chunk_size(struct inode *inode);
 unsigned luci_sectors_per_block(struct inode *inode);
 int luci_empty_dir(struct inode *dir);
 
-struct page *
-luci_get_page(struct inode *dir, unsigned long n);
+struct page * luci_get_page(struct inode *dir, unsigned long n);
 void luci_put_page(struct page *page);
-unsigned
-luci_last_byte(struct inode *inode, unsigned long page_nr);
-int
-luci_match (int len, const char * const name, struct luci_dir_entry_2 * de);
+unsigned luci_last_byte(struct inode *inode, unsigned long page_nr);
+int luci_match (int len, const char * const name, struct luci_dir_entry_2 * de);
 int luci_prepare_chunk(struct page *page, loff_t pos, unsigned len);
 int luci_commit_chunk(struct page *page, loff_t pos, unsigned len);
 
 /* inode.c */
+#define COMPR_CREATE_ALLOC  0x01
+#define COMPR_BLK_UPDATE    0x02
+#define COMPR_BLK_INSERT    0x04
+
 extern struct inode *luci_iget (struct super_block *, unsigned long);
 extern int luci_get_block(struct inode *, sector_t, struct buffer_head *, int);
 extern int luci_dump_layout(struct inode * inode);
+unsigned long luci_find_leaf_block(struct inode * inode, unsigned long i_block);
+int luci_insert_leaf_block(struct inode * inode, unsigned long i_block,
+    unsigned long block);
 
 /* ialloc.c */
 extern struct buffer_head *

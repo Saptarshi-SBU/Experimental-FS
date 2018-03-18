@@ -18,8 +18,9 @@
 #include <linux/string.h>
 #include <linux/parser.h>
 #include <linux/debugfs.h>
-#include "luci.h"
 #include "kern_feature.h"
+#include "luci.h"
+#include "compression.h"
 
 MODULE_AUTHOR("Saptarshi.S");
 MODULE_ALIAS_FS("luci");
@@ -944,9 +945,11 @@ __init init_luci_fs(void)
     if (err)
         return err;
 
+    init_luci_compress();
+
     err = register_filesystem(&luci_fs);
     if (err)
-        goto failed;
+        goto failed_compr;
 
     err = init_debugfs();
     if (err)
@@ -955,10 +958,11 @@ __init init_luci_fs(void)
     luci_dbg("LUCI FS loaded");
     return 0;
 
-failed:
-    destroy_inodecache();
 failed_debugfs:
     unregister_filesystem(&luci_fs);
+failed_compr:
+    exit_luci_compress();
+    destroy_inodecache();
     return err;
 }
 
@@ -967,6 +971,7 @@ __exit exit_luci_fs(void)
 {
     exit_debugfs();
     unregister_filesystem(&luci_fs);
+    exit_luci_compress();
     destroy_inodecache();
 }
 
