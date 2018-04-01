@@ -2,7 +2,6 @@
 #define __LUCI_COMPRESSION_
 
 #include <linux/pagemap.h>
-#include <linux/buffer_head.h>
 
 #include "kern_feature.h"
 
@@ -11,19 +10,6 @@ typedef enum luci_compression_type {
 	LUCI_COMPRESS_ZLIB  = 1,
 	LUCI_COMPRESS_TYPES = 1,
 }luci_comp_type;
-
-void init_luci_compress(void);
-
-void exit_luci_compress(void);
-
-struct list_head *find_workspace(int type);
-
-void free_workspace(int type, struct list_head *workspace);
-
-int luci_write_compressed(struct page * page, struct writeback_control *wbc);
-
-int luci_submit_compressed_read(struct inode *inode, struct bio *bio,
-                                int mirror_num, unsigned long bio_flags);
 
 struct luci_compress_op {
     struct list_head *(*alloc_workspace)(void);
@@ -89,17 +75,35 @@ struct luci_compress_op {
 
 extern const struct luci_compress_op luci_zlib_compress;
 
-/* utility functions */
+int luci_write_compressed_begin(struct address_space *mapping,
+    loff_t pos, unsigned len, unsigned flags, struct page **pagep);
+
+int luci_write_compressed_end(struct address_space *mapping,
+    loff_t pos, unsigned len, unsigned flags, struct page *pagep);
+
+int luci_writepage_compressed(struct page *page, struct writeback_control *wbc);
+
+int luci_writepages_compressed(struct address_space *mapping,
+    struct writeback_control *wbc);
+
+int luci_write_compressed(struct page * page, struct writeback_control *wbc);
+
+int luci_submit_compressed_read(struct inode *inode, struct bio *bio,
+    int mirror_num, unsigned long bio_flags);
+
 int luci_util_decompress_buf2page(char *buf, unsigned long buf_start,
-                                  unsigned long total_out, u64 disk_start,
-                                  struct bio_vec *bvec, int vcnt,
-                                  unsigned long *pg_index,
-                                  unsigned long *pg_offset);
+    unsigned long total_out, u64 disk_start, struct bio_vec *bvec, int vcnt,
+    unsigned long *pg_index, unsigned long *pg_offset);
 
 void luci_util_clear_biovec_end(struct bio_vec *bvec, int vcnt,
-                                unsigned long pg_index, unsigned long pg_offset);
+    unsigned long pg_index, unsigned long pg_offset);
 
-#define LUCI_COMPRESS_RESULT(extent, i_block, total_in, total_out) \
-    luci_dbg("compress result : extent %u iblock %lu in %lu out %lu", extent, \
-            i_block, total_in, total_out);
+struct list_head *find_workspace(int type);
+
+void free_workspace(int type, struct list_head *workspace);
+
+void init_luci_compress(void);
+
+void exit_luci_compress(void);
+
 #endif

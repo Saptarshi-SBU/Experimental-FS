@@ -1,0 +1,5 @@
+truncate -s 512M /tmp/my_fs
+losetup /dev/loop0 /tmp/my_fs
+mkfs.ext2 -b 4096 /dev/loop0
+echo 1 > /sys/kernel/debug/luci/debug
+mount -t luci /dev/loop0 /mnt

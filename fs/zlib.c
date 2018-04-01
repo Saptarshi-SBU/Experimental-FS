@@ -96,17 +96,17 @@ int zlib_compress_pages(struct list_head *ws,
 	int nr_pages = 0;
 	struct page *in_page = NULL;
 	struct page *out_page = NULL;
-        unsigned long bytes_left;
-        unsigned long len = *total_out;
+    unsigned long bytes_left;
+    unsigned long len = *total_out;
 	unsigned long nr_dest_pages = *out_pages;
-        const unsigned long max_out = nr_dest_pages * PAGE_SIZE;
+    const unsigned long max_out = nr_dest_pages * PAGE_SIZE;
 
 	*out_pages = 0;
 	*total_out = 0;
 	*total_in = 0;
 
 	if (Z_OK != zlib_deflateInit(&workspace->strm, 3)) {
-		printk(KERN_WARNING "BTRFS: deflateInit failed\n");
+		printk(KERN_ERR "BTRFS: deflateInit failed\n");
 		ret = -EIO;
 		goto out;
 	}
@@ -115,13 +115,13 @@ int zlib_compress_pages(struct list_head *ws,
 	workspace->strm.total_out = 0;
 
 	in_page = find_get_page(mapping, start >> PAGE_SHIFT);
-        // Fixed
-        if (in_page == NULL) {
-            printk(KERN_ERR "start page not found in page cache, :%llu",
-                start >> PAGE_SHIFT);
-            ret = -EAGAIN;
-            goto out;
-        }
+    // Fixed
+    if (in_page == NULL) {
+        printk(KERN_ERR "start page not found in page cache, :%llu",
+            start >> PAGE_SHIFT);
+        ret = -EAGAIN;
+        goto out;
+    }
 	data_in = kmap(in_page);
 
 	out_page = alloc_page(GFP_NOFS | __GFP_HIGHMEM);
@@ -141,7 +141,7 @@ int zlib_compress_pages(struct list_head *ws,
 	while (workspace->strm.total_in < len) {
 		ret = zlib_deflate(&workspace->strm, Z_SYNC_FLUSH);
 		if (ret != Z_OK) {
-			printk(KERN_DEBUG "BTRFS: deflate in loop returned %d\n",
+			printk(KERN_ERR "BTRFS: deflate in loop returned %d\n",
 			       ret);
 			zlib_deflateEnd(&workspace->strm);
 			ret = -EIO;
@@ -162,11 +162,11 @@ int zlib_compress_pages(struct list_head *ws,
 		if (workspace->strm.avail_out == 0) {
 			kunmap(out_page);
 			if (nr_pages == nr_dest_pages) {
-                            printk(KERN_INFO "compression failed, cannot "
-                                "accomodate in alloted pages %d(%ld)", nr_pages,
-                                nr_dest_pages);
+                 printk(KERN_INFO "compression failed, cannot "
+                     "accomodate in alloted pages %d(%ld)", nr_pages,
+                     nr_dest_pages);
 			    out_page = NULL;
-		            ret = -E2BIG;
+		        ret = -E2BIG;
 			    goto out;
 			}
 			out_page = alloc_page(GFP_NOFS | __GFP_HIGHMEM);
@@ -186,24 +186,26 @@ int zlib_compress_pages(struct list_head *ws,
 
 		/* we've read in a full page, get a new one */
 		if (workspace->strm.avail_in == 0) {
-			if (workspace->strm.total_out > max_out)
-				break;
+			if (workspace->strm.total_out > max_out) {
+                printk(KERN_ERR "deflate exceeded limits");
+				ret = -E2BIG;
+				goto out;
+		    }
 
 			bytes_left = len - workspace->strm.total_in;
-                        BUG_ON(bytes_left == 0);
+            BUG_ON(bytes_left == 0);
 			kunmap(in_page);
 			put_page(in_page);
 
 			start += PAGE_SIZE;
-			in_page = find_get_page(mapping,
-						start >> PAGE_SHIFT);
-                        // Fixed
-                        if (in_page == NULL) {
-                            printk(KERN_ERR "next page not found in page "
-                                "cache, :%llu", start >> PAGE_SHIFT);
-                            ret = -EAGAIN;
-                            goto out;
-                        }
+			in_page = find_get_page(mapping, start >> PAGE_SHIFT);
+            // Fixed
+            if (in_page == NULL) {
+                printk(KERN_ERR "next page not found in page cache, :%llu",
+                    start >> PAGE_SHIFT);
+                ret = -EAGAIN;
+				goto out;
+            }
 
 			data_in = kmap(in_page);
 			workspace->strm.avail_in = min(bytes_left, PAGE_SIZE);
@@ -212,18 +214,27 @@ int zlib_compress_pages(struct list_head *ws,
 	}
 	workspace->strm.avail_in = 0;
 	ret = zlib_deflate(&workspace->strm, Z_FINISH);
-	zlib_deflateEnd(&workspace->strm);
-
+    // We may have pending output
 	if (ret != Z_STREAM_END) {
-		ret = -EIO;
-		goto out;
+        printk(KERN_ERR "deflate failed to complete, status %d(%lu-%lu)", ret,
+            workspace->strm.total_in, workspace->strm.total_out);
+		ret = -E2BIG;
+        goto out;
 	}
 
+	ret = zlib_deflateEnd(&workspace->strm);
+    if (ret != Z_OK) {
+        printk(KERN_ERR "deflate cleanup error, status %d(%lu-%lu)", ret,
+            workspace->strm.total_in, workspace->strm.total_out);
+		ret = -EIO;
+		goto out;
+    }
+
 	if (workspace->strm.total_out >= workspace->strm.total_in) {
-            printk(KERN_ERR "compression failed, out bytes exceeed in :%lu",
-                workspace->strm.total_out);
-            ret = -E2BIG;
-            goto out;
+        printk(KERN_ERR "compression failed, out bytes exceeed in :%lu",
+            workspace->strm.total_out);
+        ret = -E2BIG;
+        goto out;
 	}
 
 	ret = 0;

@@ -88,10 +88,10 @@ int luci_mmap (struct file * file, struct vm_area_struct *vma) {
 
 const struct file_operations luci_file_operations = {
         .llseek         = luci_llseek,
-#ifdef HAVE_NEW_SYNC_WRITE
+#if defined(HAVE_NEW_SYNC_WRITE)
         .read           = luci_read,
         .write          = luci_write,
-#else
+#elif defined(HAVE_DO_SYNC_WRITE)
         .read           = do_sync_read,
         .write          = do_sync_write,
 #endif

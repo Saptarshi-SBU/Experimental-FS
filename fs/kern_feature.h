@@ -15,6 +15,8 @@
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3,16,0))
     #include <linux/hrtimer.h>
     #define HAVE_IOV_ITER
+    #define HAVE_DO_SYNC_WRITE
+    #define HAVE_DO_SYNC_READ
 #else
     #include <linux/timekeeping.h>
     #define HAVE_NEW_SYNC_WRITE
@@ -55,6 +57,12 @@
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,8))
     #define HAVE_NEW_GETATTR
     #define HAVE_NEW_RENAME
+    #define HAVE_NEW_BIO_END
+    #define BIO_UPTODATE 0
+    #define PAGE_CACHE_SIZE PAGE_SIZE
+    #define PAGE_CACHE_SHIFT PAGE_SHIFT
+    #undef HAVE_NEW_SYNC_WRITE
+    #undef HAVE_NEW_SYNC_READ
 #endif
 
 #endif // LINUX_VERSION_CODE

@@ -249,6 +249,7 @@ alloc_branch(struct inode *inode,
              unsigned long leaf_block)
 {
     int ret, i = 0;
+    bool end = false;
     unsigned long curr_block;
     struct buffer_head *prevbh = NULL, *currbh = NULL;
 
@@ -264,6 +265,7 @@ alloc_branch(struct inode *inode,
 
         if ((i == nr - 1) && leaf_block) {
             curr_block = leaf_block;
+            end = true;
         } else {
             ret = luci_new_block(inode, 1, &curr_block);
             if (ret < 0) {
@@ -299,14 +301,21 @@ alloc_branch(struct inode *inode,
             luci_dbg_inode(inode, "iblock :%lu root block :%u offset :%lu",
                 i_block, branch[i].key, offsets[i]);
         }
-
+#ifdef LUCIFS_COMPRESSION
+        // Fix:We need not allocate buffer head for l0 block. Since we do not
+        // issue do buffer-head based read/writes in compression path.
+        // allocating and not submitting bh was causing slab objects to swell
+        // and system would be really low on memory on a few large copies
+        if (end) {
+            break;
+        }
+#endif
         if ((currbh = sb_getblk(inode->i_sb, curr_block)) == NULL) {
             ret = -EIO;
             luci_err_inode(inode, "block read fail %lu iblock %lu",
                     curr_block, i_block);
             goto fail;
         }
-
         //clear the newly allocated block
         lock_buffer(currbh);
         memset(currbh->b_data, 0, currbh->b_size);
@@ -314,6 +323,14 @@ alloc_branch(struct inode *inode,
         unlock_buffer(currbh);
         //mark_buffer_dirty_inode(currbh, inode);
     }
+
+#ifdef LUCIFS_COMPRESSION
+    //Fix: We leaked the last bh for the l0 block.
+    //Since the leaf bh is not contained in the chain.
+    if (currbh != NULL) {
+        brelse(currbh);
+    }
+#endif
     return 0;
 fail:
     luci_err_inode(inode, "failed alloc path branch iblock %lu(%d)", i_block, i);
@@ -342,8 +359,7 @@ luci_get_branch(struct inode *inode,
     i++;
     while (i < depth) {
         if ((bh = sb_bread(sb, p->key)) == NULL)  {
-            luci_err_inode(inode, "failed block walk path for inode "
-	       "ipath[%d] %d read failed", i, p->key);
+            luci_err_inode(inode, "metadata read error ipath[%d]%d", i, p->key);
             goto failure;
         }
         add_chain(++p, bh, (__le32 *)bh->b_data + *++ipaths);
@@ -1110,11 +1126,44 @@ luci_writepage(struct page *page, struct writeback_control *wbc)
 #ifdef LUCIFS_COMPRESSION
     struct inode * inode = page->mapping->host;
     if (S_ISREG(inode->i_mode)) {
-        return luci_write_compressed(page, wbc);
+        ret = luci_writepage_compressed(page, wbc);
+        goto done;
     }
 #endif
-    return block_write_full_page(page, luci_get_block, wbc);
+    ret = block_write_full_page(page, luci_get_block, wbc);
+done:
+    return ret;
 }
+
+// Wrapper over luci_writepage for write cache pages
+static int __luci_write_page(struct page *page, struct writeback_control *wbc,
+    void *data)
+{
+    int ret;
+    struct address_space *mapping = data;
+    ret = luci_writepage(page, wbc);
+    BUG_ON(page->mapping != mapping);
+    mapping_set_error(mapping, ret);
+    return ret;
+}
+
+#ifdef LUCIFS_COMPRESSION
+static int
+luci_writepages(struct address_space *mapping, struct writeback_control *wbc)
+{
+    int ret;
+    struct blk_plug plug;
+
+    blk_start_plug(&plug);
+    if (S_ISREG(mapping->host->i_mode)) {
+        ret = luci_writepages_compressed(mapping, wbc);
+    } else {
+        ret = write_cache_pages(mapping, wbc, __luci_write_page, mapping);
+    }
+    blk_finish_plug(&plug);
+    return ret;
+}
+#endif
 
 static int
 luci_write_begin(struct file *file, struct address_space *mapping,
@@ -1122,10 +1171,17 @@ luci_write_begin(struct file *file, struct address_space *mapping,
     struct page **pagep, void **fsdata)
 {
     int ret;
-    ret = block_write_begin(mapping, pos, len, flags, pagep,
-       luci_get_block);
+    struct inode *inode = file->f_inode;
+#ifdef LUCIFS_COMPRESSION
+    if (S_ISREG(inode->i_mode)) {
+        ret = luci_write_compressed_begin(mapping, pos, len, flags, pagep);
+        goto done;
+    }
+#endif
+    ret = block_write_begin(mapping, pos, len, flags, pagep, luci_get_block);
+done:
     if (ret < 0) {
-       luci_err("failed with %d", ret);
+        luci_err_inode(inode, "failed with %d", ret);
     }
     return ret;
 }
@@ -1136,9 +1192,17 @@ luci_write_end(struct file *file, struct address_space *mapping,
     struct page *page, void *fsdata)
 {
     int ret;
+    struct inode *inode = file->f_inode;
+#ifdef LUCIFS_COMPRESSION
+    if (S_ISREG(inode->i_mode)) {
+        ret = luci_write_compressed_end(mapping, pos, len, 0, page);
+        goto done;
+    }
+#endif
     ret = generic_write_end(file, mapping, pos, len, copied, page, fsdata);
+done:
     if (ret < 0) {
-       luci_err("failed with %d", ret);
+        luci_err_inode(inode, "failed with %d", ret);
     }
     return ret;
 }
@@ -1207,6 +1271,9 @@ const struct inode_operations luci_dir_inode_operations = {
 const struct address_space_operations luci_aops = {
     .readpage       = luci_readpage,
     .writepage      = luci_writepage,
+#ifdef LUCIFS_COMPRESSION
+    .writepages     = luci_writepages,
+#endif
     .write_begin    = luci_write_begin,
     .write_end      = luci_write_end,
 };
