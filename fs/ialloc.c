@@ -347,20 +347,25 @@ luci_new_block(struct inode *inode, unsigned int nr_blocks,
      unsigned long *start_block)
 {
    int err = 0;
-   unsigned long block, block_group, gp;
+   unsigned long block, gp;
    struct super_block *sb;
    struct luci_sb_info *sbi;
    struct luci_inode_info *li;
    struct luci_group_desc *gdb = NULL;
    struct luci_super_block *lsb = NULL;
    struct buffer_head *bh = NULL, *bitmap_bh = NULL;
+   static unsigned long block_group = 0;
 
    sb = inode->i_sb;
    sbi = LUCI_SB(sb);
    li = LUCI_I(inode);
    read_lock(&li->i_meta_lock);
-   block_group = li->i_active_block_group;
+   if (block_group != 0) {
+       block_group = li->i_active_block_group;
+   }
    read_unlock(&li->i_meta_lock);
+   luci_dbg_inode(inode, "active block gp :%lu(%u)", block_group,
+       li->i_block_group);
    for (gp = 0; gp < sbi->s_groups_count;
       block_group = (block_group + 1) % sbi->s_groups_count, gp++) {
       gdb = luci_get_group_desc(sb, block_group, &bh);
