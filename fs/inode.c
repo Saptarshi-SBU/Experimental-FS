@@ -9,6 +9,7 @@
 #include <linux/buffer_head.h>
 #include <linux/version.h>
 #include <linux/writeback.h>
+#include <linux/blkdev.h>
 #include <linux/dcache.h>
 #include <linux/path.h>
 #include <linux/mpage.h>
@@ -177,19 +178,20 @@ luci_block_to_path(struct inode *inode,
 {
     int n = 0;
     int final = 0;
+    const long file_block = i_block;
     const long nr_direct = LUCI_NDIR_BLOCKS;
     const long nr_indirect = LUCI_ADDR_PER_BLOCK(inode->i_sb);
     const long nr_dindirect = (1 << (LUCI_ADDR_PER_BLOCK_BITS(inode->i_sb) * 2));
 
     if (i_block < 0) {
-        luci_err_inode(inode, "warning invalid i_block :%ld", i_block);
+        luci_err_inode(inode, "warning invalid i_block :%ld", file_block);
         return -EINVAL;
     }
 
     if (i_block < nr_direct) {
         path[n++] = i_block;
         final = nr_direct;
-        luci_dbg("block %ld maps to a direct block", i_block);
+        luci_dbg("block %ld maps to a direct block", file_block);
         goto done;
     }
 
@@ -198,7 +200,7 @@ luci_block_to_path(struct inode *inode,
         path[n++] = LUCI_IND_BLOCK;
         path[n++] = i_block;
         final = nr_indirect;
-        luci_dbg("block %ld maps to an indirect block\n", i_block);
+        luci_dbg("block %ld maps to an indirect block\n", file_block);
         goto done;
     }
 
@@ -211,7 +213,7 @@ luci_block_to_path(struct inode *inode,
         path[n++] = i_block >> LUCI_ADDR_PER_BLOCK_BITS(inode->i_sb);
         path[n++] = i_block & (LUCI_ADDR_PER_BLOCK(inode->i_sb) - 1);
         final = nr_indirect;
-        luci_dbg("block %ld maps to a double indirect block\n", i_block);
+        luci_dbg("block %ld maps to a double indirect block\n", file_block);
         goto done;
     }
 
@@ -224,7 +226,7 @@ luci_block_to_path(struct inode *inode,
             (LUCI_ADDR_PER_BLOCK(inode->i_sb) - 1);
         path[n++] = i_block & (LUCI_ADDR_PER_BLOCK(inode->i_sb) - 1);
         final = nr_indirect;
-        luci_dbg("block %ld maps to a triple indirect block\n", i_block);
+        luci_dbg("block %ld maps to a triple indirect block\n", file_block);
         goto done;
     }
 
@@ -233,8 +235,8 @@ done:
     if (blocks_to_boundary) {
         *blocks_to_boundary = final - path[n - 1];
     }
-    luci_dbg_inode(inode,"i_block :%lu n:%d indexes :%ld :%ld :%ld :%ld", i_block,
-       n, path[0], path[1], path[2], path[3]);
+    luci_dbg_inode(inode,"i_block :%lu n:%d indexes :%ld :%ld :%ld :%ld",
+       file_block, n, path[0], path[1], path[2], path[3]);
     return n;
 }
 
@@ -243,7 +245,8 @@ alloc_branch(struct inode *inode,
              unsigned long i_block,
              int nr,
              long int *offsets,
-             Indirect *branch)
+             Indirect *branch,
+             unsigned long leaf_block)
 {
     int ret, i = 0;
     unsigned long curr_block;
@@ -258,29 +261,23 @@ alloc_branch(struct inode *inode,
     luci_dbg_inode(inode, "allocating nr blocks :%d", nr);
     // Walk block table for allocating indirect block entries
     for (i = 0; i < nr; i++) {
+
+        if ((i == nr - 1) && leaf_block) {
+            curr_block = leaf_block;
+        } else {
+            ret = luci_new_block(inode, 1, &curr_block);
+            if (ret < 0) {
+                luci_err_inode(inode, "block allocation failed iblock %lu",
+                        i_block);
+                goto fail;
+            }
+        }
+
         if (i > 0) {
             BUG_ON(currbh == NULL);
             prevbh = currbh;
+            currbh = NULL;
         }
-
-        ret = luci_new_block(inode, 1, &curr_block);
-        if (ret < 0) {
-           luci_err_inode(inode, "block allocation failed iblock %lu", i_block);
-           goto fail;
-        }
-
-        if ((currbh = sb_getblk(inode->i_sb, curr_block)) == NULL) {
-            ret = -EIO;
-            luci_err_inode(inode, "block read fail %lu iblock %lu",
-                    curr_block, i_block);
-            goto fail;
-        }
-
-        //clear the newly allocated block
-        lock_buffer(currbh);
-        memset(currbh->b_data, 0, currbh->b_size);
-        set_buffer_uptodate(currbh);
-        unlock_buffer(currbh);
 
         if (prevbh) {
             lock_buffer(prevbh);
@@ -302,7 +299,20 @@ alloc_branch(struct inode *inode,
             luci_dbg_inode(inode, "iblock :%lu root block :%u offset :%lu",
                 i_block, branch[i].key, offsets[i]);
         }
-        //brelse(bh);
+
+        if ((currbh = sb_getblk(inode->i_sb, curr_block)) == NULL) {
+            ret = -EIO;
+            luci_err_inode(inode, "block read fail %lu iblock %lu",
+                    curr_block, i_block);
+            goto fail;
+        }
+
+        //clear the newly allocated block
+        lock_buffer(currbh);
+        memset(currbh->b_data, 0, currbh->b_size);
+        set_buffer_uptodate(currbh);
+        unlock_buffer(currbh);
+        //mark_buffer_dirty_inode(currbh, inode);
     }
     return 0;
 fail:
@@ -328,6 +338,7 @@ luci_get_branch(struct inode *inode,
         luci_dbg_inode(inode, "root chain :ipath :%ld :%p", *ipaths, p->p);
         goto no_block;
     }
+    luci_dbg_inode(inode, "block walk path ipath[%d] %d", i, p->key);
     i++;
     while (i < depth) {
         if ((bh = sb_bread(sb, p->key)) == NULL)  {
@@ -385,6 +396,8 @@ luci_get_block(struct inode *inode, sector_t iblock,
         return -EIO;
     }
 
+    luci_dbg_inode(inode, "get_block, block depth %d", depth);
+
     //Buffer forms the boundary of contiguous blocks the next block is
     //discontinuous (BH_Boundary). We need a new meta data block for fetching
     //the next leaf block.
@@ -399,14 +412,14 @@ luci_get_block(struct inode *inode, sector_t iblock,
     }
 
     if (!partial) {
-insert:
         if (S_ISREG(inode->i_mode) &&
            ((create & COMPR_BLK_INSERT) || (create & COMPR_BLK_UPDATE))) {
-            BUG_ON(bh_result == NULL);
+            luci_dbg_inode(inode, "iblock :%lu data block :%lu depth :%d",
+                iblock, bh_result->b_blocknr, depth);
+            BUG_ON(ichain[depth - 1].p == NULL);
             *ichain[depth - 1].p = bh_result->b_blocknr;
-            luci_dbg_inode(inode, "iblock :%lu data block :%lu", iblock,
-                bh_result->b_blocknr);
-             return 0;
+            // Fix: on exit free buffer-heads allocated during block lookup
+            goto done;
         }
 gotit:
         block_no = ichain[depth - 1].key;
@@ -418,32 +431,39 @@ gotit:
         err = 0;
     } else {
         if (create) {
-            bool allocLeaf = true;
-            luci_dbg_inode(inode, "get block allocating i_block :%lu", iblock);
+            bool need_leaf = true;
             nr_blocks = (ichain + depth) - partial;
+            BUG_ON(nr_blocks == 0);
+            luci_dbg_inode(inode, "get block allocating i_block :%lu, "
+               "nr_blocks :%u", iblock, nr_blocks);
 #ifdef LUCIFS_COMPRESSION
-            // Allocate metadata only, no L0 block allocated
-            if (S_ISREG(inode->i_mode)) {
-                BUG_ON(nr_blocks == 0);
-                nr_blocks -= 1;
-                allocLeaf = false;
+            if (S_ISREG(inode->i_mode) && (create & COMPR_BLK_INSERT)) {
+                need_leaf = false;
             }
 #endif
-            err = alloc_branch(inode, iblock, nr_blocks,
-                ipaths + (partial - ichain), partial);
-            if (err) {
-                luci_err_inode(inode, "block allocation failed i_block :%lu "
-                    "err :%d", iblock, err);
-            } else if (allocLeaf) {
+            if (need_leaf) {
+                err = alloc_branch(inode, iblock, nr_blocks,
+                    ipaths + (partial - ichain), partial, 0);
+                BUG_ON(err);
                 goto gotit;
-            } else if (create & COMPR_BLK_INSERT) {
-                goto insert;
+            } else {
+                err = alloc_branch(inode, iblock, nr_blocks,
+                    ipaths + (partial - ichain), partial, bh_result->b_blocknr);
+                BUG_ON(err);
             }
         } else {
             // We have a hole. mpage API identifies a hole if bh is not mapped.
             // So we are fine even if we do not have an block created for a hole.
             luci_dbg_inode(inode, "found hole at block no :%u", block_no);
         }
+    }
+done:
+    // Fix : free buffer-heads associated with the lookup
+    // The metadata pages are already in memory
+    partial = ichain + depth - 1;
+    while (partial > ichain) {
+        brelse(partial->bh);
+        partial--;
     }
     return err;
 }
@@ -558,7 +578,7 @@ luci_iget(struct super_block *sb, unsigned long ino) {
     li->i_state = 0;
     li->i_block_group = (ino - 1)/LUCI_SB(sb)->s_inodes_per_group;
     li->i_active_block_group = li->i_block_group;
-    luci_info_inode(inode, "active bg :%u", li->i_active_block_group);
+    luci_dbg_inode(inode, "active bg :%u", li->i_active_block_group);
     li->i_dir_start_lookup = 0;
     li->i_dtime = le32_to_cpu(raw_inode->i_dtime);
 
@@ -1086,6 +1106,7 @@ luci_rename(struct inode * old_dir, struct dentry *old_dentry,
 static int
 luci_writepage(struct page *page, struct writeback_control *wbc)
 {
+    int ret;
 #ifdef LUCIFS_COMPRESSION
     struct inode * inode = page->mapping->host;
     if (S_ISREG(inode->i_mode)) {
