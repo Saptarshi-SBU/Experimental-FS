@@ -1,0 +1,65 @@
+[root@localhost Linux-LFSBak2]# ls -l /mnt/
+total 5183808
+drwx------. 2 root root       16384 Apr 26 00:06 lost+found
+-rw-r--r--. 1 root root 12958822400 Apr 26 00:49 test-15
+-rw-r--r--. 1 root root  8192000000 Apr 26 00:49 test-23
+[root@localhost Linux-LFSBak2]# python tests/unittests.py
+test_CopyFile (__main__.LuciUnitTests) ... ('Executing cmd :', 'cp
+/home/core-sig-11 /mnt/test-37')
+ok
+test_DDFile (__main__.LuciUnitTests) ... ('Executing cmd :', 'dd
+if=/home/core-sig-11 of=/mnt/test-60 bs=4k count=2000000')
+ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 1363.377s
+
+OK
+[root@localhost Linux-LFSBak2]# ls -l /mnt/
+total 15527444
+drwx------. 2 root root       16384 Apr 26 00:06 lost+found
+-rw-r--r--. 1 root root 12958822400 Apr 26 00:49 test-15
+-rw-r--r--. 1 root root  8192000000 Apr 26 00:49 test-23
+-rw-r--r--. 1 root root 12958822400 Apr 26 09:36 test-37
+-rw-r--r--. 1 root root  8192000000 Apr 26 09:36 test-60
+
+With more cluster size, compression gains are more for  core file
+
+COMPRESSION WITH CLUSTER_NRPAGES 4:
+====================================
+[root@localhost Linux-LFSBak2]# stat /mnt/test-15
+  File: ‘/mnt/test-15’
+  Size: 12958822400 Blocks: 6352720    IO Block: 4096   regular file
+Device: 810h/2064d  Inode: 12          Links: 1
+Access: (0644/-rw-r--r--)  Uid: (    0/    root)   Gid: (    0/    root)
+Context: system_u:object_r:unlabeled_t:s0
+Access: 2018-04-26 00:49:07.000000000 -0700
+Modify: 2018-04-26 00:49:07.000000000 -0700
+Change: 2018-04-26 00:49:07.000000000 -0700
+ Birth: -
+
+COMPRESSION WITH CLUSTER_NRPAGES 2:
+====================================
+[root@localhost Linux-LFSBak2]# stat /mnt/test-37
+  File: ‘/mnt/test-37’
+  Size: 12958822400 Blocks: 12677392   IO Block: 4096   regular file
+Device: 810h/2064d  Inode: 14          Links: 1
+Access: (0644/-rw-r--r--)  Uid: (    0/    root)   Gid: (    0/    root)
+Context: system_u:object_r:unlabeled_t:s0
+Access: 2018-04-26 09:36:03.121055148 -0700
+Modify: 2018-04-26 09:36:03.121055148 -0700
+Change: 2018-04-26 09:36:03.121055148 -0700
+ Birth: -
+
+RAW FILE
+================
+[root@localhost Linux-LFSBak2]# stat /home/core-sig-11
+  File: ‘/home/core-sig-11’
+  Size: 12958822400 Blocks: 25310208   IO Block: 4096   regular file
+Device: fd02h/64770d    Inode: 23          Links: 1
+Access: (0644/-rw-r--r--)  Uid: (    0/    root)   Gid: (    0/    root)
+Context: unconfined_u:object_r:home_root_t:s0
+Access: 2018-04-25 19:58:47.798574855 -0700
+Modify: 2018-03-03 10:53:10.447796731 -0800
+Change: 2018-03-03 10:55:59.271384509 -0800
+ Birth: -

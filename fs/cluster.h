@@ -11,6 +11,7 @@
 // Since compression is done at page level, this will make things simple for us.
 
 #define CLUSTER_NRPAGE 4
+//#define CLUSTER_NRPAGE 2
 
 #define CLUSTER_NRBLOCKS_MAX 32
 
@@ -24,15 +25,7 @@
 
 static inline unsigned long
 luci_cluster_no(pgoff_t index) { return index/CLUSTER_NRPAGE; }
-/*
-void
-luci_cluster_block_range(struct page *page, unsigned long *begin,
-    unsigned long *end);
 
-unsigned long
-luci_cluster_block_lookup(struct page *page, struct inode *inode,
-    unsigned long blkptrs []);
-*/
 int
 luci_cluster_block_update(struct page *page, struct inode *inode,
     unsigned long start_compr_block);
