@@ -523,6 +523,8 @@ luci_insert_leaf_block(struct inode * inode, unsigned long i_block,
     return 0;
 }
 
+// This code path gets trigerred when the inode has already been created on disk
+// and we are fetching inode. inode is loaded with raw inode details from disk
 struct inode *
 luci_iget(struct super_block *sb, unsigned long ino) {
     int n;
@@ -594,7 +596,6 @@ luci_iget(struct super_block *sb, unsigned long ino) {
     li->i_state = 0;
     li->i_block_group = (ino - 1)/LUCI_SB(sb)->s_inodes_per_group;
     li->i_active_block_group = li->i_block_group;
-    luci_dbg_inode(inode, "active bg :%u", li->i_active_block_group);
     li->i_dir_start_lookup = 0;
     li->i_dtime = le32_to_cpu(raw_inode->i_dtime);
 

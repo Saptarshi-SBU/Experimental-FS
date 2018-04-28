@@ -72,7 +72,6 @@ luci_alloc_bitmap(unsigned long *addr, unsigned int nr_bits,
            }
            // if startb == endb, we keep on looping forever
            next_bit = end_bit + 1;
-
     // skip the last bit for now
     } while (!found && next_bit < max_bits);
 
@@ -325,6 +324,7 @@ gotit:
    li->i_dtime = 0;
    li->i_block_alloc_info = NULL;
    li->i_block_group = group;
+   li->i_active_block_group = group;
    li->i_dir_start_lookup = 0;
    li->i_state = LUCI_STATE_NEW;
    inode->i_generation = sbi->s_next_generation++;
@@ -354,18 +354,19 @@ luci_new_block(struct inode *inode, unsigned int nr_blocks,
    struct luci_group_desc *gdb = NULL;
    struct luci_super_block *lsb = NULL;
    struct buffer_head *bh = NULL, *bitmap_bh = NULL;
-   static unsigned long block_group = 0;
+   unsigned long block_group;
 
    sb = inode->i_sb;
    sbi = LUCI_SB(sb);
    li = LUCI_I(inode);
+
+   //reader lock for inode active bg
    read_lock(&li->i_meta_lock);
-   if (block_group != 0) {
-       block_group = li->i_active_block_group;
-   }
+   block_group = li->i_active_block_group;
    read_unlock(&li->i_meta_lock);
-   luci_info_inode(inode, "active block gp :%lu(%u)", block_group,
-       li->i_block_group);
+
+   luci_dbg_inode(inode, "active block gp :%lu(%u)", block_group,
+           li->i_block_group);
    for (gp = 0; gp < sbi->s_groups_count;
       block_group = (block_group + 1) % sbi->s_groups_count, gp++) {
       gdb = luci_get_group_desc(sb, block_group, &bh);
@@ -411,6 +412,7 @@ luci_new_block(struct inode *inode, unsigned int nr_blocks,
    goto fail;
 
 gotit:
+   //writer lock for inode active bg
    write_lock(&li->i_meta_lock);
    li->i_active_block_group = block_group;
    write_unlock(&li->i_meta_lock);
