@@ -364,7 +364,7 @@ luci_new_block(struct inode *inode, unsigned int nr_blocks,
        block_group = li->i_active_block_group;
    }
    read_unlock(&li->i_meta_lock);
-   luci_dbg_inode(inode, "active block gp :%lu(%u)", block_group,
+   luci_info_inode(inode, "active block gp :%lu(%u)", block_group,
        li->i_block_group);
    for (gp = 0; gp < sbi->s_groups_count;
       block_group = (block_group + 1) % sbi->s_groups_count, gp++) {

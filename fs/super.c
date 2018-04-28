@@ -926,6 +926,12 @@ init_debugfs(void) {
         printk(KERN_ERR "error creating file");
         return (-ENODEV);
     }
+    dbgfsparam.dirent_pgtrack = debugfs_create_u32("pgtrack", 0644,
+        dbgfsparam.dirent, &dbgfsparam.pgtrack);
+    if (dbgfsparam.dirent_pgtrack == NULL) {
+        printk(KERN_ERR "error creating file");
+        return (-ENODEV);
+    }
     return 0;
 }
 

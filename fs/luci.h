@@ -24,6 +24,7 @@
 #include <linux/percpu_counter.h>
 #include <linux/rbtree.h>
 #include <linux/debugfs.h>
+#include <linux/pagemap.h>
 
 /* data type for block offset of block group */
 typedef int luci_grpblk_t;
@@ -533,6 +534,8 @@ typedef struct debugfs {
     struct dentry *dirent_layout;
     u64 latency;
     struct dentry *dirent_lat;
+    u32 pgtrack;
+    struct dentry *dirent_pgtrack;
 }debugfs_t;
 
 extern debugfs_t dbgfsparam;
@@ -564,6 +567,12 @@ extern debugfs_t dbgfsparam;
                     if (dbgfsparam.latency) \
                          printk (KERN_INFO "LUCI-FS %s : inode :%lu :"f"\n", \
                              __func__, inode->i_ino, ## a); \
+                    }
+#define luci_pgtrack(page, f, a...)  { \
+                    if (dbgfsparam.pgtrack) \
+                         printk (KERN_INFO "LUCI-FS %s : page index :%lu" \
+                             "page count :%u "f"\n", __func__, page_index(page), \
+                             page_count(page), ## a); \
                     }
 
 #define BYTE_SHIFT 3

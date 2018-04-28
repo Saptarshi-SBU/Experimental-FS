@@ -279,9 +279,8 @@ luci_write_compressed_begin(struct address_space *mapping,
 
     SetPageUptodate(page);
     *pagep = page;
-    luci_dbg_inode(inode, "grabbed cache page :%llu-%u", pos, len);
-    luci_info("grab page : page index :%lu page count :%u",
-        page_index(page), page_count(page));
+    luci_pgtrack(page, "grabbed page for inode %lu off %llu-%u",
+        inode->i_ino, pos, len);
     return 0;
 }
 
@@ -299,8 +298,8 @@ luci_write_compressed_end(struct address_space *mapping,
         __set_page_dirty_nobuffers(pagep);
     }
     unlock_page(pagep);
-    luci_info("grab page : page index :%lu page count :%u",
-        page_index(pagep), page_count(pagep));
+    luci_pgtrack(pagep, "copied cache page for inode %lu off %llu-%u",
+        inode->i_ino, pos, len);
     put_page(pagep);
     // note file inode size is updated here
     if (pos + len > inode->i_size) {
@@ -308,7 +307,6 @@ luci_write_compressed_end(struct address_space *mapping,
         mark_inode_dirty(inode);
         luci_dbg_inode(inode, "updating inode new size %llu", inode->i_size);
     }
-    luci_dbg_inode(inode, "written cache page %llu-%u", pos, len);
     // Ensure we trigger page writeback once, dirty pages exceeds threshold
     balance_dirty_pages_ratelimited(mapping);
     return len;
@@ -454,11 +452,11 @@ __luci_cluster_write_compressed(struct address_space *mapping, struct page *page
         return index;
     }
 
+    luci_info("dirty pages :%u in range lookup %lu-%lu", nr_pages, index,
+        next_index);
     // sanity checks
     for (i = 0, nr_dirty = 0; i < nr_pages; i++) {
         struct page * page = pvec.pages[i];
-        luci_info("lookup: page index :%lu page count :%u max_pages :%u",
-            page_index(page), page_count(page), nr_pages);
         // check if dirty page belongs to cluster
         if (cluster != luci_cluster_no(page_index(page))) {
             break;
@@ -470,6 +468,7 @@ __luci_cluster_write_compressed(struct address_space *mapping, struct page *page
             luci_info("warning: somebody wrote the page for us");
             continue;
         }
+        luci_pgtrack(page, "page dirty cluster :%u", cluster);
         // dirty page must have uptodate data
         BUG_ON(!PageUptodate(page));
         // page may already been under writeback
@@ -484,14 +483,14 @@ __luci_cluster_write_compressed(struct address_space *mapping, struct page *page
     pagevec_release(&pvec);
 
     //pagevec_reinit(&pvec);
-
     if (nr_dirty == 0) {
-        luci_dbg("no dirty pages in cluster :%u(%lu-next:%lu)", cluster, index,
-            next_index);
+        luci_dbg("no dirty pages in cluster %u(%lu-%lu)", cluster, index,
+                next_index);
         goto skip;
+    } else {
+        luci_info("dirty pages in cluster %u(%lu-%u)", cluster, index,
+                nr_dirty);
     }
-
-    luci_info("dirty pages in cluster %u(%lu-%u)", cluster, index, nr_dirty);
 
     // lock pages in the cluster
     for (i = 0; i < max_pages; i++) {
@@ -499,19 +498,10 @@ __luci_cluster_write_compressed(struct address_space *mapping, struct page *page
         pgoff_t pg = index  + i;
 repeat:
         page = grab_cache_page_nowait(mapping, pg);
-        //BUG_ON(page == NULL);
         if (page == NULL) {
             cond_resched();
             goto repeat;
         }
-        /*
-        // we expect cache page can be locked only during a writepage
-        if (page == NULL) {
-            BUG_ON(pageout == NULL);
-            BUG_ON(page_index(pageout) != pg);
-            page = pageout;
-        }
-        */
         if (PageDirty(page)) {
             clear_page_dirty_for_io(page);
             // prepare page under writeout
@@ -521,8 +511,7 @@ repeat:
             begin_page = page;
         }
         pagevec_add(&pvec, page);
-        luci_info("lock page : page index :%lu page count :%u",
-            page_index(page), page_count(page));
+        luci_pgtrack(page, "locked page for write");
     }
 
     BUG_ON(begin_page == NULL);
@@ -532,8 +521,9 @@ repeat:
     ret = __luci_write_compressed(begin_page, &pvec, wbc);
     if (ret) {
         luci_err("compressed write failed :%d", ret);
-        next_index = ULONG_MAX;
         write_failed = true;
+        next_index = ULONG_MAX;
+        // We do not tolerate write failures for now
         // this shall flush printk buffers
         panic("write failed :%d", ret);
     } else {
@@ -545,7 +535,6 @@ repeat:
         struct page *page = pvec.pages[i];
         bool reserved = (pageout && pageout == page);
 
-        //BUG_ON(!PageLocked(page));
         //if (!reserved && PageLocked(page)) {
         if (PageLocked(page)) {
             unlock_page(page);
@@ -557,10 +546,8 @@ repeat:
                 redirty_page_for_writepage(wbc, page);
             }
         }
+        luci_pgtrack(page, "write completed for page");
         // Fix memory leak
-        luci_info("free page : page index :%lu page count :%u",
-            page_index(page), page_count(page));
-
         if (!reserved) {
             put_page(page);
         }
@@ -609,10 +596,13 @@ luci_writepage_compressed(struct page *page, struct writeback_control *wbc)
 {
     unsigned cluster;
     pgoff_t index, next_index;
+    struct inode *inode = page->mapping->host;
 
     index = page_index(page);
     cluster = luci_cluster_no(index);
-    luci_dbg("invoking write for cluster :%u(%lu)", cluster, index);
+    luci_info_inode(inode, "writing page for cluster :%u(%lu), wbc: (%llu-%llu) "
+        "dirty :%lu", cluster, index, wbc->range_start, wbc->range_end,
+        wbc->nr_to_write);
     next_index = luci_cluster_write_compressed(page->mapping, page, index, wbc);
     // This is invoked by shrink_page_list. Either of the below flags, can
     // prevent the page from getting reclaimed.
@@ -621,6 +611,7 @@ luci_writepage_compressed(struct page *page, struct writeback_control *wbc)
     BUG_ON(PageWriteback(page));
     BUG_ON(PageLocked(page));
     BUG_ON(PagePrivate(page));
+    luci_info_inode(inode, "exiting write pages compressed");
     return (next_index != ULONG_MAX) ? 0 : -EIO;
 
 }
@@ -634,7 +625,7 @@ int luci_writepages_compressed(struct address_space *mapping,
     pgoff_t start_index, end, next_index, done_index = 0;
     struct inode *inode = mapping->host;
 
-    luci_info_inode(inode, "write pages compressed (%llu-%llu) dirty :%lu",
+    luci_info_inode(inode, "writing pages wbc: (%llu-%llu) dirty :%lu",
         wbc->range_start, wbc->range_end, wbc->nr_to_write);
 
     if (wbc->range_cyclic) {
@@ -681,7 +672,7 @@ cycle:
         mapping->writeback_index = done_index;
     }
 
-    luci_info_inode(inode, "exiting write pages compressed");
+    luci_info_inode(inode, "exiting writing pages compressed");
     return 0;
 }
 
