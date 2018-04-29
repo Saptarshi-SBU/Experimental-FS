@@ -1136,35 +1136,25 @@ done:
     return ret;
 }
 
-// Wrapper over luci_writepage for write cache pages
-static int __luci_write_page(struct page *page, struct writeback_control *wbc,
-    void *data)
-{
-    int ret;
-    struct address_space *mapping = data;
-    ret = luci_writepage(page, wbc);
-    BUG_ON(page->mapping != mapping);
-    mapping_set_error(mapping, ret);
-    return ret;
-}
-
-#ifdef LUCIFS_COMPRESSION
 static int
 luci_writepages(struct address_space *mapping, struct writeback_control *wbc)
 {
     int ret;
-    struct blk_plug plug;
+#ifdef LUCIFS_COMPRESSION
+    struct inode * inode = mapping->host;
+    if (S_ISREG(inode->i_mode)) {
+        struct blk_plug plug;
 
-    blk_start_plug(&plug);
-    if (S_ISREG(mapping->host->i_mode)) {
+        blk_start_plug(&plug);
         ret = luci_writepages_compressed(mapping, wbc);
-    } else {
-        ret = write_cache_pages(mapping, wbc, __luci_write_page, mapping);
+        blk_finish_plug(&plug);
+        goto done;
     }
-    blk_finish_plug(&plug);
+#endif    
+    ret = mpage_writepages(mapping, wbc, luci_get_block); 
+done:    
     return ret;
 }
-#endif
 
 static int
 luci_write_begin(struct file *file, struct address_space *mapping,
@@ -1213,6 +1203,13 @@ luci_readpage(struct file *file, struct page *page)
 {
     return mpage_readpage(page, luci_get_block);
 }
+
+static int
+luci_readpages(struct file *file, struct address_space *mapping,
+    struct list_head *pages, unsigned nr_pages)
+{
+    return mpage_readpages(mapping, pages, nr_pages, luci_get_block);
+}    
 
 // Depth first traversal of blocks
 // assumes file is not truncated during this operation
@@ -1271,10 +1268,9 @@ const struct inode_operations luci_dir_inode_operations = {
 
 const struct address_space_operations luci_aops = {
     .readpage       = luci_readpage,
+    .readpages      = luci_readpages,
     .writepage      = luci_writepage,
-#ifdef LUCIFS_COMPRESSION
     .writepages     = luci_writepages,
-#endif
     .write_begin    = luci_write_begin,
     .write_end      = luci_write_end,
 };
