@@ -347,6 +347,7 @@ luci_new_block(struct inode *inode, unsigned int nr_blocks,
      unsigned long *start_block)
 {
    int err = 0;
+   int got_blocks = 0;
    unsigned long block, gp;
    struct super_block *sb;
    struct luci_sb_info *sbi;
@@ -423,18 +424,19 @@ gotit:
    }
    brelse(bitmap_bh);
 
-   le16_add_cpu(&gdb->bg_free_blocks_count, -1);
+   got_blocks = nr_blocks;
+   le16_add_cpu(&gdb->bg_free_blocks_count, -got_blocks);
    mark_buffer_dirty(bh);
    //brelse(bh);
 
-   percpu_counter_add(&sbi->s_freeblocks_counter, -1);
+   percpu_counter_add(&sbi->s_freeblocks_counter, -got_blocks);
    lsb = sbi->s_lsb;
-   lsb->s_free_blocks_count--;
+   lsb->s_free_blocks_count-=got_blocks;
    //TBD : We are not updating the super-block across all backups
    mark_buffer_dirty(sbi->s_sbh);
    inode->i_mtime = inode->i_atime = inode->i_ctime = LUCI_CURR_TIME;
    // sector based (TBD : add a macro for block to sector)
-   inode->i_blocks+=luci_sectors_per_block(inode);
+   inode->i_blocks+=(got_blocks * luci_sectors_per_block(inode));
    mark_inode_dirty(inode);
 fail:
    //brelse(bh);

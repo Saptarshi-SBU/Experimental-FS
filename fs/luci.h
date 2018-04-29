@@ -579,7 +579,7 @@ extern debugfs_t dbgfsparam;
 
 #define SECTOR_SHIFT 9
 
-#define SECTOR_SIZE (1 << SECTOR_SHIFT)
+#define SECTOR_SIZE (1U << (SECTOR_SHIFT - 1))
 
 static inline unsigned long
 sector_align(unsigned long n)
