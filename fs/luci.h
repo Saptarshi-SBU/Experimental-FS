@@ -25,6 +25,7 @@
 #include <linux/rbtree.h>
 #include <linux/debugfs.h>
 #include <linux/pagemap.h>
+#include <linux/log2.h>
 
 /* data type for block offset of block group */
 typedef int luci_grpblk_t;
@@ -171,6 +172,16 @@ static inline struct luci_sb_info *LUCI_SB(struct super_block *sb)
 #define LUCI_N_BLOCKS           (LUCI_TIND_BLOCK + 1)
 
 /*
+ * Block pointer defintion
+ */
+typedef struct blkptr {
+    __le32 blockno;
+    __le32 checksum;
+    __le32 birth;
+    __le32 flags;
+}blkptr;    
+
+/*
  * Structure of an inode on the disk
  */
 struct luci_inode {
@@ -196,7 +207,7 @@ struct luci_inode {
             __le32  m_i_reserved1;
         } masix1;
     } osd1;             /* OS dependent 1 */
-    __le32  i_block[LUCI_N_BLOCKS];/* Pointers to blocks */
+    blkptr  i_block[LUCI_N_BLOCKS];/* Pointers to blocks */
     __le32  i_generation;   /* File version (for NFS) */
     __le32  i_file_acl; /* File ACL */
     __le32  i_dir_acl;  /* Directory ACL */
@@ -231,7 +242,7 @@ struct luci_inode {
  * second extended file system inode data in memory
  */
 struct luci_inode_info {
-    __le32  i_data[15];
+    blkptr  i_data[15];
     __u32   i_flags;
     __u32   i_faddr;
     __u8    i_frag_no;
@@ -391,9 +402,10 @@ enum {
 #define LUCI_MAX_BLOCK_SIZE     4096
 #define LUCI_MIN_BLOCK_LOG_SIZE       10
 #define LUCI_BLOCK_SIZE(s)      ((s)->s_blocksize)
-#define LUCI_ADDR_PER_BLOCK(s)      (LUCI_BLOCK_SIZE(s) / sizeof (__u32))
+#define LUCI_ADDR_PER_BLOCK(s)      (LUCI_BLOCK_SIZE(s) / sizeof (blkptr))
 #define LUCI_BLOCK_SIZE_BITS(s)     ((s)->s_blocksize_bits)
-#define LUCI_ADDR_PER_BLOCK_BITS(s) (LUCI_SB(s)->s_addr_per_block_bits)
+//#define LUCI_ADDR_PER_BLOCK_BITS(s) (LUCI_SB(s)->s_addr_per_block_bits)
+#define LUCI_ADDR_PER_BLOCK_BITS(s) (ilog2(LUCI_ADDR_PER_BLOCK(s)))
 #define LUCI_INODE_SIZE(s)      (LUCI_SB(s)->s_inode_size)
 #define LUCI_FIRST_INO(s)       (LUCI_SB(s)->s_first_ino)
 
@@ -590,8 +602,8 @@ sector_align(unsigned long n)
 
 
 typedef struct {
-   __le32 *p; // block entry
-   __le32 key;
+   blkptr *p; // block entry
+   blkptr key;
    struct buffer_head *bh;
 } Indirect;
 
@@ -630,7 +642,7 @@ int luci_commit_chunk(struct page *page, loff_t pos, unsigned len);
 extern struct inode *luci_iget (struct super_block *, unsigned long);
 extern int luci_get_block(struct inode *, sector_t, struct buffer_head *, int);
 extern int luci_dump_layout(struct inode * inode);
-unsigned long luci_find_leaf_block(struct inode * inode, unsigned long i_block);
+blkptr luci_find_leaf_block(struct inode * inode, unsigned long i_block);
 int luci_insert_leaf_block(struct inode * inode, unsigned long i_block,
     unsigned long block);
 

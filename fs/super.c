@@ -195,7 +195,7 @@ luci_free_direct(struct inode *inode, long *delta_blocks)
     uint32_t cur_block;
     struct luci_inode_info *li = LUCI_I(inode);
     for (i = LUCI_NDIR_BLOCKS - 1; i >= 0 && *delta_blocks; i--) {
-       cur_block = li->i_data[i];
+       cur_block = li->i_data[i].blockno;
        if (cur_block == 0) {
           continue;
        }
@@ -205,7 +205,7 @@ luci_free_direct(struct inode *inode, long *delta_blocks)
        }
        luci_dec_size(inode, 1);
        // clear entry
-       li->i_data[i] = 0;
+       memset((char*)&li->i_data[i], 0, sizeof(blkptr));
        mark_inode_dirty(inode);
        *delta_blocks -= 1;
        luci_dbg_inode(inode, "freed i_data[%d] %u nrblocks %ld size :%llu", i,
@@ -226,7 +226,7 @@ luci_free_blocks(struct inode *inode, long delta_blocks)
     // Fix : macro represents array index
     for (i = LUCI_TIND_BLOCK, level = 3; level && delta_blocks; i--, level--) {
 
-       cur_block = li->i_data[i];
+       cur_block = li->i_data[i].blockno;
        if (cur_block == 0) {
           luci_dbg("indirect block[%d] level %d empty", i, level);
           continue;
@@ -240,7 +240,7 @@ luci_free_blocks(struct inode *inode, long delta_blocks)
        }
 
        // clear the root block from i_data array
-       li->i_data[i] = 0;
+       memset((char*)&li->i_data[i], 0, sizeof(blkptr));
        mark_inode_dirty(inode);
 
        luci_dbg("freed i_data[%d] %lu level :%d for inode :%lu nrblocks :%ld",

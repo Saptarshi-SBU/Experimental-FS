@@ -163,9 +163,10 @@ luci_commit_chunk(struct page *page, loff_t pos, unsigned len)
 }
 
 static inline void
-add_chain(Indirect *p, struct buffer_head *bh, __le32 *v)
+add_chain(Indirect *p, struct buffer_head *bh, blkptr *v)
 {
-    p->key = *(p->p = v);
+    p->p = v;
+    memcpy((char*)&p->key, (char*)p->p, sizeof(blkptr));
     p->bh = bh;
 }
 
@@ -257,7 +258,7 @@ alloc_branch(struct inode *inode,
         luci_dbg_inode(inode, "deferring leaf block allocation %lu", i_block);
         return 0;
     }
-    BUG_ON(branch[0].key);
+    BUG_ON(branch[0].key.blockno);
 
     luci_dbg_inode(inode, "allocating nr blocks :%d", nr);
     // Walk block table for allocating indirect block entries
@@ -283,23 +284,29 @@ alloc_branch(struct inode *inode,
 
         if (prevbh) {
             lock_buffer(prevbh);
-            branch[i].key = curr_block;
+            branch[i].key.blockno = curr_block;
+            if (end) {
+                branch[i].key.flags |= LUCI_COMPR_FLAG;
+            }    
             // offset to indirect block table to store block address entry
-            branch[i].p = (__le32*) prevbh->b_data + offsets[i];
+            branch[i].p = (blkptr*) prevbh->b_data + offsets[i];
             // imp : i_data array updated here
-            *branch[i].p = branch[i].key;
+            memcpy((char*)branch[i].p, (char*)&branch[i].key, sizeof(blkptr));
             // note this is buffer head of previous block
             branch[i].bh = prevbh;
             unlock_buffer(prevbh);
             mark_buffer_dirty_inode(prevbh, inode);
-            luci_dbg_inode(inode, "iblock :%lu block :%u offset :%lu", i_block,
-                branch[i].key, offsets[i]);
+            luci_dbg_inode(inode, "iblock %lu block %u(%x) offset %lu", i_block,
+                branch[i].key.blockno, branch[i].key.flags, offsets[i]);
         } else {
             // root node already has slot for holding block ptr in i_data
-            branch[0].key = curr_block;
-           *branch[0].p = branch[0].key;
-            luci_dbg_inode(inode, "iblock :%lu root block :%u offset :%lu",
-                i_block, branch[i].key, offsets[i]);
+            branch[0].key.blockno = curr_block;
+            if (end) {
+                branch[i].key.flags |= LUCI_COMPR_FLAG;
+            }    
+            memcpy((char*)branch[i].p, (char*)&branch[i].key, sizeof(blkptr));
+            luci_dbg_inode(inode, "iblock %lu root block %u(%x) offset %lu",
+                i_block, branch[i].key.blockno, branch[i].key.flags, offsets[i]);
         }
 #ifdef LUCIFS_COMPRESSION
         // Fix:We need not allocate buffer head for l0 block. Since we do not
@@ -351,29 +358,30 @@ luci_get_branch(struct inode *inode,
     *err = 0;
 
     add_chain (p, NULL, LUCI_I(inode)->i_data + *ipaths);
-    if (!p->key) {
+    if (!p->key.blockno) {
         luci_dbg_inode(inode, "root chain :ipath :%ld :%p", *ipaths, p->p);
         goto no_block;
     }
-    luci_dbg_inode(inode, "block walk path ipath[%d] %d", i, p->key);
+    luci_dbg_inode(inode, "block walk path ipath[%d] %d", i, p->key.blockno);
     i++;
     while (i < depth) {
-        if ((bh = sb_bread(sb, p->key)) == NULL)  {
-            luci_err_inode(inode, "metadata read error ipath[%d]%d", i, p->key);
+        if ((bh = sb_bread(sb, p->key.blockno)) == NULL)  {
+            luci_err_inode(inode, "metadata read error ipath[%d]%d", i,
+                    p->key.blockno);
             goto failure;
         }
-        add_chain(++p, bh, (__le32 *)bh->b_data + *++ipaths);
-        if (!p->key) {
+        add_chain(++p, bh, (blkptr*)bh->b_data + *++ipaths);
+        if (!p->key.blockno) {
             goto no_block;
         }
-        luci_dbg_inode(inode, "block walk path ipath[%d] %d", i, p->key);
+        luci_dbg_inode(inode, "block walk path ipath[%d] %d", i, p->key.blockno);
         i++;
     }
     return NULL;
 
 failure:
     for (i = 0; i < LUCI_MAX_DEPTH; i++) {
-        if (!ichain[i].key) {
+        if (!ichain[i].key.blockno) {
             break;
         }
         brelse(ichain[i].bh);
@@ -398,7 +406,7 @@ luci_get_block(struct inode *inode, sector_t iblock,
     long ipaths[LUCI_MAX_DEPTH];
     Indirect ichain[LUCI_MAX_DEPTH];
 
-    luci_dbg("Fetch block for inode :%lu, i_block :%lu "
+    luci_dbg("reading block for inode :%lu, i_block :%lu "
       "create :%s", inode->i_ino, iblock, create ? "alloc" : "noalloc");
     // Standard usage of get_block passes a valid bh_result. This is
     // done to check if the buffer has an on-disk associated block.
@@ -428,22 +436,33 @@ luci_get_block(struct inode *inode, sector_t iblock,
     }
 
     if (!partial) {
+        // We are abusing luci_get_block for updating block pointer
+        // since it has common code for walking indirect block map.
         if (S_ISREG(inode->i_mode) &&
            ((create & COMPR_BLK_INSERT) || (create & COMPR_BLK_UPDATE))) {
-            luci_dbg_inode(inode, "iblock :%lu data block :%lu depth :%d",
-                iblock, bh_result->b_blocknr, depth);
             BUG_ON(ichain[depth - 1].p == NULL);
-            *ichain[depth - 1].p = bh_result->b_blocknr;
+            // update L0 block ptr at L1
+            ichain[depth - 1].p->blockno = bh_result->b_blocknr;
+            if (bh_result->b_state & BH_PrivateStart) {
+                ichain[depth - 1].p->flags |= LUCI_COMPR_FLAG;
+            }    
+            luci_dbg_inode(inode, "iblock :%lu data block :%u(%x) depth :%d",
+                iblock, ichain[depth - 1].p->blockno, ichain[depth - 1].p->flags,
+                depth);
             // Fix: on exit free buffer-heads allocated during block lookup
             goto done;
         }
 gotit:
-        block_no = ichain[depth - 1].key;
+        block_no = ichain[depth - 1].key.blockno;
         if (bh_result) {
            map_bh(bh_result, inode->i_sb, block_no);
+           if (ichain[depth - 1].key.flags) {
+               bh_result->b_state |= BH_PrivateStart;
+           }
         }
         luci_dbg_inode(inode, "i_block :%lu paths :%d :%d :%d :%d", iblock,
-           ichain[0].key, ichain[1].key, ichain[2].key, ichain[3].key);
+           ichain[0].key.blockno, ichain[1].key.blockno, ichain[2].key.blockno,
+           ichain[3].key.blockno);
         err = 0;
     } else {
         if (create) {
@@ -484,25 +503,30 @@ done:
     return err;
 }
 
-unsigned long
+blkptr
 luci_find_leaf_block(struct inode * inode, unsigned long i_block)
 {
     int ret;
-    unsigned long leaf;
+    blkptr blkptr;
     struct buffer_head bh;
 
     memset((char*)&bh, 0, sizeof(struct buffer_head));
+    memset((char*)&blkptr, 0, sizeof(blkptr));
     ret = luci_get_block(inode, i_block, &bh, 0);
     if (ret < 0) {
         luci_err_inode(inode, "error get leaf block : %lu", i_block);
         BUG();
     }
     if (buffer_mapped(&bh)) {
-        leaf = bh.b_blocknr;
+        blkptr.blockno = bh.b_blocknr;
+        // For now this indicates this block was compressed
+        if (bh.b_state & BH_PrivateStart) {
+            blkptr.flags = LUCI_COMPR_FLAG;
+        }    
     } else {
-        leaf  = 0; // a hole
+        blkptr.blockno = 0; // a hole
     }
-    return leaf;
+    return blkptr;
 }
 
 int
@@ -514,8 +538,11 @@ luci_insert_leaf_block(struct inode * inode, unsigned long i_block,
 
     memset((char*)&bh, 0, sizeof(struct buffer_head));
     bh.b_blocknr = block;
+    // We perform insert only for compressed blocks
+    bh.b_state = BH_PrivateStart;
 
-    ret = luci_get_block(inode, i_block, &bh, COMPR_BLK_UPDATE | COMPR_BLK_INSERT);
+    ret = luci_get_block(inode, i_block, &bh, COMPR_BLK_UPDATE |
+        COMPR_BLK_INSERT);
     if (ret < 0) {
         luci_err_inode(inode, "error inserting leaf i_block : %lu", i_block);
         return ret;
@@ -610,7 +637,7 @@ luci_iget(struct super_block *sb, unsigned long ino) {
        (inode->i_blocks*512)/sb->s_blocksize);
     for (n = 0; n < LUCI_N_BLOCKS; n++) {
         li->i_data[n] = raw_inode->i_block[n];
-        luci_dbg_inode(inode, "i_data[%d]:%u", n, li->i_data[n]);
+        luci_dbg_inode(inode, "i_data[%d]:%u", n, li->i_data[n].blockno);
     }
 
     if (S_ISREG(inode->i_mode)) {
@@ -1245,7 +1272,8 @@ luci_dump_layout(struct inode * inode) {
        }
 
        luci_dbg_inode(inode, "block_path iblock %lu path %u %u %u %u", i,
-          ichain[0].key, ichain[1].key, ichain[2].key, ichain[3].key);
+          ichain[0].key.blockno, ichain[1].key.blockno, ichain[2].key.blockno,
+          ichain[3].key.blockno);
     }
 
     luci_info_inode(inode, "total blocks :%lu holes :%lu", nr_blocks, nr_holes);

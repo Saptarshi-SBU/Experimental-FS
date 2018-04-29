@@ -5,6 +5,8 @@
 
 #include "kern_feature.h"
 
+#define LUCI_COMPR_FLAG  0x1
+
 #define ZLIB_COMPRESSION_LEVEL 3
 
 typedef enum luci_compression_type {

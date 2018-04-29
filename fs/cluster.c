@@ -22,8 +22,10 @@ luci_cluster_block_lookup(struct page *page, struct inode *inode,
     luci_cluster_block_range(page, &begin_block, &end_block);
     cur_block = begin_block;
     while (cur_block <= end_block) {
+        blkptr blkptr;
         BUG_ON(i >= CLUSTER_NRBLOCKS_MAX);
-        blkptr_array[i++] = luci_find_leaf_block(inode, cur_block++);
+        blkptr = luci_find_leaf_block(inode, cur_block++);
+        blkptr_array[i++] = blkptr.blockno;
     }    
 }
 
@@ -31,18 +33,18 @@ static void
 luci_cluster_block_free(struct page *page, struct inode *inode,
     unsigned long blkptr_array [])
 {
-    unsigned blkptr;
     unsigned long i = 0, cur_block, begin_block, end_block;
     luci_cluster_block_range(page, &begin_block, &end_block);
     cur_block = begin_block;
     while (cur_block <= end_block) {
+        unsigned blockno;
         BUG_ON(i >= CLUSTER_NRBLOCKS_MAX);
-        blkptr = blkptr_array[i++];
+        blockno = blkptr_array[i++];
         // This may not be a bug, since we may free the bimtap while freeing
         // other leaf entries that belong to the same cluster
-        if (blkptr) {
-            luci_free_block(inode, blkptr);
-        }    
+        if (blockno) {
+            luci_free_block(inode, blockno);
+        }
         cur_block++;
     }
 }
@@ -58,9 +60,13 @@ luci_cluster_block_update(struct page *page, struct inode *inode,
 
     cluster = luci_cluster_no(page_index(page));
     // Look for common existing start compressed block for the cluster
+    luci_dbg_inode(inode, "lookup existing block ptr for cluster %lu",
+        cluster);
     luci_cluster_block_lookup(page, inode, blkptr_array);
     // Update block map
     luci_cluster_block_range(page, &begin_block, &end_block);
+    luci_dbg_inode(inode, "inserting new block ptr %lu for cluster %lu",
+        start_block, cluster);
     for (i = begin_block; i <= end_block; i++) {
         ret = luci_insert_leaf_block(inode, i, start_block);
         BUG_ON(ret < 0);
