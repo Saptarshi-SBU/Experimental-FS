@@ -100,6 +100,7 @@ const struct file_operations luci_file_operations = {
         .read_iter      = luci_read_iter,
         .write_iter     = luci_write_iter,
 #else
+        // internally calls aops writepage/readpage/directIO
         .aio_read       = generic_file_aio_read,
         .aio_write      = generic_file_aio_write,
 #endif

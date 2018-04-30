@@ -5690,3 +5690,26 @@ ffff880226c02000 kmem_cache               208        318       320     10     8k
 crash> 
 crash> 
 
+trace read code path using dump_stack:
+
+13662.880935] Call Trace:
+[13662.880943]  [<ffffffff8163ce45>] dump_stack+0x45/0x56
+[13662.880950]  [<ffffffffa05925a3>] luci_get_block+0x43/0x780 [luci]
+[13662.880958]  [<ffffffff81143606>] ? free_hot_cold_page_list+0x46/0xa0
+[13662.880966]  [<ffffffff8119a594>] ? __mem_cgroup_commit_charge+0x154/0x2c0
+[13662.880971]  [<ffffffff811e1247>] do_mpage_readpage+0x457/0x680
+[13662.880977]  [<ffffffff81158583>] ? __inc_zone_page_state+0x33/0x40
+[13662.880982]  [<ffffffff8113bf2a>] ? add_to_page_cache_locked+0xda/0x190
+[13662.880987]  [<ffffffff811e154b>] mpage_readpages+0xdb/0x130
+[13662.880995]  [<ffffffffa0592560>] ? alloc_branch.part.17+0x380/0x380 [luci]
+[13662.881001]  [<ffffffffa0592560>] ? alloc_branch.part.17+0x380/0x380 [luci]
+[13662.881009]  [<ffffffff81180be9>] ? alloc_pages_current+0xa9/0x170
+[13662.881016]  [<ffffffffa0591b1d>] luci_readpages+0x1d/0x20 [luci]
+[13662.881022]  [<ffffffff811474be>] __do_page_cache_readahead+0x1ae/0x240
+[13662.881029]  [<ffffffff81147986>] ondemand_readahead+0x126/0x250
+[13662.881036]  [<ffffffff81147ae3>] page_cache_sync_readahead+0x33/0x50
+[13662.881041]  [<ffffffff8113cf45>] generic_file_aio_read+0x4b5/0x700
+[13662.881047]  [<ffffffff811a4990>] do_sync_read+0x80/0xb0
+[13662.881053]  [<ffffffff811a4fbe>] vfs_read+0x9e/0x170
+[13662.881059]  [<ffffffff811a5ae9>] SyS_read+0x49/0xa0
+[13662.881066]  [<ffffffff8164c059>] system_call_fastpath+0x16/0x1b

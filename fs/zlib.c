@@ -218,7 +218,7 @@ int zlib_compress_pages(struct list_head *ws,
     // We may have pending output
     if (ret != Z_STREAM_END) {
         printk(KERN_ERR "deflate failed to finish, status :%d "
-                "total_in :%lu total_out:%lu avail_out:%lu", ret,
+                "total_in :%lu total_out:%lu avail_out:%u", ret,
                 workspace->strm.total_in, workspace->strm.total_out,
                 workspace->strm.avail_out);
         ret = -E2BIG;

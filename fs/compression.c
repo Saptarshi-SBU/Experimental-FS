@@ -676,6 +676,13 @@ cycle:
     return 0;
 }
 
+// read a compressed page
+int luci_read_compressed(struct page *page)
+{
+    luci_info("reading compressed page");
+    return 0;
+}
+
 /*
  * for a compressed read, the bio we get passed has all the inode pages
  * in it.  We don't actually do IO on those pages but allocate new ones

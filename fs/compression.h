@@ -92,6 +92,8 @@ int luci_writepages_compressed(struct address_space *mapping,
 
 int luci_write_compressed(struct page * page, struct writeback_control *wbc);
 
+int luci_read_compressed(struct page * page);
+
 int luci_submit_compressed_read(struct inode *inode, struct bio *bio,
     int mirror_num, unsigned long bio_flags);
 

@@ -287,7 +287,7 @@ alloc_branch(struct inode *inode,
             branch[i].key.blockno = curr_block;
             if (end) {
                 branch[i].key.flags |= LUCI_COMPR_FLAG;
-            }    
+            }
             // offset to indirect block table to store block address entry
             branch[i].p = (blkptr*) prevbh->b_data + offsets[i];
             // imp : i_data array updated here
@@ -303,7 +303,7 @@ alloc_branch(struct inode *inode,
             branch[0].key.blockno = curr_block;
             if (end) {
                 branch[i].key.flags |= LUCI_COMPR_FLAG;
-            }    
+            }
             memcpy((char*)branch[i].p, (char*)&branch[i].key, sizeof(blkptr));
             luci_dbg_inode(inode, "iblock %lu root block %u(%x) offset %lu",
                 i_block, branch[i].key.blockno, branch[i].key.flags, offsets[i]);
@@ -406,7 +406,7 @@ luci_get_block(struct inode *inode, sector_t iblock,
     long ipaths[LUCI_MAX_DEPTH];
     Indirect ichain[LUCI_MAX_DEPTH];
 
-    luci_dbg("reading block for inode :%lu, i_block :%lu "
+    luci_dbg("getting block for inode :%lu, i_block :%lu "
       "create :%s", inode->i_ino, iblock, create ? "alloc" : "noalloc");
     // Standard usage of get_block passes a valid bh_result. This is
     // done to check if the buffer has an on-disk associated block.
@@ -445,7 +445,7 @@ luci_get_block(struct inode *inode, sector_t iblock,
             ichain[depth - 1].p->blockno = bh_result->b_blocknr;
             if (bh_result->b_state & BH_PrivateStart) {
                 ichain[depth - 1].p->flags |= LUCI_COMPR_FLAG;
-            }    
+            }
             luci_dbg_inode(inode, "iblock :%lu data block :%u(%x) depth :%d",
                 iblock, ichain[depth - 1].p->blockno, ichain[depth - 1].p->flags,
                 depth);
@@ -522,7 +522,7 @@ luci_find_leaf_block(struct inode * inode, unsigned long i_block)
         // For now this indicates this block was compressed
         if (bh.b_state & BH_PrivateStart) {
             blkptr.flags = LUCI_COMPR_FLAG;
-        }    
+        }
     } else {
         blkptr.blockno = 0; // a hole
     }
@@ -1147,6 +1147,37 @@ luci_rename(struct inode * old_dir, struct dentry *old_dentry,
 }
 #endif
 
+static inline bool
+areas_overlap(unsigned long src, unsigned long dst, unsigned long len)
+{
+    unsigned long distance = (src > dst) ? src - dst : dst - src;
+    return distance < len;
+}
+
+static void
+copy_pages(struct page *dst_page, struct page *src_page,
+    unsigned long dst_off, unsigned long src_off, unsigned long len)
+{
+    char *dst_kaddr = page_address(dst_page);
+    char *src_kaddr;
+    int must_memmove = 0;
+
+    if (dst_page != src_page) {
+        src_kaddr = page_address(src_page);
+    } else {
+        src_kaddr = dst_kaddr;
+        if (areas_overlap(src_off, dst_off, len)) {
+            must_memmove = 1;
+        }
+    }
+
+    if (must_memmove) {
+        memmove(dst_kaddr + dst_off, src_kaddr + src_off, len);
+    } else {
+        memcpy(dst_kaddr + dst_off, src_kaddr + src_off, len);
+    }
+}
+
 static int
 luci_writepage(struct page *page, struct writeback_control *wbc)
 {
@@ -1177,9 +1208,9 @@ luci_writepages(struct address_space *mapping, struct writeback_control *wbc)
         blk_finish_plug(&plug);
         goto done;
     }
-#endif    
-    ret = mpage_writepages(mapping, wbc, luci_get_block); 
-done:    
+#endif
+    ret = mpage_writepages(mapping, wbc, luci_get_block);
+done:
     return ret;
 }
 
@@ -1228,7 +1259,38 @@ done:
 static int
 luci_readpage(struct file *file, struct page *page)
 {
-    return mpage_readpage(page, luci_get_block);
+    int ret = 0;
+#ifdef LUCIFS_COMPRESSION
+    struct page *cachep;
+    // file can be null in cases, when the API is in internally
+    // invoked via luci_get_page(do_read_cache_page->filler)
+    struct inode *inode = page->mapping->host;
+    BUG_ON(page == NULL);
+    if (S_ISREG(inode->i_mode)) {
+        // file limits are already checked by vfs
+        BUG_ON(page_offset(page) > inode->i_size);
+        // We can safely assume page is present in cache, due to page readahead
+        // and locked
+        cachep = find_get_page(inode->i_mapping, page_offset(page));
+        BUG_ON(!cachep);
+        BUG_ON(!PageLocked(page));
+        if (!PageUptodate(cachep)) {
+            if ((ret = luci_read_compressed(page)) != 0) {
+                panic("read failed :%d", ret);
+            }
+        }
+        copy_pages(page, cachep, 0, 0, PAGE_SIZE);
+        unlock_page(cachep);
+        // Needed otherwise will result in an EIO
+        SetPageUptodate(page);
+        luci_dbg_inode(inode, "compressed read completed for pg index :%lu",
+            page_index(page));
+        goto done;
+    }
+#endif
+    ret = mpage_readpage(page, luci_get_block);
+done:
+    return ret;
 }
 
 static int
@@ -1236,7 +1298,7 @@ luci_readpages(struct file *file, struct address_space *mapping,
     struct list_head *pages, unsigned nr_pages)
 {
     return mpage_readpages(mapping, pages, nr_pages, luci_get_block);
-}    
+}
 
 // Depth first traversal of blocks
 // assumes file is not truncated during this operation
@@ -1296,7 +1358,7 @@ const struct inode_operations luci_dir_inode_operations = {
 
 const struct address_space_operations luci_aops = {
     .readpage       = luci_readpage,
-    .readpages      = luci_readpages,
+    //.readpages      = luci_readpages,
     .writepage      = luci_writepage,
     .writepages     = luci_writepages,
     .write_begin    = luci_write_begin,
