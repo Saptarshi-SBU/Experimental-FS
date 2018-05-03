@@ -65,6 +65,14 @@
     #undef HAVE_NEW_SYNC_READ
 #endif
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
+   #define HAVE_BIO_BVECITER
+#endif
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,13,0))
+   #define HAVE_NEW_BIO_FLAGS
+#endif
+
 #endif // LINUX_VERSION_CODE
 
 #endif

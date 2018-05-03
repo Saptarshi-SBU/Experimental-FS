@@ -38,6 +38,8 @@
 #include <linux/bio.h>
 
 #include "compression.h"
+#include "cluster.h"
+#include "kern_feature.h"
 
 struct workspace {
     z_stream strm;
@@ -218,7 +220,7 @@ int zlib_compress_pages(struct list_head *ws,
     // We may have pending output
     if (ret != Z_STREAM_END) {
         printk(KERN_ERR "deflate failed to finish, status :%d "
-                "total_in :%lu total_out:%lu avail_out:%u", ret,
+                "total_in :%lu total_out:%lu avail_out:%lu", ret,
                 workspace->strm.total_in, workspace->strm.total_out,
                 workspace->strm.avail_out);
         ret = -E2BIG;
@@ -255,36 +257,46 @@ out:
     return ret;
 }
 
-int zlib_decompress_biovec(struct list_head *ws, struct page **pages_in,
-        u64 disk_start,
-        struct bio_vec *bvec,
-        int vcnt,
-        size_t srclen)
+int
+zlib_decompress_bio(struct list_head *ws, struct bio *bio, struct bio *org_bio)
 {
     struct workspace *workspace = list_entry(ws, struct workspace, list);
+    unsigned long i; 
     int ret = 0, ret2;
     int wbits = MAX_WBITS;
     char *data_in;
     size_t total_out = 0;
-    unsigned long page_in_index = 0;
-    unsigned long page_out_index = 0;
-    unsigned long total_pages_in = DIV_ROUND_UP(srclen, PAGE_SIZE);
+    size_t src_len = CLUSTER_SIZE;
+    unsigned long total_pages_in = CLUSTER_NRPAGE;
     unsigned long buf_start;
-    unsigned long pg_offset;
+    struct page *pages_in[CLUSTER_NRPAGE];
+#ifdef HAVE_BIO_ITER
+    u64 disk_start = (bio->bi_iter.bi_sector << 9);
+#else
+    u64 disk_start = (bio->bi_sector << 9);
+#endif
 
-    data_in = kmap(pages_in[page_in_index]);
+    for (i = 0; i < bio->bi_vcnt; i++) {
+        struct bio_vec* bvec = &bio->bi_io_vec[i];
+        pages_in[i] = bvec->bv_page;
+    }    
+
+    data_in = kmap(pages_in[0]);
     workspace->strm.next_in = data_in;
-    workspace->strm.avail_in = min_t(size_t, srclen, PAGE_SIZE);
+#ifdef HAVE_BIO_BVECITER    
+    workspace->strm.avail_in = min(bio_cur_bytes(bio), (unsigned int)PAGE_SIZE);
+#else
+    workspace->strm.avail_in = min(bio->bi_size, (unsigned int)PAGE_SIZE);
+#endif    
     workspace->strm.total_in = 0;
 
     workspace->strm.total_out = 0;
     workspace->strm.next_out = workspace->buf;
     workspace->strm.avail_out = PAGE_SIZE;
-    pg_offset = 0;
 
     /* If it's deflate, and it's got no preset dictionary, then
        we can tell zlib to skip the adler32 check. */
-    if (srclen > 2 && !(data_in[1] & PRESET_DICT) &&
+    if (src_len > 2 && !(data_in[1] & PRESET_DICT) &&
             ((data_in[0] & 0x0f) == Z_DEFLATED) &&
             !(((data_in[0]<<8) + data_in[1]) % 31)) {
 
@@ -295,56 +307,59 @@ int zlib_decompress_biovec(struct list_head *ws, struct page **pages_in,
 
     if (Z_OK != zlib_inflateInit2(&workspace->strm, wbits)) {
         printk(KERN_WARNING "BTRFS: inflateInit failed\n");
+        kunmap(pages_in[i]);
         return -EIO;
-    }
-    while (workspace->strm.total_in < srclen) {
+    }    
+
+    while (workspace->strm.total_in < src_len) {
         ret = zlib_inflate(&workspace->strm, Z_NO_FLUSH);
-        if (ret != Z_OK && ret != Z_STREAM_END)
+        if (ret != Z_OK && ret != Z_STREAM_END) {
             break;
+        }    
 
         buf_start = total_out;
         total_out = workspace->strm.total_out;
-
-        /* we didn't make progress in this inflate call, we're done */
-        if (buf_start == total_out)
+       
+        // we did not make progress in inflate call 
+        if (buf_start == total_out) {
             break;
+        }    
 
         ret2 = luci_util_decompress_buf2page(workspace->buf, buf_start,
-                total_out, disk_start, bvec, vcnt, &page_out_index,
-                &pg_offset);
+                                       total_out, disk_start, org_bio);
         if (ret2 == 0) {
             ret = 0;
             goto done;
-        }
+        }    
 
         workspace->strm.next_out = workspace->buf;
         workspace->strm.avail_out = PAGE_SIZE;
 
         if (workspace->strm.avail_in == 0) {
-            unsigned long tmp;
-            kunmap(pages_in[page_in_index]);
-            page_in_index++;
-            if (page_in_index >= total_pages_in) {
+            kunmap(pages_in[i]);
+            i++;
+            if (i > total_pages_in) {
                 data_in = NULL;
                 break;
-            }
-            data_in = kmap(pages_in[page_in_index]);
+            }    
+            data_in = kmap(pages_in[i]);
             workspace->strm.next_in = data_in;
-            tmp = srclen - workspace->strm.total_in;
-            workspace->strm.avail_in = min(tmp,
-                    PAGE_SIZE);
-        }
+            workspace->strm.avail_in = min(src_len - workspace->strm.total_in,
+                                           PAGE_SIZE);
+        }    
     }
-    if (ret != Z_STREAM_END)
+
+    if (ret != Z_STREAM_END) {
         ret = -EIO;
-    else
+    } else {
         ret = 0;
+    }    
+
 done:
-    zlib_inflateEnd(&workspace->strm);
-    if (data_in)
-        kunmap(pages_in[page_in_index]);
-    if (!ret)
-        luci_util_clear_biovec_end(bvec, vcnt, page_out_index, pg_offset);
+    ret = zlib_inflateEnd(&workspace->strm);
+    if (data_in) {
+        kunmap(pages_in[i]);
+    }
     return ret;
 }
 
@@ -449,8 +464,8 @@ next:
 
 const struct luci_compress_op luci_zlib_compress = {
     .alloc_workspace	= zlib_alloc_workspace,
-    .free_workspace		= zlib_free_workspace,
-    .compress_pages		= zlib_compress_pages,
-    .decompress_biovec	= zlib_decompress_biovec,
+    .free_workspace     = zlib_free_workspace,
+    .compress_pages	= zlib_compress_pages,
+    .decompress_bio	= zlib_decompress_bio,
     .decompress		= zlib_decompress,
 };

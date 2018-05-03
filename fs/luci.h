@@ -181,6 +181,7 @@ typedef struct blkptr {
     __le32 flags;
 }blkptr;    
 
+#define COMPR_LEN(bp) (bp->flags >> 16)
 /*
  * Structure of an inode on the disk
  */

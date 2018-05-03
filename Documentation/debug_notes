@@ -5713,3 +5713,7 @@ trace read code path using dump_stack:
 [13662.881053]  [<ffffffff811a4fbe>] vfs_read+0x9e/0x170
 [13662.881059]  [<ffffffff811a5ae9>] SyS_read+0x49/0xa0
 [13662.881066]  [<ffffffff8164c059>] system_call_fastpath+0x16/0x1b
+
+Normally the parameter flush is set to Z_NO_FLUSH, which allows deflate to
+decide how much data to accumulate before producing output, in order to maximize
+compression. 

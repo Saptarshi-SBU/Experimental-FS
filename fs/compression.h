@@ -5,6 +5,8 @@
 
 #include "kern_feature.h"
 
+#include "luci.h"
+
 #define LUCI_COMPR_FLAG  0x1
 
 #define ZLIB_COMPRESSION_LEVEL 3
@@ -58,12 +60,8 @@ struct luci_compress_op {
       * be contiguous.  They all correspond to the range of bytes covered by
       * the compressed extent.
       */
-      int (*decompress_biovec)(struct list_head *workspace,
-                               struct page **pages_in,
-		               u64 disk_start,
-			       struct bio_vec *bvec,
-			       int vcnt,
-			       size_t srclen);
+      int (*decompress_bio)(struct list_head *workspace,
+                            struct bio *bio, struct bio *org_bio);
 
       /*
        * a less complex decompression routine.  Our compressed data fits in a
@@ -92,14 +90,13 @@ int luci_writepages_compressed(struct address_space *mapping,
 
 int luci_write_compressed(struct page * page, struct writeback_control *wbc);
 
-int luci_read_compressed(struct page * page);
+int luci_read_compressed(struct page * page, blkptr *bp);
 
 int luci_submit_compressed_read(struct inode *inode, struct bio *bio,
     int mirror_num, unsigned long bio_flags);
 
 int luci_util_decompress_buf2page(char *buf, unsigned long buf_start,
-    unsigned long total_out, u64 disk_start, struct bio_vec *bvec, int vcnt,
-    unsigned long *pg_index, unsigned long *pg_offset);
+    unsigned long total_out, u64 disk_start, struct bio *bio);
 
 void luci_util_clear_biovec_end(struct bio_vec *bvec, int vcnt,
     unsigned long pg_index, unsigned long pg_offset);

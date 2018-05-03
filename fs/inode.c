@@ -1275,9 +1275,15 @@ luci_readpage(struct file *file, struct page *page)
         BUG_ON(!cachep);
         BUG_ON(!PageLocked(page));
         if (!PageUptodate(cachep)) {
-            if ((ret = luci_read_compressed(page)) != 0) {
-                panic("read failed :%d", ret);
-            }
+            blkptr bp = luci_find_leaf_block(inode, page_offset(page));
+            if (bp.flags & LUCI_COMPR_FLAG) {
+                ret = luci_read_compressed(page, &bp);
+                if (ret != 0) {
+                    panic("read failed :%d", ret);
+                }    
+            } else {
+                goto uncompressed_read;
+            }    
         }
         copy_pages(page, cachep, 0, 0, PAGE_SIZE);
         unlock_page(cachep);
@@ -1288,6 +1294,7 @@ luci_readpage(struct file *file, struct page *page)
         goto done;
     }
 #endif
+uncompressed_read:    
     ret = mpage_readpage(page, luci_get_block);
 done:
     return ret;
