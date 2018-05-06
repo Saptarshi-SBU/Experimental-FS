@@ -176,12 +176,13 @@ static inline struct luci_sb_info *LUCI_SB(struct super_block *sb)
  */
 typedef struct blkptr {
     __le32 blockno;
-    __le32 checksum;
+    __le32 length;
+    __le16 checksum;
     __le32 birth;
-    __le32 flags;
+    __le16 flags;
 }blkptr;    
 
-#define COMPR_LEN(bp) (bp->flags >> 16)
+#define COMPR_LEN(bp) (bp->length)
 /*
  * Structure of an inode on the disk
  */
@@ -592,7 +593,7 @@ extern debugfs_t dbgfsparam;
 
 #define SECTOR_SHIFT 9
 
-#define SECTOR_SIZE (1U << (SECTOR_SHIFT - 1))
+#define SECTOR_SIZE (1U << (SECTOR_SHIFT))
 
 static inline unsigned long
 sector_align(unsigned long n)
@@ -644,8 +645,7 @@ extern struct inode *luci_iget (struct super_block *, unsigned long);
 extern int luci_get_block(struct inode *, sector_t, struct buffer_head *, int);
 extern int luci_dump_layout(struct inode * inode);
 blkptr luci_find_leaf_block(struct inode * inode, unsigned long i_block);
-int luci_insert_leaf_block(struct inode * inode, unsigned long i_block,
-    unsigned long block);
+int luci_insert_block(struct inode * inode, unsigned long i_block, blkptr *bp);
 
 /* ialloc.c */
 extern struct buffer_head *

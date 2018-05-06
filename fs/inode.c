@@ -247,12 +247,12 @@ alloc_branch(struct inode *inode,
              int nr,
              long int *offsets,
              Indirect *branch,
-             unsigned long leaf_block)
+             struct buffer_head *bh)
 {
     int ret, i = 0;
-    bool end = false;
     unsigned long curr_block;
     struct buffer_head *prevbh = NULL, *currbh = NULL;
+    bool leafblock = false;
 
     if (nr == 0) {
         luci_dbg_inode(inode, "deferring leaf block allocation %lu", i_block);
@@ -263,10 +263,9 @@ alloc_branch(struct inode *inode,
     luci_dbg_inode(inode, "allocating nr blocks :%d", nr);
     // Walk block table for allocating indirect block entries
     for (i = 0; i < nr; i++) {
-
-        if ((i == nr - 1) && leaf_block) {
-            curr_block = leaf_block;
-            end = true;
+        if ((i == nr - 1) && (bh != NULL)) {
+            curr_block = bh->b_blocknr;
+            leafblock = true;
         } else {
             ret = luci_new_block(inode, 1, &curr_block);
             if (ret < 0) {
@@ -285,8 +284,10 @@ alloc_branch(struct inode *inode,
         if (prevbh) {
             lock_buffer(prevbh);
             branch[i].key.blockno = curr_block;
-            if (end) {
+            // compressed blocks are taken care of here
+            if (leafblock && (bh->b_state & BH_PrivateStart)) {
                 branch[i].key.flags |= LUCI_COMPR_FLAG;
+                branch[i].key.length = (unsigned int) bh->b_size;
             }
             // offset to indirect block table to store block address entry
             branch[i].p = (blkptr*) prevbh->b_data + offsets[i];
@@ -301,8 +302,9 @@ alloc_branch(struct inode *inode,
         } else {
             // root node already has slot for holding block ptr in i_data
             branch[0].key.blockno = curr_block;
-            if (end) {
-                branch[i].key.flags |= LUCI_COMPR_FLAG;
+            if (leafblock && (bh->b_state & BH_PrivateStart)) {
+                branch[0].key.flags |= LUCI_COMPR_FLAG;
+                branch[0].key.length = (unsigned int) bh->b_size;
             }
             memcpy((char*)branch[i].p, (char*)&branch[i].key, sizeof(blkptr));
             luci_dbg_inode(inode, "iblock %lu root block %u(%x) offset %lu",
@@ -313,7 +315,7 @@ alloc_branch(struct inode *inode,
         // issue do buffer-head based read/writes in compression path.
         // allocating and not submitting bh was causing slab objects to swell
         // and system would be really low on memory on a few large copies
-        if (end) {
+        if (leafblock) {
             break;
         }
 #endif
@@ -443,6 +445,7 @@ luci_get_block(struct inode *inode, sector_t iblock,
             BUG_ON(ichain[depth - 1].p == NULL);
             // update L0 block ptr at L1
             ichain[depth - 1].p->blockno = bh_result->b_blocknr;
+            ichain[depth - 1].p->length = (unsigned short) bh_result->b_size;
             if (bh_result->b_state & BH_PrivateStart) {
                 ichain[depth - 1].p->flags |= LUCI_COMPR_FLAG;
             }
@@ -456,8 +459,10 @@ gotit:
         block_no = ichain[depth - 1].key.blockno;
         if (bh_result) {
            map_bh(bh_result, inode->i_sb, block_no);
-           if (ichain[depth - 1].key.flags) {
+           // indicates block was compressed
+           if (ichain[depth - 1].key.flags & LUCI_COMPR_FLAG) {
                bh_result->b_state |= BH_PrivateStart;
+               bh_result->b_size = (size_t) ichain[depth - 1].key.length;
            }
         }
         luci_dbg_inode(inode, "i_block :%lu paths :%d :%d :%d :%d", iblock,
@@ -478,12 +483,12 @@ gotit:
 #endif
             if (need_leaf) {
                 err = alloc_branch(inode, iblock, nr_blocks,
-                    ipaths + (partial - ichain), partial, 0);
+                    ipaths + (partial - ichain), partial, NULL);
                 BUG_ON(err);
                 goto gotit;
             } else {
                 err = alloc_branch(inode, iblock, nr_blocks,
-                    ipaths + (partial - ichain), partial, bh_result->b_blocknr);
+                    ipaths + (partial - ichain), partial, bh_result);
                 BUG_ON(err);
             }
         } else {
@@ -523,24 +528,22 @@ luci_find_leaf_block(struct inode * inode, unsigned long i_block)
         if (bh.b_state & BH_PrivateStart) {
             blkptr.flags = LUCI_COMPR_FLAG;
         }
-    } else {
-        blkptr.blockno = 0; // a hole
     }
     return blkptr;
 }
 
 int
-luci_insert_leaf_block(struct inode * inode, unsigned long i_block,
-    unsigned long block)
+luci_insert_block(struct inode * inode, unsigned long i_block, blkptr *bp)
 {
     int ret;
     struct buffer_head bh;
 
     memset((char*)&bh, 0, sizeof(struct buffer_head));
-    bh.b_blocknr = block;
-    // We perform insert only for compressed blocks
-    bh.b_state = BH_PrivateStart;
-
+    bh.b_blocknr = bp->blockno;
+    if (bp->flags == LUCI_COMPR_FLAG) {
+        bh.b_size = (size_t) bp->length;
+        bh.b_state = BH_PrivateStart; // flag for compressed block
+    }
     ret = luci_get_block(inode, i_block, &bh, COMPR_BLK_UPDATE |
         COMPR_BLK_INSERT);
     if (ret < 0) {

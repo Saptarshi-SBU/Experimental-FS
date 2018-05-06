@@ -56,15 +56,23 @@ static void
 luci_bio_dump(struct bio * bio, const char *msg)
 {
 #ifdef HAVE_BIO_ITER
-     luci_dbg("%s bio : bi_max_vecs :%u bi_vcnt :%d bi_size :%u bi_sector :%lu",
-        msg, bio->bi_max_vecs, bio->bi_vcnt, bio->bi_iter.bi_size,
-        bio->bi_iter.bi_sector);
+     luci_dbg("%s bio : bi_max_vecs :%u bi_vcnt :%d bi_size :%u bi_sector :%lu"
+        " bytes: %u", msg, bio->bi_max_vecs, bio->bi_vcnt, bio->bi_iter.bi_size,
+        bio->bi_iter.bi_sector, bio_cur_bytes(bio));
 #else
-     luci_dbg("%s bio : bi_max_vecs :%u bi_vcnt :%d bi_size :%u bi_sector :%lu",
-        msg, bio->bi_max_vecs, bio->bi_vcnt, bio->bi_size,
-        bio->bi_sector);
+     luci_dbg("%s bio : bi_max_vecs :%u bi_vcnt :%d bi_size :%u bi_sector :%lu"
+        " bytes :%u", msg, bio->bi_max_vecs, bio->bi_vcnt, bio->bi_size,
+        bio->bi_sector, bio_cur_bytes(bio));
 #endif
 }
+
+static void
+bp_reset(blkptr *bp, unsigned long block, unsigned int size,
+    unsigned short flags) {
+    bp->blockno = block;
+    bp->length = size;
+    bp->flags = LUCI_COMPR_FLAG;
+}    
 
 /* when we finish reading compressed pages from the disk, we
  * decompress them and then run the bio end_io routines on the
@@ -222,6 +230,7 @@ luci_prepare_bio(struct inode * inode, struct page **pages,
            bio_put(bio);
            return ERR_PTR(-EIO);
        }
+       luci_dbg("added page %p to bio, len :%u", pages[i], length);
        aligned_bytes -= (unsigned long)length;
        i++;
     }
@@ -379,6 +388,7 @@ __luci_write_compressed(struct page * page, struct pagevec *pvec,
     struct writeback_control *wbc)
 {
     int ret;
+    int i = 0;
     struct list_head * ws;
     struct page **pages_vec;
     pgoff_t index = page_index(page);
@@ -386,7 +396,8 @@ __luci_write_compressed(struct page * page, struct pagevec *pvec,
     struct inode *inode = page->mapping->host;
     unsigned blockbits, blocksize, cluster;
     unsigned long nr_blocks, nr_pages_out,
-        total_in, total_out, start_compr_block, disk_start;
+        total_in, total_out, start_compr_block, disk_start, block_no;
+    blkptr bp_array[CLUSTER_NRBLOCKS_MAX];
     bool compressed = true;
 
     cluster = luci_cluster_no(index);
@@ -463,7 +474,17 @@ __luci_write_compressed(struct page * page, struct pagevec *pvec,
         compressed = false;
         goto exit;
     }
-    luci_cluster_block_update(page, inode, start_compr_block);
+
+    for (i = 0, block_no = start_compr_block; i < CLUSTER_NRBLOCKS_MAX; i++) {
+        if (compressed) {
+            bp_reset(&bp_array[i], start_compr_block, total_out, LUCI_COMPR_FLAG);
+        } else {
+            bp_reset(&bp_array[i], block_no++, 0, 0);
+        }     
+    }
+
+    // Fix me
+    luci_cluster_update_bp(page, inode, bp_array);
 
     // issue compressed write
     disk_start = start_compr_block * blocksize;
@@ -550,8 +571,8 @@ __luci_cluster_write_compressed(struct address_space *mapping, struct page *page
                 next_index);
         goto skip;
     } else {
-        luci_info("dirty pages in cluster %u(%lu-%u)", cluster, index,
-                nr_dirty);
+        luci_info("dirty pages:%u in cluster %u(%lu-%u)", nr_dirty, cluster,
+                index);
     }
 
     // lock pages in the cluster
@@ -754,6 +775,9 @@ int luci_read_compressed(struct page *page, blkptr *bp)
     unsigned nr_pages = (total_in + PAGE_SIZE - 1)/PAGE_SIZE;              
     bool write = true;
 
+    // disable for now
+    BUG();
+
     // compressed pages array
     pages_vec = kcalloc(CLUSTER_NRPAGE, sizeof(struct page *), GFP_NOFS);
     if (pages_vec == NULL) {
@@ -916,7 +940,11 @@ repeat:
 
         // check if we need to pick another page    
         bio_advance(bio, bytes);
+        #ifdef HAVE_BIO_ITER
         if (!bio->bi_iter.bi_size) {
+        #else    
+        if (!bio->bi_size) {
+        #endif    
             return 0;
         }     
         prev_page_start = raw_page_start;

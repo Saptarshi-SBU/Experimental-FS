@@ -5,7 +5,7 @@
 #include <linux/kernel.h>
 
 static void
-luci_cluster_block_range(struct page *page, unsigned long *begin,
+luci_cluster_file_range(struct page *page, unsigned long *begin,
     unsigned long *end)
 {
     struct inode *inode = page->mapping->host;
@@ -15,65 +15,51 @@ luci_cluster_block_range(struct page *page, unsigned long *begin,
 }
 
 static void
-luci_cluster_block_lookup(struct page *page, struct inode *inode,
-    unsigned long blkptr_array [])
+luci_cluster_lookup_bp(struct page *page, struct inode *inode,
+    blkptr bp_array [])
 {
     unsigned long i = 0, cur_block, begin_block, end_block;
-    luci_cluster_block_range(page, &begin_block, &end_block);
+    luci_cluster_file_range(page, &begin_block, &end_block);
     cur_block = begin_block;
     while (cur_block <= end_block) {
-        blkptr blkptr;
+        blkptr bp;
         BUG_ON(i >= CLUSTER_NRBLOCKS_MAX);
-        blkptr = luci_find_leaf_block(inode, cur_block++);
-        blkptr_array[i++] = blkptr.blockno;
-    }    
+        bp = luci_find_leaf_block(inode, cur_block++);
+        bp_array[i++] = bp;
+    }
 }
 
-static void
-luci_cluster_block_free(struct page *page, struct inode *inode,
-    unsigned long blkptr_array [])
+int
+luci_cluster_update_bp(struct page *page, struct inode *inode, blkptr bp_new [])
 {
-    unsigned long i = 0, cur_block, begin_block, end_block;
-    luci_cluster_block_range(page, &begin_block, &end_block);
-    cur_block = begin_block;
-    while (cur_block <= end_block) {
+    int ret;
+    unsigned long cluster;
+    unsigned long i = 0, curr_block, begin_block, end_block;
+    blkptr bp_old[CLUSTER_NRBLOCKS_MAX];
+
+    cluster = luci_cluster_no(page_index(page));
+    luci_dbg_inode(inode, "lookup bp for cluster %lu", cluster);
+    luci_cluster_lookup_bp(page, inode, bp_old);
+    // update block pointer
+    luci_cluster_file_range(page, &begin_block, &end_block);
+    for (i = 0, curr_block = begin_block; curr_block <= end_block; curr_block++) {
+        luci_info_inode(inode, "updating bp %u(%u) for file block %lu", 
+                bp_new[i].blockno, bp_old[i].blockno, curr_block);
+        ret = luci_insert_block(inode, curr_block, &bp_new[i++]);
+        BUG_ON(ret < 0);
+    }
+    // free old block pointers
+    i = 0;
+    curr_block = begin_block;
+    while (curr_block <= end_block) {
         unsigned blockno;
-        BUG_ON(i >= CLUSTER_NRBLOCKS_MAX);
-        blockno = blkptr_array[i++];
+        blockno = bp_old[i++].blockno;
         // This may not be a bug, since we may free the bimtap while freeing
         // other leaf entries that belong to the same cluster
         if (blockno) {
             luci_free_block(inode, blockno);
         }
-        cur_block++;
+        curr_block++;
     }
-}
-
-int
-luci_cluster_block_update(struct page *page, struct inode *inode,
-    unsigned long start_block)
-{
-    int ret;
-    unsigned long cluster;
-    unsigned long i, begin_block, end_block;
-    unsigned long blkptr_array[CLUSTER_NRBLOCKS_MAX];
-
-    cluster = luci_cluster_no(page_index(page));
-    // Look for common existing start compressed block for the cluster
-    luci_dbg_inode(inode, "lookup existing block ptr for cluster %lu",
-        cluster);
-    luci_cluster_block_lookup(page, inode, blkptr_array);
-    // Update block map
-    luci_cluster_block_range(page, &begin_block, &end_block);
-    luci_dbg_inode(inode, "inserting new block ptr %lu for cluster %lu",
-        start_block, cluster);
-    for (i = begin_block; i <= end_block; i++) {
-        ret = luci_insert_leaf_block(inode, i, start_block);
-        BUG_ON(ret < 0);
-    }
-    // Free old blocks since we allocated a new one
-    luci_cluster_block_free(page, inode, blkptr_array);
-    luci_info_inode(inode, "new block ptr %lu for cluster %lu",
-        start_block, cluster);
     return 0;
 }
