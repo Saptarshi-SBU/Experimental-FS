@@ -297,8 +297,9 @@ alloc_branch(struct inode *inode,
             branch[i].bh = prevbh;
             unlock_buffer(prevbh);
             mark_buffer_dirty_inode(prevbh, inode);
-            luci_dbg_inode(inode, "iblock %lu block %u(%x) offset %lu", i_block,
-                branch[i].key.blockno, branch[i].key.flags, offsets[i]);
+            luci_dbg_inode(inode, "iblock %lu block %u(%x-%u) offset %lu", i_block,
+                branch[i].key.blockno, branch[i].key.flags,
+                branch[i].key.length, offsets[i]);
         } else {
             // root node already has slot for holding block ptr in i_data
             branch[0].key.blockno = curr_block;
@@ -307,8 +308,9 @@ alloc_branch(struct inode *inode,
                 branch[0].key.length = (unsigned int) bh->b_size;
             }
             memcpy((char*)branch[i].p, (char*)&branch[i].key, sizeof(blkptr));
-            luci_dbg_inode(inode, "iblock %lu root block %u(%x) offset %lu",
-                i_block, branch[i].key.blockno, branch[i].key.flags, offsets[i]);
+            luci_dbg_inode(inode, "iblock %lu root block %u(%x-%u) offset %lu",
+                i_block, branch[i].key.blockno, branch[i].key.flags,
+                branch[i].key.length, offsets[i]);
         }
 #ifdef LUCIFS_COMPRESSION
         // Fix:We need not allocate buffer head for l0 block. Since we do not
@@ -445,13 +447,13 @@ luci_get_block(struct inode *inode, sector_t iblock,
             BUG_ON(ichain[depth - 1].p == NULL);
             // update L0 block ptr at L1
             ichain[depth - 1].p->blockno = bh_result->b_blocknr;
-            ichain[depth - 1].p->length = (unsigned short) bh_result->b_size;
             if (bh_result->b_state & BH_PrivateStart) {
                 ichain[depth - 1].p->flags |= LUCI_COMPR_FLAG;
+                ichain[depth - 1].p->length = (unsigned short) bh_result->b_size;
             }
-            luci_dbg_inode(inode, "iblock :%lu data block :%u(%x) depth :%d",
+            luci_dbg_inode(inode, "iblock :%lu data block :%u(%x-%u) depth :%d",
                 iblock, ichain[depth - 1].p->blockno, ichain[depth - 1].p->flags,
-                depth);
+                ichain[depth - 1].p->length, depth);
             // Fix: on exit free buffer-heads allocated during block lookup
             goto done;
         }
@@ -512,24 +514,26 @@ blkptr
 luci_find_leaf_block(struct inode * inode, unsigned long i_block)
 {
     int ret;
-    blkptr blkptr;
+    blkptr bp;
     struct buffer_head bh;
 
     memset((char*)&bh, 0, sizeof(struct buffer_head));
-    memset((char*)&blkptr, 0, sizeof(blkptr));
+    memset((char*)&bp, 0, sizeof(blkptr));
     ret = luci_get_block(inode, i_block, &bh, 0);
     if (ret < 0) {
         luci_err_inode(inode, "error get leaf block : %lu", i_block);
         BUG();
     }
     if (buffer_mapped(&bh)) {
-        blkptr.blockno = bh.b_blocknr;
+        bp.blockno = bh.b_blocknr;
         // For now this indicates this block was compressed
         if (bh.b_state & BH_PrivateStart) {
-            blkptr.flags = LUCI_COMPR_FLAG;
+            bp.flags = LUCI_COMPR_FLAG;
+            bp.length = (unsigned int)bh.b_size;
         }
+        luci_dump_blkptr(inode, i_block, &bp);
     }
-    return blkptr;
+    return bp;
 }
 
 int
@@ -1259,6 +1263,13 @@ done:
     return ret;
 }
 
+static void
+luci_check_bp(struct inode *inode, unsigned long file_block)
+{
+    blkptr bp = luci_find_leaf_block(inode, file_block);
+    luci_dump_blkptr(inode, file_block, &bp);
+}
+
 static int
 luci_readpage(struct file *file, struct page *page)
 {
@@ -1268,28 +1279,43 @@ luci_readpage(struct file *file, struct page *page)
     // file can be null in cases, when the API is in internally
     // invoked via luci_get_page(do_read_cache_page->filler)
     struct inode *inode = page->mapping->host;
-    BUG_ON(page == NULL);
     if (S_ISREG(inode->i_mode)) {
         // file limits are already checked by vfs
         BUG_ON(page_offset(page) > inode->i_size);
         // We can safely assume page is present in cache, due to page readahead
         // and locked
-        cachep = find_get_page(inode->i_mapping, page_offset(page));
+        // Fixed : we need to pass page index
+        cachep = find_get_page(inode->i_mapping, page_index(page));
+        // Fix me
+        if (!cachep) {
+            luci_err("page (%lu) not found in cache, allocating", page_index(page));
+            cachep = find_or_create_page(page->mapping, page_index(page), GFP_KERNEL);
+        }
         BUG_ON(!cachep);
         BUG_ON(!PageLocked(page));
         if (!PageUptodate(cachep)) {
-            blkptr bp = luci_find_leaf_block(inode, page_offset(page));
+            unsigned long file_block = page_offset(page)/luci_chunk_size(inode);
+            blkptr bp = luci_find_leaf_block(inode, file_block);
+            luci_dump_blkptr(inode, file_block, &bp);
             if (bp.flags & LUCI_COMPR_FLAG) {
+                luci_dbg_inode(inode, "reading compressed page :%lu",
+                    page_index(page));
                 ret = luci_read_compressed(page, &bp);
                 if (ret != 0) {
                     panic("read failed :%d", ret);
-                }    
+                }
             } else {
+                unlock_page(cachep);
+                luci_dbg_inode(inode, "reading uncompressed page :%lu",
+                    page_index(page));
                 goto uncompressed_read;
-            }    
+            }
         }
         copy_pages(page, cachep, 0, 0, PAGE_SIZE);
-        unlock_page(cachep);
+        if (PageLocked(cachep)) {
+            unlock_page(cachep);
+            put_page(cachep);
+        }
         // Needed otherwise will result in an EIO
         SetPageUptodate(page);
         luci_dbg_inode(inode, "compressed read completed for pg index :%lu",
@@ -1297,7 +1323,7 @@ luci_readpage(struct file *file, struct page *page)
         goto done;
     }
 #endif
-uncompressed_read:    
+uncompressed_read:
     ret = mpage_readpage(page, luci_get_block);
 done:
     return ret;

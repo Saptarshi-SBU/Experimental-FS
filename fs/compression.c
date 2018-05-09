@@ -55,6 +55,7 @@ luci_bh_dump(struct buffer_head *bh)
 static void
 luci_bio_dump(struct bio * bio, const char *msg)
 {
+     char *kaddr = NULL;
 #ifdef HAVE_BIO_ITER
      luci_dbg("%s bio : bi_max_vecs :%u bi_vcnt :%d bi_size :%u bi_sector :%lu"
         " bytes: %u", msg, bio->bi_max_vecs, bio->bi_vcnt, bio->bi_iter.bi_size,
@@ -64,6 +65,9 @@ luci_bio_dump(struct bio * bio, const char *msg)
         " bytes :%u", msg, bio->bi_max_vecs, bio->bi_vcnt, bio->bi_size,
         bio->bi_sector, bio_cur_bytes(bio));
 #endif
+     kaddr = kmap_atomic(bio_page(bio));
+     luci_dump_bytes("bio page", kaddr, PAGE_SIZE);
+     kunmap_atomic(kaddr);
 }
 
 static void
@@ -72,7 +76,7 @@ bp_reset(blkptr *bp, unsigned long block, unsigned int size,
     bp->blockno = block;
     bp->length = size;
     bp->flags = LUCI_COMPR_FLAG;
-}    
+}
 
 /* when we finish reading compressed pages from the disk, we
  * decompress them and then run the bio end_io routines on the
@@ -100,8 +104,11 @@ luci_end_compressed_bio_read(struct bio *bio, int error)
         struct page *page = bvec->bv_page;
         page->mapping = NULL;
         luci_pageflags_dump(page);
+        if (PageLocked(page)) {
+           unlock_page(page);
+        }
         put_page(page);
-    }     
+    }
 }
 
 /*
@@ -243,7 +250,7 @@ luci_prepare_bio(struct inode * inode, struct page **pages,
     bio->bi_opf = write ? REQ_OP_WRITE : REQ_OP_READ;
     #endif
     return bio;
-}    
+}
 /*
  * worker function to build and submit bios for previously compressed pages.
  * The corresponding pages in the inode should be marked for writeback
@@ -291,7 +298,7 @@ luci_submit_write(struct inode * inode, struct page **pages,
         luci_err("failed to consume output, left %lu", aligned_bytes);
         BUG();
     }
-    luci_bio_dump(bio, "submitting bio");
+    luci_bio_dump(bio, "submitting bio write");
     #ifdef NEW_BIO_SUBMIT
     bio->bi_opf = REQ_OP_WRITE;
     ret = submit_bio_wait(bio);
@@ -302,9 +309,9 @@ luci_submit_write(struct inode * inode, struct page **pages,
     if (ret) {
     #ifdef HAVE_NEW_BIO_FLAGS
         luci_err("bio error status :0x%x, status :%d", bio->bi_flags, ret);
-    #else    
+    #else
         luci_err("bio error status :0x%lx, status :%d", bio->bi_flags, ret);
-    #endif    
+    #endif
     }
 
 exit:
@@ -471,7 +478,6 @@ __luci_write_compressed(struct page * page, struct pagevec *pvec,
     if (ret) {
         luci_err("failed block allocation for cluster %u, nr_blocks :%lu",
             cluster, nr_blocks);
-        compressed = false;
         goto exit;
     }
 
@@ -480,7 +486,7 @@ __luci_write_compressed(struct page * page, struct pagevec *pvec,
             bp_reset(&bp_array[i], start_compr_block, total_out, LUCI_COMPR_FLAG);
         } else {
             bp_reset(&bp_array[i], block_no++, 0, 0);
-        }     
+        }
     }
 
     // Fix me
@@ -571,7 +577,7 @@ __luci_cluster_write_compressed(struct address_space *mapping, struct page *page
                 next_index);
         goto skip;
     } else {
-        luci_info("dirty pages:%u in cluster %u(%lu-%u)", nr_dirty, cluster,
+        luci_info("dirty pages:%u in cluster %u(%lu)", nr_dirty, cluster,
                 index);
     }
 
@@ -760,45 +766,44 @@ cycle:
 }
 
 // read a compressed page
-// Step 1: 
+// Step 1:
 int luci_read_compressed(struct page *page, blkptr *bp)
 {
-    int i, ret;
+    int i, ret = 0;
     struct bio *bio = NULL, *org_bio = NULL;
-    struct page *page_in;
-    struct page **pages_vec;
     struct list_head *ws;
     struct inode *inode = page->mapping->host;
+    // Fixed :pass disk start to bio prepare, not blockno
+    u64 disk_start = bp->blockno * LUCI_BLOCK_SIZE(inode->i_sb);
+    unsigned long total_in = COMPR_LEN(bp);
+    unsigned aligned_bytes = sector_align(total_in);
+    unsigned nr_pages = (total_in + PAGE_SIZE - 1)/PAGE_SIZE;
     unsigned long cluster = luci_cluster_no(page_index(page));
-    unsigned long pgoff, offset = cluster * CLUSTER_SIZE;
-    unsigned long blockno = bp->blockno, total_in = COMPR_LEN(bp);
-    unsigned nr_pages = (total_in + PAGE_SIZE - 1)/PAGE_SIZE;              
-    bool write = true;
+    unsigned long pg_index = cluster * CLUSTER_NRPAGE;
+    struct page *compressed_pages[CLUSTER_NRPAGE], *cached_pages[CLUSTER_NRPAGE];
 
-    // disable for now
-    BUG();
+    luci_info("total_in :%lu aligned bytes :%u disk start :%llu",
+            total_in, aligned_bytes, disk_start);
 
-    // compressed pages array
-    pages_vec = kcalloc(CLUSTER_NRPAGE, sizeof(struct page *), GFP_NOFS);
-    if (pages_vec == NULL) {
-        return -ENOMEM;
-    }
-
+    memset((char*)compressed_pages, 0, CLUSTER_NRPAGE * sizeof(struct page *));
     // allocate pages for compressed blocks
     for (i = 0; i < nr_pages; i++) {
-        page_in = alloc_page(GFP_NOFS | __GFP_HIGHMEM);
+        struct page * page_in = alloc_page(GFP_NOFS | __GFP_HIGHMEM);
         if (page_in == NULL) {
             ret = -ENOMEM;
-            goto fail;            
-        } 
-        pages_vec[i] = page_in;
+            luci_err("failed to allocate page for read");
+            goto free_readpages;
+        }
+        compressed_pages[i] = page_in;
     }
 
     // compressed bio
-    bio = luci_prepare_bio(inode, pages_vec, total_in, blockno, !write); 
+    bio = luci_prepare_bio(inode, compressed_pages, aligned_bytes, disk_start,
+                           false);
     if (IS_ERR(bio)) {
         ret = -EIO;
-        goto fail;
+        luci_err("failed to allocate bio for read");
+        goto free_readpages;
     }
 
     // read compressed blocks
@@ -810,52 +815,79 @@ int luci_read_compressed(struct page *page, blkptr *bp)
     if (ret) {
     #ifdef HAVE_NEW_BIO_FLAGS
         luci_err("bio error status :0x%x, status :%d", bio->bi_flags, ret);
-    #else     
+    #else
         luci_err("bio error status :0x%lx, status :%d", bio->bi_flags, ret);
-    #endif    
-        goto fail;
+    #endif
+        goto free_readbio;
     }
 
-    // pages for buf2pages
-    for (i = 0, pgoff = offset; pgoff < (cluster + 1) * CLUSTER_SIZE;
-        pgoff+=PAGE_SIZE) {
-        struct page *cachep = find_get_page(page->mapping, pgoff);
-        BUG_ON(cachep == NULL);
-        pages_vec[i++] = cachep;
+    memset((char*)cached_pages, 0, CLUSTER_NRPAGE * sizeof(struct page *));
+    // pages for buf2pages in page cache
+    for (i = 0; pg_index < (cluster + 1) * CLUSTER_NRPAGE; pg_index++) {
+        struct page *cachep = find_get_page(page->mapping, pg_index);
+        if (cachep == NULL) {
+            luci_err("page %lu not found in cache, allocating", pg_index);
+            cachep = find_or_create_page(page->mapping, pg_index, GFP_KERNEL);
+        }
+        cached_pages[i++] = cachep;
     }
 
     // original bio
-    org_bio = luci_prepare_bio(inode, pages_vec, CLUSTER_NRPAGE, 0, !write); 
+    org_bio = luci_prepare_bio(inode, cached_pages, CLUSTER_SIZE, 0, false);
     if (IS_ERR(org_bio)) {
         ret = -EIO;
-        goto fail;
+        luci_err("failed to allocate bio for decompressing pages");
+        goto free_compbio;
     }
-
+#if 1
     ws = find_workspace(LUCI_COMPRESS_ZLIB);
     if (IS_ERR(ws)) {
         luci_err_inode(inode, "failed to alloc workspace");
         ret = PTR_ERR(ws);
-        goto fail;
+        goto free_compbio;
     }
 
-    ret = luci_zlib_compress.decompress_bio(ws, bio, org_bio);
+    ret = luci_zlib_compress.decompress_bio(ws, total_in, bio, org_bio);
     if (ret) {
-        panic("decompress failed");
-    }    
+        luci_err("decompress failed, ret %d\n", ret);
+        BUG();
+        //panic("decompress failed, ret %d", ret);
+    }
     free_workspace(LUCI_COMPRESS_ZLIB, ws);
+#endif
 
+free_compbio:
     #ifdef HAVE_NEW_BIO_END
     luci_end_compressed_bio_read(bio);
     #else
     luci_end_compressed_bio_read(bio, ret);
     #endif
 
-    // TBD: decompress
-fail:
     if(bio) {
-        bio_put(bio);    
+        bio_put(bio);
     }
-    kfree(pages_vec); 
+
+    for (i = 0; i < CLUSTER_NRPAGE; i++) {
+        struct page *page_out = cached_pages[i];
+        unlock_page(page_out);
+        put_page(page_out);
+    }
+
+    if (org_bio) {
+        bio_put(org_bio);
+    }
+    return ret;
+
+    // TBD: decompress
+free_readbio:
+    if(bio) {
+        bio_put(bio);
+    }
+free_readpages:
+    for (i = 0; i < nr_pages; i++) {
+        struct page *page_in = compressed_pages[i];
+        put_page(page_in);
+    }
     return ret;
 }
 
@@ -887,7 +919,7 @@ int luci_submit_compressed_read(struct inode *inode, struct bio *bio,
  *                        buf_start (decompressed of total output)
  *                           |
  * decomp status   : |-----------------------------------------------|
- * 
+ *
  * case 1:                   ws buf         start_byte > buffer_start
  * curr page :               |--buf_offset--|------------------------------------
  *
@@ -904,6 +936,8 @@ luci_util_decompress_buf2page(char *buf, unsigned long raw_start_offset,
     unsigned int copy_bytes;
     unsigned long bytes;
     char *raw_page_kaddr;
+
+    return 0;
 repeat:
     /*
      * start byte is the first byte of the page we are currently copying
@@ -913,7 +947,7 @@ repeat:
     /* we have not yet data corresponding to this page */
     if (raw_page_start >= total_out) {
         return 1;
-    }    
+    }
 
     /* the start of the data we are looking for is offset into the middle
      * of the working buffer
@@ -922,10 +956,10 @@ repeat:
         raw_skip_bytes = raw_page_start - raw_start_offset;
     } else {
         raw_skip_bytes = 0;
-    }    
+    }
 
     copy_bytes = total_out - raw_page_start;
-    
+
     /* copy bytes from the working buffer to the pages */
     while (copy_bytes > 0) {
         //bytes = min(bio_cur_bytes(bio), copy_bytes);
@@ -933,27 +967,27 @@ repeat:
         bytes = min(cur_bytes, copy_bytes);
         raw_page_kaddr = kmap_atomic(bio_page(bio));
         memcpy(raw_page_kaddr, buf + raw_skip_bytes, bytes);
-        kunmap_atomic(raw_page_kaddr); 
+        kunmap_atomic(raw_page_kaddr);
         flush_dcache_page(bio_page(page));
         raw_skip_bytes += bytes;
         copy_bytes -= bytes;
 
-        // check if we need to pick another page    
+        // check if we need to pick another page
         bio_advance(bio, bytes);
         #ifdef HAVE_BIO_ITER
         if (!bio->bi_iter.bi_size) {
-        #else    
+        #else
         if (!bio->bi_size) {
-        #endif    
+        #endif
             return 0;
-        }     
+        }
         prev_page_start = raw_page_start;
         raw_page_start = page_offset(bio_page(bio)) - disk_start;
 
         if (prev_page_start != raw_page_start) {
             goto repeat;
-        }     
-    }     
+        }
+    }
     return 1;
 }
 

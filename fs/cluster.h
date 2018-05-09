@@ -10,8 +10,9 @@
 // Cluster size in terms of file system pages
 // Since compression is done at page level, this will make things simple for us.
 
-#define CLUSTER_NRPAGE 4
+//#define CLUSTER_NRPAGE 4
 //#define CLUSTER_NRPAGE 2
+#define CLUSTER_NRPAGE 1
 
 #define CLUSTER_NRBLOCKS_MAX 32
 

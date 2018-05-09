@@ -108,7 +108,7 @@ int zlib_compress_pages(struct list_head *ws,
     *total_in = 0;
 
     if (Z_OK != zlib_deflateInit(&workspace->strm, 3)) {
-        printk(KERN_ERR "BTRFS: deflateInit failed\n");
+        printk(KERN_ERR "LUCI: deflateInit failed\n");
         ret = -EIO;
         goto out;
     }
@@ -143,7 +143,7 @@ int zlib_compress_pages(struct list_head *ws,
     while (workspace->strm.total_in < len) {
         ret = zlib_deflate(&workspace->strm, Z_SYNC_FLUSH);
         if (ret != Z_OK) {
-            printk(KERN_ERR "BTRFS: deflate in loop returned %d\n",
+            printk(KERN_ERR "LUCI: deflate in loop returned %d\n",
                     ret);
             zlib_deflateEnd(&workspace->strm);
             ret = -EIO;
@@ -220,7 +220,7 @@ int zlib_compress_pages(struct list_head *ws,
     // We may have pending output
     if (ret != Z_STREAM_END) {
         printk(KERN_ERR "deflate failed to finish, status :%d "
-                "total_in :%lu total_out:%lu avail_out:%lu", ret,
+                "total_in :%lu total_out:%lu avail_out:%u", ret,
                 workspace->strm.total_in, workspace->strm.total_out,
                 workspace->strm.avail_out);
         ret = -E2BIG;
@@ -247,8 +247,10 @@ int zlib_compress_pages(struct list_head *ws,
     *total_in = workspace->strm.total_in;
 out:
     *out_pages = nr_pages;
-    if (out_page)
+    if (out_page) {
+        luci_dump_bytes("compressed bytes(w)", (char *)out_page, PAGE_SIZE);
         kunmap(out_page);
+    }
 
     if (in_page) {
         kunmap(in_page);
@@ -258,41 +260,47 @@ out:
 }
 
 int
-zlib_decompress_bio(struct list_head *ws, struct bio *bio, struct bio *org_bio)
+zlib_decompress_bio(struct list_head *ws, unsigned long total_in,
+        struct bio *compressed_bio, struct bio *org_bio)
 {
     struct workspace *workspace = list_entry(ws, struct workspace, list);
-    unsigned long i; 
+    unsigned long i;
     int ret = 0, ret2;
     int wbits = MAX_WBITS;
     char *data_in;
     size_t total_out = 0;
-    size_t src_len = CLUSTER_SIZE;
-    unsigned long total_pages_in = CLUSTER_NRPAGE;
+    size_t src_len = total_in;
+    unsigned long total_pages_in = compressed_bio->bi_vcnt;
     unsigned long buf_start;
-    struct page *pages_in[CLUSTER_NRPAGE];
 #ifdef HAVE_BIO_ITER
-    u64 disk_start = (bio->bi_iter.bi_sector << 9);
+    u64 disk_start = (compressed_bio->bi_iter.bi_sector << 9);
 #else
-    u64 disk_start = (bio->bi_sector << 9);
+    u64 disk_start = (compressed_bio->bi_sector << 9);
 #endif
+    struct page *pages_in[CLUSTER_NRPAGE];
 
-    for (i = 0; i < bio->bi_vcnt; i++) {
-        struct bio_vec* bvec = &bio->bi_io_vec[i];
+    memset((char*)pages_in, 0, CLUSTER_NRPAGE * sizeof(struct page*));
+
+    BUG_ON(compressed_bio->bi_vcnt == 0);
+    for (i = 0; i < compressed_bio->bi_vcnt; i++) {
+        struct bio_vec* bvec = &compressed_bio->bi_io_vec[i];
         pages_in[i] = bvec->bv_page;
-    }    
+    }
 
     data_in = kmap(pages_in[0]);
+    luci_dump_bytes("compressed bytes(r)", (char*)data_in, PAGE_SIZE);
     workspace->strm.next_in = data_in;
-#ifdef HAVE_BIO_BVECITER    
-    workspace->strm.avail_in = min(bio_cur_bytes(bio), (unsigned int)PAGE_SIZE);
-#else
-    workspace->strm.avail_in = min(bio->bi_size, (unsigned int)PAGE_SIZE);
-#endif    
     workspace->strm.total_in = 0;
-
-    workspace->strm.total_out = 0;
+#ifdef HAVE_BIO_BVECITER
+    workspace->strm.avail_in = min((unsigned int)src_len, (unsigned int)PAGE_SIZE);
+#else
+    workspace->strm.avail_in = min((unsigned int)src_len, (unsigned int)PAGE_SIZE);
+#endif
     workspace->strm.next_out = workspace->buf;
     workspace->strm.avail_out = PAGE_SIZE;
+    workspace->strm.total_out = 0;
+
+    printk(KERN_INFO "total_in :%lu avail_in :%u", total_in, workspace->strm.avail_in);
 
     /* If it's deflate, and it's got no preset dictionary, then
        we can tell zlib to skip the adler32 check. */
@@ -305,32 +313,34 @@ zlib_decompress_bio(struct list_head *ws, struct bio *bio, struct bio *org_bio)
         workspace->strm.avail_in -= 2;
     }
 
-    if (Z_OK != zlib_inflateInit2(&workspace->strm, wbits)) {
-        printk(KERN_WARNING "BTRFS: inflateInit failed\n");
+    i = 0;
+    if ((ret = zlib_inflateInit2(&workspace->strm, wbits)) != Z_OK) {
         kunmap(pages_in[i]);
+        printk(KERN_WARNING "LUCI: inflateInit failed, ret :%d\n", ret);
         return -EIO;
-    }    
+    }
 
     while (workspace->strm.total_in < src_len) {
         ret = zlib_inflate(&workspace->strm, Z_NO_FLUSH);
         if (ret != Z_OK && ret != Z_STREAM_END) {
+            printk(KERN_ERR "LUCI: inflate failed, ret %d\n", ret);
             break;
-        }    
+        }
 
         buf_start = total_out;
         total_out = workspace->strm.total_out;
-       
-        // we did not make progress in inflate call 
+
+        // we did not make progress in inflate call
         if (buf_start == total_out) {
             break;
-        }    
+        }
 
         ret2 = luci_util_decompress_buf2page(workspace->buf, buf_start,
                                        total_out, disk_start, org_bio);
         if (ret2 == 0) {
             ret = 0;
             goto done;
-        }    
+        }
 
         workspace->strm.next_out = workspace->buf;
         workspace->strm.avail_out = PAGE_SIZE;
@@ -341,19 +351,21 @@ zlib_decompress_bio(struct list_head *ws, struct bio *bio, struct bio *org_bio)
             if (i > total_pages_in) {
                 data_in = NULL;
                 break;
-            }    
+            }
             data_in = kmap(pages_in[i]);
             workspace->strm.next_in = data_in;
             workspace->strm.avail_in = min(src_len - workspace->strm.total_in,
                                            PAGE_SIZE);
-        }    
+        }
     }
 
     if (ret != Z_STREAM_END) {
+        printk(KERN_ERR "LUCI: inflate stream did not end, ret :%d\n", ret);
         ret = -EIO;
     } else {
         ret = 0;
-    }    
+        printk(KERN_DEBUG "LUCI: inflate completed\n");
+    }
 
 done:
     ret = zlib_inflateEnd(&workspace->strm);
@@ -398,7 +410,7 @@ int zlib_decompress(struct list_head *ws, unsigned char *data_in,
     }
 
     if (Z_OK != zlib_inflateInit2(&workspace->strm, wbits)) {
-        printk(KERN_WARNING "BTRFS: inflateInit failed\n");
+        printk(KERN_WARNING "LUCI: inflateInit failed\n");
         return -EIO;
     }
 

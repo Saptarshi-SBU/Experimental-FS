@@ -2,14 +2,21 @@
 #define __LUCI_COMPRESSION_
 
 #include <linux/pagemap.h>
-
+#include <linux/printk.h>
 #include "kern_feature.h"
-
 #include "luci.h"
 
 #define LUCI_COMPR_FLAG  0x1
 
 #define ZLIB_COMPRESSION_LEVEL 3
+
+// useful for debugging data integrity issues
+static void inline
+luci_dump_bytes(const char *msg, const char *buf, size_t len)
+{
+   print_hex_dump(KERN_DEBUG, msg, DUMP_PREFIX_OFFSET, 16, 1,
+       buf, len, true);
+}
 
 typedef enum luci_compression_type {
 	LUCI_COMPRESS_NONE  = 0,
@@ -60,7 +67,7 @@ struct luci_compress_op {
       * be contiguous.  They all correspond to the range of bytes covered by
       * the compressed extent.
       */
-      int (*decompress_bio)(struct list_head *workspace,
+      int (*decompress_bio)(struct list_head *workspace, unsigned long total_in,
                             struct bio *bio, struct bio *org_bio);
 
       /*

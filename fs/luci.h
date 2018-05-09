@@ -165,7 +165,8 @@ static inline struct luci_sb_info *LUCI_SB(struct super_block *sb)
 /*
  * Constants relative to the data blocks
  */
-#define LUCI_NDIR_BLOCKS        12
+//#define LUCI_NDIR_BLOCKS        12
+#define LUCI_NDIR_BLOCKS        2 // ((12 + 1 + 1) * 32)/sizeof(blkptr)
 #define LUCI_IND_BLOCK          LUCI_NDIR_BLOCKS
 #define LUCI_DIND_BLOCK         (LUCI_IND_BLOCK + 1)
 #define LUCI_TIND_BLOCK         (LUCI_DIND_BLOCK + 1)
@@ -180,7 +181,7 @@ typedef struct blkptr {
     __le16 checksum;
     __le32 birth;
     __le16 flags;
-}blkptr;    
+}blkptr;
 
 #define COMPR_LEN(bp) (bp->length)
 /*
@@ -244,7 +245,7 @@ struct luci_inode {
  * second extended file system inode data in memory
  */
 struct luci_inode_info {
-    blkptr  i_data[15];
+    blkptr  i_data[LUCI_N_BLOCKS];
     __u32   i_flags;
     __u32   i_faddr;
     __u8    i_frag_no;
@@ -587,6 +588,11 @@ extern debugfs_t dbgfsparam;
                          printk (KERN_INFO "LUCI-FS %s : page index :%lu" \
                              "page count :%u "f"\n", __func__, page_index(page), \
                              page_count(page), ## a); \
+                    }
+#define luci_dump_blkptr(inode, fb, bp) { \
+                    printk (KERN_DEBUG "LUCI-FS %s inode :%lu file block :%lu "\
+                            "bp(%u-%x-%u)\n", __func__, inode->i_ino, (fb), \
+                            (bp)->blockno, (bp)->flags, (bp)->length); \
                     }
 
 #define BYTE_SHIFT 3

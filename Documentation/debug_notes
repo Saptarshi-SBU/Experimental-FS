@@ -5717,3 +5717,42 @@ trace read code path using dump_stack:
 Normally the parameter flush is set to Z_NO_FLUSH, which allows deflate to
 decide how much data to accumulate before producing output, in order to maximize
 compression. 
+
+read ahead:
+
+/*
+ * A minimal readahead algorithm for trivial sequential/random reads.
+ */
+ondemand_readahead(struct address_space *mapping,
+           struct file_ra_state *ra, struct file *filp,
+           bool hit_readahead_marker, pgoff_t offset,
+           unsigned long req_size)
+
+[  225.477377]  [<ffffffffa057a607>] luci_find_leaf_block+0x57/0xc0 [luci]
+[  225.477382]  [<ffffffffa057a6ea>] luci_readpage+0x7a/0x210 [luci]
+[  225.477389]  [<ffffffff81147542>] __do_page_cache_readahead+0x232/0x240
+[  225.477393]  [<ffffffff81147986>] ondemand_readahead+0x126/0x250
+[  225.477398]  [<ffffffff81147ae3>] page_cache_sync_readahead+0x33/0x50
+[  225.477402]  [<ffffffff8113cf45>] generic_file_aio_read+0x4b5/0x700
+[  225.477407]  [<ffffffff811a4990>] do_sync_read+0x80/0xb0
+[  225.477412]  [<ffffffff811a4fbe>] vfs_read+0x9e/0x170
+[  225.477415]  [<ffffffff811a5ae9>] SyS_read+0x49/0xa0
+[  225.477421]  [<ffffffff8164c059>] system_call_fastpath+0x16/0x1b
+
+
+
+[ 4521.441376] LUCI-FS luci_bio_dump :submitting bio bio : bi_max_vecs :1
+bi_vcnt :1 bi_size :512 bi_sector :12432 bytes :512
+[ 4521.441379] bio page00000000: 78 5e ec d0 01 0d 00 00 00 c2 a0 f7 4f 6d 0f 07
+[ 4521.441382] bio page00000010: 11 28 0c 18 30 60 c0 80 01 03 06 0c 18 30 60 c0
+[ 4521.441385] bio page00000020: 80 81 f7 81 01 00 00 ff ff 03 00 10 00 00 01 00
+[ 4521.441406] bio page00000030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+................
+
+hexdump -C /dev/sdb | less
+*
+00612000  78 5e ec d0 01 0d 00 00  00 c2 a0 f7 4f 6d 0f 07  |x^..........Om..|
+00612010  11 28 0c 18 30 60 c0 80  01 03 06 0c 18 30 60 c0  |.(..0`.......0`.|
+00612020  80 81 f7 81 01 00 00 ff  ff 03 00 10 00 00 01 00  |................|
+00612030  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+
