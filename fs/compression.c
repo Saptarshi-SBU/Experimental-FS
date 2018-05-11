@@ -927,51 +927,44 @@ int luci_submit_compressed_read(struct inode *inode, struct bio *bio,
  * curr_page :       |------------------------------------------
  */
 int
-luci_util_decompress_buf2page(char *buf, unsigned long raw_start_offset,
-			      unsigned long total_out, u64 disk_start,
+luci_util_decompress_buf2page(char *buf, unsigned long deflatebuf_offset,
+			      unsigned long total_out, u64 start_page_offset,
 			      struct bio *bio)
 {
-    unsigned long raw_skip_bytes;
-    unsigned long raw_page_start, prev_page_start;
-    unsigned int copy_bytes;
-    unsigned long bytes;
+    unsigned long skip_bytes, copy_bytes, bytes;
+    unsigned long copied_offset, prev_copied_offset;
     char *raw_page_kaddr;
 
-    return 0;
 repeat:
-    /*
-     * start byte is the first byte of the page we are currently copying
-     */
-    raw_page_start = page_offset(bio_page(bio)) - disk_start;
-
-    /* we have not yet data corresponding to this page */
-    if (raw_page_start >= total_out) {
+    //start byte is the first byte of the page we are currently copying
+    copied_offset = page_offset(bio_page(bio)) - start_page_offset;
+    // we have not yet data corresponding to this page
+    if (copied_offset >= total_out) {
         return 1;
     }
-
-    /* the start of the data we are looking for is offset into the middle
-     * of the working buffer
-     */
-    if (raw_page_start < total_out && raw_page_start > raw_start_offset) {
-        raw_skip_bytes = raw_page_start - raw_start_offset;
+    // the start of the data we are looking for is offset into the middle
+    // of the working buffer
+    if (copied_offset < total_out && copied_offset > deflatebuf_offset) {
+        skip_bytes = copied_offset - deflatebuf_offset;
     } else {
-        raw_skip_bytes = 0;
+        skip_bytes = 0;
     }
 
-    copy_bytes = total_out - raw_page_start;
-
     /* copy bytes from the working buffer to the pages */
+    copy_bytes = total_out - copied_offset;
+    luci_info("decompress buf2page params: copy_bytes :%lu, copied_offset :%lu"
+        " deflatebuf_offset :%lu, skip_bytes :%lu", copy_bytes, copied_offset,
+        deflatebuf_offset, skip_bytes);
     while (copy_bytes > 0) {
         //bytes = min(bio_cur_bytes(bio), copy_bytes);
-        unsigned int cur_bytes = bio_cur_bytes(bio);
+        unsigned long cur_bytes = bio_cur_bytes(bio);
         bytes = min(cur_bytes, copy_bytes);
         raw_page_kaddr = kmap_atomic(bio_page(bio));
-        memcpy(raw_page_kaddr, buf + raw_skip_bytes, bytes);
+        memcpy(raw_page_kaddr, buf + skip_bytes, bytes);
         kunmap_atomic(raw_page_kaddr);
         flush_dcache_page(bio_page(page));
-        raw_skip_bytes += bytes;
+        skip_bytes += bytes;
         copy_bytes -= bytes;
-
         // check if we need to pick another page
         bio_advance(bio, bytes);
         #ifdef HAVE_BIO_ITER
@@ -981,10 +974,10 @@ repeat:
         #endif
             return 0;
         }
-        prev_page_start = raw_page_start;
-        raw_page_start = page_offset(bio_page(bio)) - disk_start;
+        prev_copied_offset = copied_offset;
+        copied_offset = page_offset(bio_page(bio)) - start_page_offset;
 
-        if (prev_page_start != raw_page_start) {
+        if (prev_copied_offset != copied_offset) {
             goto repeat;
         }
     }

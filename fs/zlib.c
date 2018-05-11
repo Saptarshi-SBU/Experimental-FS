@@ -272,11 +272,7 @@ zlib_decompress_bio(struct list_head *ws, unsigned long total_in,
     size_t src_len = total_in;
     unsigned long total_pages_in = compressed_bio->bi_vcnt;
     unsigned long buf_start;
-#ifdef HAVE_BIO_ITER
-    u64 disk_start = (compressed_bio->bi_iter.bi_sector << 9);
-#else
-    u64 disk_start = (compressed_bio->bi_sector << 9);
-#endif
+    unsigned long start_page_offset = page_offset(bio_page(org_bio));
     struct page *pages_in[CLUSTER_NRPAGE];
 
     memset((char*)pages_in, 0, CLUSTER_NRPAGE * sizeof(struct page*));
@@ -329,6 +325,10 @@ zlib_decompress_bio(struct list_head *ws, unsigned long total_in,
 
         buf_start = total_out;
         total_out = workspace->strm.total_out;
+        printk(KERN_INFO "LUCI: deflate strm.total in :%lu, buf start :%lu "
+            "total decompressed :%lu start_page_offset :%lu\n",
+            workspace->strm.total_in, buf_start,
+            total_out, start_page_offset);
 
         // we did not make progress in inflate call
         if (buf_start == total_out) {
@@ -336,7 +336,7 @@ zlib_decompress_bio(struct list_head *ws, unsigned long total_in,
         }
 
         ret2 = luci_util_decompress_buf2page(workspace->buf, buf_start,
-                                       total_out, disk_start, org_bio);
+                                       total_out, start_page_offset, org_bio);
         if (ret2 == 0) {
             ret = 0;
             goto done;
