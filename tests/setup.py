@@ -127,6 +127,25 @@ class LUCIBuilder(Builder):
         print ('Mem Stats :')
         print(virtual_memory())
 
+    @staticmethod
+    def IOStats():
+        ''' print counters '''
+        print ("****luci internal stats***")
+        with open('/sys/kernel/debug/luci/nrwrites') as f:
+            nr_writes = int(f.read())
+        with open('/sys/kernel/debug/luci/avg_balloc_lat') as f:
+            balloc_latency = int(f.read())
+        with open('/sys/kernel/debug/luci/avg_deflate_lat') as f:
+            deflate_latency = int(f.read())
+        with open('/sys/kernel/debug/luci/avg_inflate_lat') as f:
+            inflate_latency = int(f.read())
+        with open('/sys/kernel/debug/luci/avg_io_lat') as f:
+            io_latency = int(f.read())
+        print("nr_writes: {} balloc latency: {} ns deflate latency: {} ns zlib "
+              "latency: {} ns io latency {} ns".format(str(nr_writes), \
+              str(balloc_latency), str(deflate_latency), \
+              str(inflate_latency), str(io_latency)))
+
     def getSetupMethod(self):
         return LUCIBuilder.setupModule
 
@@ -134,7 +153,8 @@ class LUCIBuilder(Builder):
         return LUCIBuilder.cleanupModule
 
     def getMonitorMethod(self):
-        return LUCIBuilder.memStats
+       #return LUCIBuilder.memStats
+        return LUCIBuilder.IOStats
 
 def Run(args):
     luciBuilder = LUCIBuilder()

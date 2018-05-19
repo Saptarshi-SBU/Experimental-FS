@@ -551,6 +551,18 @@ typedef struct debugfs {
     struct dentry *dirent_lat;
     u32 pgtrack;
     struct dentry *dirent_pgtrack;
+    u32 tracedata;
+    struct dentry *dirent_tracedata;
+    u64 nrwrites;
+    struct dentry *dirent_nrwrites;
+    u64 avg_balloc_lat; //ns
+    struct dentry *dirent_balloc_lat;
+    u64 avg_deflate_lat; //ns
+    struct dentry *dirent_deflate_lat;
+    u64 avg_inflate_lat; //ns
+    struct dentry *dirent_inflate_lat;
+    u64 avg_io_lat; //ns
+    struct dentry *dirent_io_lat;
 }debugfs_t;
 
 extern debugfs_t dbgfsparam;
@@ -595,6 +607,45 @@ extern debugfs_t dbgfsparam;
                             (bp)->blockno, (bp)->flags, (bp)->length); \
                     }
 
+// useful for debugging data integrity issues
+static void inline
+luci_dump_bytes(const char *msg, struct page *page, unsigned int len)
+{
+    bool map_page = true;
+
+    if (dbgfsparam.tracedata) {
+        void *kaddr = NULL;
+
+        if ((page_file_mapping(page)) || page_mapped(page)) {
+            map_page = false;
+        }
+
+        // page may belong to high mem
+        if (map_page) {
+            kaddr = kmap(page);
+        }
+
+        print_hex_dump(KERN_INFO, msg, DUMP_PREFIX_OFFSET, 16,
+            1, kaddr, len, true);
+
+        if (map_page) {
+            kunmap(kaddr);
+        }
+    }
+}
+
+// apparently kernel has function for us delta not ns delta
+static inline s64
+ktime_ns_delta(const ktime_t later, const ktime_t earlier)
+{
+    return ktime_to_ns(ktime_sub(later, earlier));
+}
+
+#define UPDATE_AVG_LATENCY_NS(X, START) \
+{ \
+    X =  (X + ktime_ns_delta(ktime_get(), START))/2; \
+}
+
 #define BYTE_SHIFT 3
 
 #define SECTOR_SHIFT 9
@@ -607,6 +658,7 @@ sector_align(unsigned long n)
     sector_t nsec = (n + SECTOR_SIZE - 1)/SECTOR_SIZE;
     return (long)nsec << SECTOR_SHIFT;
 }
+
 
 
 typedef struct {

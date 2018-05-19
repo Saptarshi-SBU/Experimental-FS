@@ -222,7 +222,7 @@ int zlib_compress_pages(struct list_head *ws,
         printk(KERN_ERR "deflate failed to finish, status :%d "
                 "total_in :%lu total_out:%lu avail_out:%u", ret,
                 workspace->strm.total_in, workspace->strm.total_out,
-                workspace->strm.avail_out);
+                (unsigned int)workspace->strm.avail_out);
         ret = -E2BIG;
         goto out;
     }
@@ -248,7 +248,7 @@ int zlib_compress_pages(struct list_head *ws,
 out:
     *out_pages = nr_pages;
     if (out_page) {
-        luci_dump_bytes("compressed bytes(w)", (char *)out_page, PAGE_SIZE);
+        luci_dump_bytes("compressed bytes(w)", out_page, PAGE_SIZE);
         kunmap(out_page);
     }
 
@@ -283,8 +283,8 @@ zlib_decompress_bio(struct list_head *ws, unsigned long total_in,
         pages_in[i] = bvec->bv_page;
     }
 
+    luci_dump_bytes("compressed bytes(r)", pages_in[0], PAGE_SIZE);
     data_in = kmap(pages_in[0]);
-    luci_dump_bytes("compressed bytes(r)", (char*)data_in, PAGE_SIZE);
     workspace->strm.next_in = data_in;
     workspace->strm.total_in = 0;
 #ifdef HAVE_BIO_BVECITER
@@ -296,7 +296,8 @@ zlib_decompress_bio(struct list_head *ws, unsigned long total_in,
     workspace->strm.avail_out = PAGE_SIZE;
     workspace->strm.total_out = 0;
 
-    printk(KERN_INFO "total_in :%lu avail_in :%u", total_in, workspace->strm.avail_in);
+    printk(KERN_INFO "total_in :%lu avail_in :%u", total_in,
+        (unsigned int) workspace->strm.avail_in);
 
     /* If it's deflate, and it's got no preset dictionary, then
        we can tell zlib to skip the adler32 check. */

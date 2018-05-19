@@ -55,7 +55,6 @@ luci_bh_dump(struct buffer_head *bh)
 static void
 luci_bio_dump(struct bio * bio, const char *msg)
 {
-     char *kaddr = NULL;
 #ifdef HAVE_BIO_ITER
      luci_dbg("%s bio : bi_max_vecs :%u bi_vcnt :%d bi_size :%u bi_sector :%lu"
         " bytes: %u", msg, bio->bi_max_vecs, bio->bi_vcnt, bio->bi_iter.bi_size,
@@ -65,9 +64,7 @@ luci_bio_dump(struct bio * bio, const char *msg)
         " bytes :%u", msg, bio->bi_max_vecs, bio->bi_vcnt, bio->bi_size,
         bio->bi_sector, bio_cur_bytes(bio));
 #endif
-     kaddr = kmap_atomic(bio_page(bio));
-     luci_dump_bytes("bio page", kaddr, PAGE_SIZE);
-     kunmap_atomic(kaddr);
+     luci_dump_bytes("bio page", bio_page(bio), PAGE_SIZE);
 }
 
 static void
@@ -265,6 +262,7 @@ luci_submit_write(struct inode * inode, struct page **pages,
      unsigned long total_out, unsigned long disk_start, bool compressed)
 {
     int ret;
+    ktime_t start;
     struct bio *bio;
     struct block_device *bdev = inode->i_sb->s_bdev;
     // align size to device sector, otherwise device rejects write
@@ -299,6 +297,8 @@ luci_submit_write(struct inode * inode, struct page **pages,
         BUG();
     }
     luci_bio_dump(bio, "submitting bio write");
+
+    start = ktime_get();
     #ifdef NEW_BIO_SUBMIT
     bio->bi_opf = REQ_OP_WRITE;
     ret = submit_bio_wait(bio);
@@ -312,6 +312,8 @@ luci_submit_write(struct inode * inode, struct page **pages,
     #else
         luci_err("bio error status :0x%lx, status :%d", bio->bi_flags, ret);
     #endif
+    } else {
+        UPDATE_AVG_LATENCY_NS(dbgfsparam.avg_io_lat, start);
     }
 
 exit:
@@ -396,6 +398,7 @@ __luci_write_compressed(struct page * page, struct pagevec *pvec,
 {
     int ret;
     int i = 0;
+    ktime_t start;
     struct list_head * ws;
     struct page **pages_vec;
     pgoff_t index = page_index(page);
@@ -433,6 +436,8 @@ __luci_write_compressed(struct page * page, struct pagevec *pvec,
         goto exit;
     }
 
+    start = ktime_get();
+
     ret = luci_zlib_compress.compress_pages(ws,
                                    page->mapping,
                                    start_offset,
@@ -442,6 +447,8 @@ __luci_write_compressed(struct page * page, struct pagevec *pvec,
                                    &total_out);
 
     free_workspace(LUCI_COMPRESS_ZLIB, ws);
+
+    UPDATE_AVG_LATENCY_NS(dbgfsparam.avg_deflate_lat, start);
 
     // cannot compress : a) E2BIG  b) page not in page cache
     // TBD : We do not handle this case well, for now return OK.
@@ -617,6 +624,7 @@ repeat:
         panic("write failed :%d", ret);
     } else {
         wbc->nr_to_write -= nr_dirty;
+        dbgfsparam.nrwrites += nr_dirty;
     }
 
     // unlock pages in the cluster

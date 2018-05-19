@@ -932,6 +932,47 @@ init_debugfs(void) {
         printk(KERN_ERR "error creating file");
         return (-ENODEV);
     }
+    dbgfsparam.dirent_tracedata = debugfs_create_u32("tracedata", 0644,
+        dbgfsparam.dirent, &dbgfsparam.tracedata);
+    if (dbgfsparam.dirent_pgtrack == NULL) {
+        printk(KERN_ERR "error creating file");
+        return (-ENODEV);
+    }
+
+    dbgfsparam.dirent_nrwrites = debugfs_create_u64("nrwrites", 0644,
+        dbgfsparam.dirent, &dbgfsparam.nrwrites);
+    if (dbgfsparam.dirent_nrwrites == NULL) {
+        printk(KERN_ERR "error creating file");
+        return (-ENODEV);
+    }
+
+    dbgfsparam.dirent_balloc_lat = debugfs_create_u64("avg_balloc_lat", 0644,
+        dbgfsparam.dirent, &dbgfsparam.avg_balloc_lat);
+    if (dbgfsparam.dirent_balloc_lat == NULL) {
+        printk(KERN_ERR "error creating file");
+        return (-ENODEV);
+    }
+
+    dbgfsparam.dirent_deflate_lat = debugfs_create_u64("avg_deflate_lat", 0644,
+        dbgfsparam.dirent, &dbgfsparam.avg_deflate_lat);
+    if (dbgfsparam.dirent_deflate_lat == NULL) {
+        printk(KERN_ERR "error creating file");
+        return (-ENODEV);
+    }
+
+    dbgfsparam.dirent_inflate_lat = debugfs_create_u64("avg_inflate_lat", 0644,
+        dbgfsparam.dirent, &dbgfsparam.avg_inflate_lat);
+    if (dbgfsparam.dirent_inflate_lat == NULL) {
+        printk(KERN_ERR "error creating file");
+        return (-ENODEV);
+    }
+
+    dbgfsparam.dirent_io_lat = debugfs_create_u64("avg_io_lat", 0644,
+        dbgfsparam.dirent, &dbgfsparam.avg_io_lat);
+    if (dbgfsparam.dirent_io_lat == NULL) {
+        printk(KERN_ERR "error creating file");
+        return (-ENODEV);
+    }
     return 0;
 }
 

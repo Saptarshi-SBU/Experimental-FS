@@ -19,17 +19,17 @@ luci_alloc_bitmap(unsigned long *addr, unsigned int nr_bits,
     unsigned int max_bits)
 {
     u8 *ptr;
+    ktime_t start;
     bool found = false;
     unsigned int byte_nr= 0;
     unsigned int start_bit = 0, end_bit = 0, next_bit = 0;
-
-    ktime_t start = ktime_get();
 
     if (nr_bits > (1 << BYTE_SHIFT)) {
         luci_err("request for more bits than possible in a byte range");
         BUG();
     }
 
+    start = ktime_get();
     // loop till you find zero bit position for range to allocate
     do {
            start_bit = find_next_zero_bit(addr, max_bits, next_bit);
@@ -78,10 +78,7 @@ luci_alloc_bitmap(unsigned long *addr, unsigned int nr_bits,
 fail:
     return max_bits;
 done:
-    if (ktime_us_delta(ktime_get(), start) > 1000UL) {
-        luci_info("allocation latency(usec) :%llu",
-            ktime_us_delta(ktime_get(), start));
-    }
+    UPDATE_AVG_LATENCY_NS(dbgfsparam.avg_balloc_lat, start);
     return start_bit;
 }
 

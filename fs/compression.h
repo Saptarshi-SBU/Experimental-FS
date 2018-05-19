@@ -10,14 +10,6 @@
 
 #define ZLIB_COMPRESSION_LEVEL 3
 
-// useful for debugging data integrity issues
-static void inline
-luci_dump_bytes(const char *msg, const char *buf, size_t len)
-{
-   print_hex_dump(KERN_DEBUG, msg, DUMP_PREFIX_OFFSET, 16, 1,
-       buf, len, true);
-}
-
 typedef enum luci_compression_type {
 	LUCI_COMPRESS_NONE  = 0,
 	LUCI_COMPRESS_ZLIB  = 1,
