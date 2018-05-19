@@ -2,9 +2,13 @@
 #define __LUCI_COMPRESSION_
 
 #include <linux/pagemap.h>
-#include <linux/printk.h>
 #include "kern_feature.h"
 #include "luci.h"
+
+// Updating file size with compressed size may not be correct.
+// POSIX applications use file size attribute for accessing logical offsets.
+// Use this to verify total blocks alloted against compressed size (TEST).
+//#define LUCI_ATTRSIZE_COMPRESSED
 
 #define LUCI_COMPR_FLAG  0x1
 

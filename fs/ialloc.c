@@ -457,7 +457,9 @@ luci_free_block(struct inode *inode, unsigned long block)
    BUG_ON(block <= le32_to_cpu(lsb->s_first_data_block));
    block_group = (block - le32_to_cpu(lsb->s_first_data_block)) /
        sbi->s_blocks_per_group;
-   BUG_ON(block_group > sbi->s_groups_count);
+   if (block_group > sbi->s_groups_count) {
+       panic("bogus block group %u(%lu)", block_group, sbi->s_groups_count);
+   }
    bitpos = (block - le32_to_cpu(lsb->s_first_data_block)) %
        sbi->s_blocks_per_group;
 

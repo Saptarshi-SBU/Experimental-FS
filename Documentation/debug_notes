@@ -5764,3 +5764,71 @@ Read Decompression Test:
 [root@localhost Linux-LFSBak2]# dd if=/mnt/compr09 of=/tmp/compr09 bs=4k count=1
 [root@localhost Linux-LFSBak2]# md5sum /tmp/compr09
 620f0b67a91f7f74151bc5be745b7110  /tmp/compr09
+
+Inflate Bug:
+
+wget --no-check-certificate https://textfiles.com/stories/batlslau.txt
+
+ 6602.723359] LUCI-FS luci_writepages_compressed :inode :20 :writing pages wbc:
+(0-9223372036854775807) dirty :5120
+[ 6602.723367] LUCI-FS __luci_cluster_write_compressed : dirty pages :1 in range
+lookup 0-1
+[ 6602.723371] LUCI-FS __luci_cluster_write_compressed : dirty pages:1 in
+cluster 0(0)
+[ 6602.723736] LUCI-FS luci_cluster_update_bp :inode :20 :updating bp
+1-1-2031(0) for file block 0
+[ 6602.723741] LUCI-FS luci_cluster_update_bp :inode :20 :delta bytes :2031
+
+[ 6618.728995] LUCI-FS luci_iget :inode :2 :inode size low :4096 high :0
+[ 6627.098760] LUCI-FS luci_iget :inode :20 :inode size low :101404 high :0
+[ 6633.100226] LUCI-FS luci_find_leaf_block inode :20 file block :0 bp(1-1-2031)
+[ 6633.100232] LUCI-FS luci_readpage inode :20 file block :0 bp(1-1-2031)
+[ 6633.100236] LUCI-FS luci_read_compressed : total_in :2031 aligned bytes :2048
+disk start :4096
+[ 6633.104697] LUCI: inflate failed, ret -3
+[ 6633.104701] LUCI: inflate stream did not end, ret :-3
+[ 6633.104714] LUCI-FS luci_find_leaf_block inode :20 file block :1
+bp(1067-1-1618)
+
+TODO : handle truncate
+
+[81004.214170]  [<ffffffff81160a39>] ? __do_fault+0x409/0x520
+[81004.214261]  [<ffffffff81163903>] ? handle_pte_fault+0x93/0xa40
+[81004.214353]  [<ffffffff81293f16>] ? security_file_alloc+0x16/0x20
+[81004.214505]  [<ffffffffa0596602>] luci_truncate+0x92/0x3e0 [luci]
+[81004.214614]  [<ffffffffa059774d>] luci_setattr+0x7d/0x160 [luci]
+[81004.214707]  [<ffffffff811bf968>] notify_change+0x1b8/0x340
+[81004.214802]  [<ffffffff811a33cb>] do_truncate+0x6b/0xa0
+[81004.214889]  [<ffffffff811a7689>] ? __sb_start_write+0x49/0x100
+[81004.214980]  [<ffffffff811a371b>] do_sys_ftruncate.constprop.18+0x10b/0x160
+[81004.215076]  [<ffffffff811a37ae>] SyS_ftruncate+0xe/0x10
+[81004.215165]  [<ffffffff8164c059>] system_call_fastpath+0x16/0x1b
+
+scsi complete
+
+[10312.460197] Stack:
+[10312.462201]  ffff8801b747d630 ffff880223d1bc40 ffffffff811e061e
+ffff8801b747d5c0
+[10312.464240]  0000000000001000 0000000000000000 ffff880223d1bc50
+ffffffff811d7d2d
+[10312.466263]  ffff880223d1bc90 ffffffff812cf592 0000000000000000
+ffff880132478bc0
+[10312.468277] Call Trace:
+[10312.470285]  [<ffffffff811e061e>] mpage_end_io+0x3e/0xb0
+[10312.472253]  [<ffffffff811d7d2d>] bio_endio+0x1d/0x30
+[10312.474165]  [<ffffffff812cf592>] blk_update_request+0xc2/0x400
+[10312.476034]  [<ffffffff812cf8ec>] blk_update_bidi_request+0x1c/0x80
+[10312.477854]  [<ffffffff812d069f>] blk_end_bidi_request+0x1f/0x60
+[10312.479579]  [<ffffffff812d06f0>] blk_end_request+0x10/0x20
+[10312.481270]  [<ffffffff8140b4a3>] scsi_io_completion+0xf3/0x6e0
+[10312.482886]  [<ffffffff81401ce0>] scsi_finish_command+0xb0/0x110
+[10312.484492]  [<ffffffff8140b2af>] scsi_softirq_done+0x12f/0x160
+[10312.486084]  [<ffffffff812d7b30>] blk_done_softirq+0x80/0xa0
+[10312.487667]  [<ffffffff8106c0e7>] __do_softirq+0xf7/0x240
+[10312.489247]  [<ffffffff8106c260>] run_ksoftirqd+0x30/0x50
+[10312.490836]  [<ffffffff8109050f>] smpboot_thread_fn+0xff/0x1a0
+[10312.492431]  [<ffffffff81090410>] ? lg_local_lock_cpu+0x40/0x40
+[10312.494001]  [<ffffffff81088310>] kthread+0xc0/0xd0
+[10312.495553]  [<ffffffff81088250>] ? insert_kthread_work+0x40/0x40
+[10312.497099]  [<ffffffff8164bfac>] ret_from_fork+0x7c/0xb0
+[10312.498638]  [<ffffffff81088250>] ? insert_kthread_work+0x40/0x40

@@ -20,12 +20,19 @@
 #define _LUCI_H_
 
 #include <linux/fs.h>
+#include <linux/mm.h>
+#include <linux/pagemap.h>
 #include <linux/blockgroup_lock.h>
 #include <linux/percpu_counter.h>
 #include <linux/rbtree.h>
 #include <linux/debugfs.h>
-#include <linux/pagemap.h>
 #include <linux/log2.h>
+#include <linux/printk.h>
+
+#define CONCAT_(x,y) x##y
+#define CONCAT(x,y) CONCAT_(x,y)
+#define _STATIC_ASSERT(R) \
+    struct CONCAT(X, __COUNTER__) { unsigned int static_assert: (R) ? 1 : -1; }
 
 /* data type for block offset of block group */
 typedef int luci_grpblk_t;
@@ -181,7 +188,7 @@ typedef struct blkptr {
     __le16 checksum;
     __le32 birth;
     __le16 flags;
-}blkptr;
+}__attribute__ ((aligned (8), packed)) blkptr;
 
 #define COMPR_LEN(bp) (bp->length)
 /*
@@ -524,10 +531,17 @@ struct luci_mount_options {
 
 static inline void verify_offsets(void)
 {
-#define A(x,y) BUILD_BUG_ON(x != offsetof(struct luci_super_block, y));
+#define A(x,y) _STATIC_ASSERT(x == offsetof(struct luci_super_block, y))
     A(LUCI_SB_MAGIC_OFFSET, s_magic);
     A(LUCI_SB_BLOCKS_OFFSET, s_blocks_count);
     A(LUCI_SB_BSIZE_OFFSET, s_log_block_size);
+#undef A
+}
+
+static inline void verify_size(void)
+{
+#define A(R) _STATIC_ASSERT(R)
+    A(sizeof(struct blkptr) == 16);
 #undef A
 }
 

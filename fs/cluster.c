@@ -1,5 +1,6 @@
 #include "luci.h"
 #include "cluster.h"
+#include "compression.h"
 
 #include <linux/mm.h>
 #include <linux/kernel.h>
@@ -29,16 +30,51 @@ luci_cluster_lookup_bp(struct page *page, struct inode *inode,
     }
 }
 
+static int
+luci_account_delta(blkptr bp_old [], blkptr bp_new [], unsigned nr_blocks)
+{
+    blkptr old, new;
+    int i, delta = 0, bytes_uncomp = 0;
+    bool new_compressed = true, old_compressed = true;
+
+    BUG_ON(nr_blocks == 0);
+    for (i = 0; i < nr_blocks; i++) {
+        old = bp_old[i];
+        new = bp_new[i];
+
+        if ((old.flags & LUCI_COMPR_FLAG) && (new.flags & LUCI_COMPR_FLAG)) {
+            delta += (sector_align(new.length) - sector_align(old.length));
+            break;
+        } else if (new.flags & LUCI_COMPR_FLAG) {
+            bytes_uncomp += sector_align(old.length);
+            old_compressed = false;
+        } else if (old.flags & LUCI_COMPR_FLAG) {
+            bytes_uncomp += sector_align(new.length);
+            new_compressed = false;
+        } else {
+            delta += (sector_align(new.length) - sector_align(old.length));
+        }
+    }
+
+    if (!new_compressed) {
+        delta += (bytes_uncomp - old.length);
+    } else if (!old_compressed) {
+        delta += (new.length - bytes_uncomp);
+    }
+    return delta;
+}
+
 int
 luci_cluster_update_bp(struct page *page, struct inode *inode, blkptr bp_new [])
 {
-    int ret;
+    int ret, delta;
     unsigned long cluster;
     unsigned long i = 0, curr_block, begin_block, end_block;
     blkptr bp_old[CLUSTER_NRBLOCKS_MAX];
 
     cluster = luci_cluster_no(page_index(page));
-    luci_dbg_inode(inode, "lookup bp for cluster %lu", cluster);
+    luci_dbg_inode(inode, "lookup bp for cluster %lu(%lu)", cluster,
+        page_index(page));
     luci_cluster_lookup_bp(page, inode, bp_old);
     // update block pointer
     luci_cluster_file_range(page, &begin_block, &end_block);
@@ -62,5 +98,7 @@ luci_cluster_update_bp(struct page *page, struct inode *inode, blkptr bp_new [])
         }
         curr_block++;
     }
-    return 0;
+    delta = luci_account_delta(bp_old, bp_new, i);
+    luci_dbg_inode(inode, "delta bytes :%d", delta);
+    return delta;
 }

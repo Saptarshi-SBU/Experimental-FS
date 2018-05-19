@@ -1305,7 +1305,6 @@ luci_readpage(struct file *file, struct page *page)
                     panic("read failed :%d", ret);
                 }
             } else {
-                unlock_page(cachep);
                 luci_dbg_inode(inode, "reading uncompressed page :%lu",
                     page_index(page));
                 goto uncompressed_read;
@@ -1314,8 +1313,8 @@ luci_readpage(struct file *file, struct page *page)
         copy_pages(page, cachep, 0, 0, PAGE_SIZE);
         if (PageLocked(cachep)) {
             unlock_page(cachep);
-            put_page(cachep);
         }
+        put_page(cachep);
         // Needed otherwise will result in an EIO
         SetPageUptodate(page);
         luci_dbg_inode(inode, "compressed read completed for pg index :%lu",
