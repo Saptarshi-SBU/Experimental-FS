@@ -111,19 +111,19 @@ luci_count_free_blocks(struct super_block *sb)
  */
 static int
 luci_free_branch(struct inode *inode,
-    long current_block,
+    long bp,
     long *delta_blocks,
     int depth)
 {
     int err = 0;
-    int nr_entries;
-    uint32_t *p, *q;
+    blkptr *p, *q;
     struct buffer_head *bh;
     struct super_block *sb = inode->i_sb;
+    int nr_blkptr = LUCI_ADDR_PER_BLOCK(sb);
 
     if (depth == 0) {
 	// Fix : This is a leaf block
-        err = luci_free_block(inode, current_block);
+        err = luci_free_block(inode, bp);
 	if (!err) {
            luci_dec_size(inode, 1);
            *delta_blocks -= 1;
@@ -131,19 +131,18 @@ luci_free_branch(struct inode *inode,
 	return err;
     }
 
-    nr_entries = LUCI_ADDR_PER_BLOCK(sb);
-    bh = sb_bread(sb, current_block);
+    bh = sb_bread(sb, bp);
     if (bh == NULL) {
-        luci_err("failed to read block :%ld during free branch", current_block);
+        luci_err("failed to read block :%ld during free branch", bp);
         return -EIO;
     }
-    p = (uint32_t*)bh->b_data;
-    q = (uint32_t*)((char*)bh->b_data + bh->b_size) - 1;
+    p = (blkptr*)bh->b_data;
+    q = (blkptr*)((char*)bh->b_data + bh->b_size - sizeof(blkptr));
 
     BUG_ON(p > q);
     for (;q >= p; q--) {
 
-       uint32_t entry = *q;
+       uint32_t entry = q->blockno;
 
        if (*delta_blocks == 0) {
 	   err = 0;
@@ -151,35 +150,38 @@ luci_free_branch(struct inode *inode,
            break;
        }
 
-       // track valid entries in indirect block
-       nr_entries--;
-       if (!*q) {
+       // track bp entries in indirect block.
+       // This is a condition to decide when to free metablock.
+       nr_blkptr--;
+       BUG_ON(nr_blkptr < 0);
+
+       if (!q->blockno) {
           continue;
        }
 
-       err = luci_free_branch(inode, *q, delta_blocks, depth - 1);
+       err = luci_free_branch(inode, q->blockno, delta_blocks, depth - 1);
        if (err) {
-          luci_err("failed to free branch at depth:%d block:%d", depth - 1, *q);
+          luci_err("failed to free branch at depth:%d block:%d", depth - 1,
+              q->blockno);
           goto out;
        }
 
        // clear entry
-       *q = 0;
+       memset((char*)q, 0, sizeof(blkptr));
        mark_buffer_dirty(bh);
-       luci_dbg_inode(inode, "freed indirect block %lu depth %d block[%d] %d "
-          "nrblocks :%ld i_size :%llu", current_block, depth, nr_entries, entry,
-	  *delta_blocks, inode->i_size);
+       luci_dbg_inode(inode, "parent block %lu(%d) freed bp %u deltablocks %ld "
+          "i_size :%llu", bp, depth, entry, *delta_blocks, inode->i_size);
     }
 
-    // block has entries for block address
-    if (nr_entries > 0) {
+    // block has entries for block address, do not free the metablock
+    if (nr_blkptr > 0) {
         goto out;
     }
 
     // Free the indirect block
-    err = luci_free_block(inode, current_block);
+    err = luci_free_block(inode, bp);
     if (err) {
-       luci_err_inode(inode, "error freeing indirect block %ld", current_block);
+       luci_err_inode(inode, "error freeing indirect block %ld", bp);
        goto out;
     }
 
