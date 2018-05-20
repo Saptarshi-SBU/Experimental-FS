@@ -5832,3 +5832,11 @@ ffff880132478bc0
 [10312.495553]  [<ffffffff81088250>] ? insert_kthread_work+0x40/0x40
 [10312.497099]  [<ffffffff8164bfac>] ret_from_fork+0x7c/0xb0
 [10312.498638]  [<ffffffff81088250>] ? insert_kthread_work+0x40/0x40
+
+#Fix me
+
+[52536.045041] SELinux: initialized (dev sdb, type luci), not configured for
+labeling
+[52538.344391] LUCI-FS luci_find_entry : error invalid dir record length at
+ffff88017a44a000
+[52538.344396] LUCI-FS luci_lookup : error inode lookup failed for test2.jpg
