@@ -14,6 +14,8 @@
 
 #define ZLIB_COMPRESSION_LEVEL 3
 
+#define DEBUG_COMPRESSION
+
 typedef enum luci_compression_type {
 	LUCI_COMPRESS_NONE  = 0,
 	LUCI_COMPRESS_ZLIB  = 1,

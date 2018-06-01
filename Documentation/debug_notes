@@ -5840,3 +5840,56 @@ labeling
 [52538.344391] LUCI-FS luci_find_entry : error invalid dir record length at
 ffff88017a44a000
 [52538.344396] LUCI-FS luci_lookup : error inode lookup failed for test2.jpg
+
+#Check all block pointers
+
+[22321.040984] LUCI-FS luci_iget :inode :2 :inode size low :12952 high :0
+[22321.040987] LUCI-FS luci_iget :inode :2 :nr_blocks :5
+[22321.040990] LUCI-FS luci_iget :inode :2 :i_data[0]:1539
+[22321.040993] LUCI-FS luci_iget :inode :2 :i_data[1]:418996
+[22321.040995] LUCI-FS luci_iget :inode :2 :i_data[2]:1036727
+[22321.041009] LUCI-FS luci_iget :inode :2 :i_data[3]:0
+[22321.041010] LUCI-FS luci_iget :inode :2 :i_data[4]:0
+[22321.041014] LUCI-FS luci_fill_super :luci super block read sucess
+[22321.041021] SELinux: initialized (dev sdb, type luci), not configure
+
+#[root@localhost Linux-LFSBak2]# grep -r bmap /var/log/messages
+May 24 00:23:59 localhost kernel: [ 8394.825072] LUCI-FS populate_bmap_tree
+:inode :2 :allocated iblock 1 level :0(1) block 1545(0-0) index 1
+May 24 00:23:59 localhost kernel: [ 8395.466544] LUCI-FS populate_bmap_tree
+:inode :2 :allocated iblock 2 level :0(2) block 1546(0-0) index 2
+May 24 00:23:59 localhost kernel: [ 8395.466551] LUCI-FS populate_bmap_tree
+:inode :2 :allocated iblock 2 level :1(2) block 1547(0-0) index 0
+May 24 00:24:00 localhost kernel: [ 8396.095543] LUCI-FS populate_bmap_tree
+:inode :2 :allocated iblock 3 level :1(2) block 1548(0-0) index 1
+May 24 00:24:00 localhost kernel: [ 8396.727252] LUCI-FS populate_bmap_tree
+:inode :2 :allocated iblock 4 level :1(2) block 1549(0-0) index 2
+[root@localhost Linux-LFSBak2]# dmesg 
+[ 8474.071312] LUCI-FS luci_block_to_path :inode :2 :i_block :0 n:1 indexes :0
+:0 :0 :0
+[ 8474.071316] LUCI-FS luci_dump_layout :inode :2 :block_path iblock 0 path 1539
+0 0 0
+[ 8474.071318] LUCI-FS luci_block_to_path :inode :2 :i_block :1 n:1 indexes :1
+:0 :0 :0
+[ 8474.071320] LUCI-FS luci_dump_layout :inode :2 :block_path iblock 1 path 1545
+0 0 0
+[ 8474.071322] LUCI-FS luci_block_to_path :inode :2 :i_block :2 n:2 indexes :2
+:0 :0 :0
+[ 8474.071329] LUCI-FS luci_dump_layout :inode :2 :block_path iblock 2 path 1546
+1547 0 0
+[ 8474.071330] LUCI-FS luci_block_to_path :inode :2 :i_block :3 n:2 indexes :2
+:1 :0 :0
+[ 8474.071332] LUCI-FS luci_dump_layout :inode :2 :detected hole at iblock 3
+[ 8474.071334] LUCI-FS luci_dump_layout :inode :2 :block_path iblock 3 path 1546
+0 0 0
+[ 8474.071336] LUCI-FS luci_block_to_path :inode :2 :i_block :4 n:2 indexes :2
+:2 :0 :0
+[ 8474.071337] LUCI-FS luci_dump_layout :inode :2 :detected hole at iblock 4
+[ 8474.071339] LUCI-FS luci_dump_layout :inode :2 :block_path iblock 4 path 1546
+0 0 0
+[ 8474.071340] LUCI-FS luci_dump_layout :inode :2 :total blocks :5 holes :2 size
+:20104
+---------------
+Bug:
+[ 1782.915518] LUCI-FS populate_bmap_tree2 :inode :13 :dump iallocated iblock
+259 level :2 block[1-ffff8800bbc3e000-1805-1806]1807

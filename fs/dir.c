@@ -10,6 +10,7 @@
 #include "kern_feature.h"
 
 #include <linux/fs.h>
+#include <linux/mm.h>
 #include <linux/pagemap.h>
 #include <linux/buffer_head.h>
 #include <linux/version.h>
@@ -18,13 +19,22 @@
 inline void
 luci_put_page(struct page *page)
 {
-    kunmap(page);
+    if (page_mapped(page)) {
+        kunmap(page);
+    }
     put_page(page);
 }
 
+/*
+ *  returns a mapped page, which is unmapped on a luci_put_page
+ */
 struct page *
 luci_get_page(struct inode *dir, unsigned long n)
 {
+#   ifdef DEBUG_DENTRY
+    blkptr bp;
+#   endif
+
     struct address_space *mapping = dir->i_mapping;
     // Makes an internal call to luci_get_block
     struct page *page = read_mapping_page(mapping, n, NULL);
@@ -32,7 +42,11 @@ luci_get_page(struct inode *dir, unsigned long n)
         luci_err("read mapping page failed, page no %lu", n);
         return page;
     }
-    kmap(page);
+
+#   ifdef DEBUG_DENTRY
+    bp = luci_find_leaf_block(dir, n);
+    luci_info_inode(dir, "mapping page no %lu(%u)", n, bp.blockno);
+#   endif
     // Currently, we do not check pages, TBD
     if (unlikely(!PageChecked(page))) {
         // Can be set by internal buffer code during failed write
@@ -41,7 +55,10 @@ luci_get_page(struct inode *dir, unsigned long n)
             goto fail;
         }
     }
-    // page is ok
+
+    // page has to be mapped for dentry access.
+    (void) kmap(page);
+
     return page;
 fail:
     luci_put_page(page);
@@ -93,33 +110,37 @@ luci_last_byte(struct inode *inode, unsigned long page_nr)
     return last_byte;
 }
 
-
+/*
+ * core function to lookup dentries
+ */
 struct luci_dir_entry_2 *
-luci_find_entry (struct inode * dir,
-    const struct qstr * child, struct page ** res) {
+luci_find_entry (struct inode * dir, const struct qstr * child,
+                 struct page ** res) {
     struct page *page = NULL;
     struct luci_dir_entry_2 *de = NULL;
     unsigned long n, npages = dir_pages(dir);
 
     for (n = 0; n < npages; n++) {
         struct luci_dir_entry_2 *kaddr, *limit;
-
+        //lookup dentry page
         page = luci_get_page(dir, n);
         if (IS_ERR(page)) {
             luci_err_inode(dir, "bad dentry page page :%ld err:%ld",
                n, PTR_ERR(page));
 	    goto fail;
 	}
-
         kaddr = (struct luci_dir_entry_2*) page_address(page);
-        limit = (struct luci_dir_entry_2*)
-		((char*) kaddr + luci_last_byte(dir, n) - LUCI_DIR_REC_LEN(child->len));
-
 	// limit takes care of page boundary issues
+        limit = (struct luci_dir_entry_2*) ((char*) kaddr +
+            luci_last_byte(dir, n) - LUCI_DIR_REC_LEN(child->len));
+        // scan dentries
         for (de = kaddr; de <= limit; de = luci_next_entry(de)) {
             if (de->rec_len == 0) {
 	        // check page boundary
-                luci_err("invalid dir record length at %p", (char*)de);
+                // Fixed an issue, where newly created dentry block was alloted
+                // to an incorrect index due to a bug in alloc branch
+                luci_err_inode(dir, "invalid zero record length found at page "
+                    "%lu(%p-%p)", n, (char*)de, (char*)limit);
 	        luci_put_page(page);
 	        goto fail;
             }
@@ -129,8 +150,11 @@ luci_find_entry (struct inode * dir,
                 goto found;
             }
 
+#           ifdef DEBUG_DENTRY
             luci_dbg("dentry name :%s, inode :%u, namelen :%u reclen :%u",
-	       de->name, de->inode, de->name_len, luci_rec_len_from_disk(de->rec_len));
+	        de->name, de->inode, de->name_len,
+                luci_rec_len_from_disk(de->rec_len));
+#           endif
         }
         luci_put_page(page);
     }
@@ -244,11 +268,20 @@ luci_readdir(struct file *file, struct dir_context *ctx)
     unsigned long n = pos >> PAGE_SHIFT;
     unsigned long npages = dir_pages(dir);
 
+#   ifdef DEBUG_DENTRY
     luci_dbg("reading directory");
+#   endif
+
+    // scan all pages of this dir inode
     for (; n < npages; n++, offset = 0) {
         char *kaddr;
         struct luci_dir_entry_2 *de, *limit;
-        struct page *page = luci_get_page(dir, n);
+        struct page *page;
+
+#       ifdef DEBUG_DENTRY
+        luci_info_inode(dir, "dentry read page no :%lu(%llu-%u)", n, pos, offset);
+#       endif
+        page = luci_get_page(dir, n);
         if (IS_ERR(page)) {
             luci_err_inode(dir, "bad dentry page page :%ld err:%ld", n,
 	       PTR_ERR(page));
@@ -260,12 +293,19 @@ luci_readdir(struct file *file, struct dir_context *ctx)
         de = (struct luci_dir_entry_2*) (kaddr + offset);
         limit = (struct luci_dir_entry_2*)
 	    ((char*)kaddr + luci_last_byte(dir, n) - LUCI_DIR_REC_LEN(1));
+        // lookup dentries in the page
         for (; de <= limit; de = luci_next_entry(de)) {
             if (de->rec_len == 0) {
-                luci_err("invalid dir record length at %p", (char*)de);
+                luci_err_inode(dir, "invalid zero record length found at page "
+                  "%lu(%p-%p) pos :%llu inode :%u", n, (char*)de, (char*)limit,
+                  ctx->pos, de->inode);
+#               ifdef DEBUG_DENTRY
+                luci_dump_bytes("dentry page", page, PAGE_SIZE);
+#               endif
 	        luci_put_page(page);
                 return -EIO;
             }
+
             if (de->inode) {
                 unsigned char d_type = DT_UNKNOWN;
 		// The VFS framework will call the iterate member of the struct
@@ -278,12 +318,19 @@ luci_readdir(struct file *file, struct dir_context *ctx)
                     luci_put_page(page);
                     return 0;
                 }
+
+#               ifdef DEBUG_DENTRY
                 luci_dbg("dentry name :%s, inode :%u, namelen :%u reclen :%u "
 		   "pos :%llu", de->name, de->inode, de->name_len,
 		   luci_rec_len_from_disk(de->rec_len), ctx->pos);
+#               endif
             }
             ctx->pos += luci_rec_len_from_disk(de->rec_len);
         }
+
+        // Enable this to check raw dentry entries
+        //luci_dump_bytes("dentry page", page, PAGE_SIZE);
+
         luci_put_page(page);
     }
     return 0;

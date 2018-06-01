@@ -636,14 +636,17 @@ luci_dump_bytes(const char *msg, struct page *page, unsigned int len)
 
         // page may belong to high mem
         if (map_page) {
-            kaddr = kmap(page);
+            kmap(page);
         }
+
+        kaddr = page_address(page);
 
         print_hex_dump(KERN_INFO, msg, DUMP_PREFIX_OFFSET, 16,
             1, kaddr, len, true);
 
         if (map_page) {
-            kunmap(kaddr);
+            // note :kunmap_atomic takes kaddr
+            kunmap(page);
         }
     }
 }
@@ -673,13 +676,13 @@ sector_align(unsigned long n)
     return (long)nsec << SECTOR_SHIFT;
 }
 
-
-
 typedef struct {
    blkptr *p; // block entry
    blkptr key;
    struct buffer_head *bh;
 } Indirect;
+
+#define IS_INLINE(level) ((level) == 0)
 
 /* super.c */
 struct luci_group_desc *
@@ -690,6 +693,9 @@ luci_write_inode(struct inode *inode, struct writeback_control *wbc);
 int luci_truncate(struct inode *inode, loff_t size);
 
 /* dir.c */
+
+//#define DEBUG_DENTRY
+
 ino_t luci_inode_by_name(struct inode *, const struct qstr *);
 struct luci_dir_entry_2 * luci_find_entry (struct inode *,const struct qstr *, struct page **);
 inline unsigned luci_rec_len_from_disk(__le16 dlen);

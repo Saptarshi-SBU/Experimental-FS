@@ -79,9 +79,9 @@ luci_cluster_update_bp(struct page *page, struct inode *inode, blkptr bp_new [])
     // update block pointer
     luci_cluster_file_range(page, &begin_block, &end_block);
     for (i = 0, curr_block = begin_block; curr_block <= end_block; curr_block++) {
-        luci_info_inode(inode, "updating bp %u-%x-%u(%u) for file block %lu",
-                bp_new[i].blockno, bp_new[i].flags, bp_new[i].length,
-                bp_old[i].blockno, curr_block);
+        luci_info_inode(inode, "updating bp %u-%x-%u(%u) for file block %lu "
+            " cluster %lu", bp_new[i].blockno, bp_new[i].flags,
+            bp_new[i].length, bp_old[i].blockno, curr_block, cluster);
         ret = luci_insert_block(inode, curr_block, &bp_new[i++]);
         BUG_ON(ret < 0);
     }

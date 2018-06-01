@@ -248,7 +248,9 @@ int zlib_compress_pages(struct list_head *ws,
 out:
     *out_pages = nr_pages;
     if (out_page) {
+#       ifdef DEBUG_COMPRESSION
         luci_dump_bytes("compressed bytes(w)", out_page, PAGE_SIZE);
+#       endif
         kunmap(out_page);
     }
 
@@ -283,7 +285,9 @@ zlib_decompress_bio(struct list_head *ws, unsigned long total_in,
         pages_in[i] = bvec->bv_page;
     }
 
+#   ifdef DEBUG_COMPRESSION
     luci_dump_bytes("compressed bytes(r)", pages_in[0], PAGE_SIZE);
+#   endif
     data_in = kmap(pages_in[0]);
     workspace->strm.next_in = data_in;
     workspace->strm.total_in = 0;
@@ -296,8 +300,10 @@ zlib_decompress_bio(struct list_head *ws, unsigned long total_in,
     workspace->strm.avail_out = PAGE_SIZE;
     workspace->strm.total_out = 0;
 
+#   ifdef DEBUG_COMPRESSION
     printk(KERN_INFO "total_in :%lu avail_in :%u", total_in,
         (unsigned int) workspace->strm.avail_in);
+#   endif
 
     /* If it's deflate, and it's got no preset dictionary, then
        we can tell zlib to skip the adler32 check. */
@@ -326,10 +332,12 @@ zlib_decompress_bio(struct list_head *ws, unsigned long total_in,
 
         buf_start = total_out;
         total_out = workspace->strm.total_out;
+#       ifdef DEBUG_COMPRESSION
         printk(KERN_INFO "LUCI: deflate strm.total in :%lu, buf start :%lu "
             "total decompressed :%lu start_page_offset :%lu\n",
             workspace->strm.total_in, buf_start,
             total_out, start_page_offset);
+#       endif
 
         // we did not make progress in inflate call
         if (buf_start == total_out) {
