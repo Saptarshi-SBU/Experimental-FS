@@ -14,15 +14,14 @@ from shutil import copyfile
 from setup import RunCommand
 
 TESTDIR='/mnt'
-#HOMEDIR='/home'
 HOMEDIR="/run/media/ssen/NIKON D3200/DCIM/100D3200"
-#SAMPLEFILE='core-sig-11'
-SAMPLEFILE='DSC_0727.JPG'
+NRFILES=500
 
-def GetSourceFile():
-    return '{path}/{srcfile}'.format(path=HOMEDIR, srcfile=SAMPLEFILE)
+def GetLargeFile():
+    files = os.listdir(HOMEDIR)
+    return os.path.abspath(files[0])
 
-def GetTestFile():
+def GetLuciFile():
     return '{path}/test-{id}'.format(path=TESTDIR, id=random.randint(1, 100))
 
 def GetMD5(filename):
@@ -41,9 +40,7 @@ class LuciUnitTests(unittest.TestCase):
         """
             Initialize
         """
-        path = GetSourceFile()
-        if not os.path.exists(path):
-            raise Exception('Source file not found :%s' % path)
+        os.chdir(HOMEDIR)
 
     def tearDown(self):
         """
@@ -52,55 +49,63 @@ class LuciUnitTests(unittest.TestCase):
         pass
 
     @unittest.skip('skip test')
-    def test_CopyFile(self):
+    def test_CopyLargeFile(self):
         """
-            Unit test for insert operations on arep tables
+            Unit test to copy a large file
         """
         cmd = 'cp {srcpath} {destpath}'.format\
-            (srcpath=GetSourceFile(), destpath=GetTestFile())
+            (srcpath=GetLargeFile(), destpath=GetLuciFile())
         rc = RunCommand(cmd)
         self.assertEqual(rc, 0)
 
     @unittest.skip('skip test')
-    def test_DDFile(self):
+    def test_DDLargeFile(self):
         """
-            Unit test for insert operations on arep tables
+            Unit test to copy large file using dd
         """
         blockSize = '4k'
         total_blocks = 2000000
         cmd = 'dd if={srcpath} of={destpath} bs={bs} count={count}'.format\
-            (srcpath=GetSourceFile(), destpath=GetTestFile(), bs=blockSize, \
+            (srcpath=GetLargeFile(), destpath=GetLuciFile(), bs=blockSize, \
              count=total_blocks)
         rc = RunCommand(cmd)
         self.assertEqual(rc, 0)
 
-    #@unittest.skip('skip test')
+    @unittest.skip('skip test')
     def test_CopyDir(self):
         """
           Unit test to copy directory
         """
-        for root, dirs, files in os.walk(HOMEDIR):
-            nr = len(files)
-            for filename in files:
-                srcFile = (os.path.join(root, filename))
-                dstFile = (os.path.join(TESTDIR, filename))
-                copyfile(srcFile, dstFile)
-                nr = nr - 1
-                print ("Pending files :" + str(nr))
+        count = 0
+        files = os.listdir(HOMEDIR)
+        nr = min(NRFILES, len(files))
+        for filename in files:
+            srcFile = os.path.abspath(filename)
+            dstFile = (os.path.join(TESTDIR, filename))
+            copyfile(srcFile, dstFile)
+            count = count + 1;
+            print ('Copied [{}-{}] {}'.format(count, nr, dstFile))
+            if count >= nr:
+                break
 
-    @unittest.skip('skip test')
+    #@unittest.skip('skip test')
     def test_Validation(self):
         """
           Unit test to validate data by running md5 checksumming
         """
-        for root, dirs, files in os.walk(HOMEDIR):
-            for filename in files:
-                srcFile = (os.path.join(root, filename))
-                srcMd5 = GetMD5(srcFile)
-                dstFile = (os.path.join(TESTDIR, filename))
-                dstMd5 = GetMD5(dstFile)
-                print ('{} {} : {}'.format(filename, srcMd5, dstMd5))
-                self.assertEqual(srcMd5, dstMd5)
+        count = 0
+        files = os.listdir(HOMEDIR)
+        nr = min(NRFILES, len(files))
+        for filename in files:
+            srcFile = os.path.abspath(filename)
+            srcMd5 = GetMD5(srcFile)
+            dstFile = (os.path.join(TESTDIR, filename))
+            dstMd5 = GetMD5(dstFile)
+            print ('[{} {}] {} {} : {}'.format(count, nr, filename, srcMd5, dstMd5))
+            self.assertEqual(srcMd5, dstMd5)
+            count = count + 1;
+            if count >= nr:
+                break
 
 def TestDriver():
     suite = unittest.TestLoader().loadTestsFromTestCase(LuciUnitTests)

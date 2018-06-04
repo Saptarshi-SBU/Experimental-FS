@@ -196,11 +196,11 @@ luci_bio_alloc(struct block_device *bdev, unsigned long start,
     }
     bio->bi_vcnt = 0;
     bio->bi_bdev = bdev;
-#ifdef HAVE_BIO_ITER
+    #ifdef HAVE_BIO_ITER
     bio->bi_iter.bi_sector = start >> 9;
-#else
+    #else
     bio->bi_sector = start >> 9;
-#endif
+    #endif
     return bio;
 }
 
@@ -270,6 +270,9 @@ luci_submit_write(struct inode * inode, struct page **pages,
     // align size to device sector, otherwise device rejects write
     unsigned long i = 0, aligned_bytes = sector_align(total_out);
     unsigned long nr_pages = (aligned_bytes + PAGE_SIZE - 1)/PAGE_SIZE;
+
+    // catch bogus cluster writes
+    BUG_ON(aligned_bytes > nr_pages * PAGE_SIZE);
 
     bio = luci_bio_alloc(bdev, disk_start, nr_pages);
     if (!bio) {
@@ -374,22 +377,24 @@ luci_write_compressed_end(struct address_space *mapping,
     struct inode *inode = mapping->host;
     BUG_ON(!PageLocked(pagep));
     SetPageUptodate(pagep);
-    // For non buffer-head pages, tag the radix tree
+    // For non buffer-head pages, dirty tag the radix tree
+    // It is not clear at this point, even on marking a page descriptor dirty,
+    // why on writepages, dirty flag is found to be clean (confirmed via log)
     if (!PageDirty(pagep)) {
         __set_page_dirty_nobuffers(pagep);
     }
     unlock_page(pagep);
-    luci_pgtrack(pagep, "copied cache page for inode %lu off %llu-%u",
-        inode->i_ino, pos, len);
+    luci_pgtrack(pagep, "copied cache page(%lu) for inode %lu off %llu-%u",
+        page_index(pagep), inode->i_ino, pos, len);
     put_page(pagep);
-#   ifndef LUCI_ATTRSIZE_COMPRESSED
+    #ifndef LUCI_ATTRSIZE_COMPRESSED
     // note file inode size is updated here
     if (pos + len > inode->i_size) {
         i_size_write(inode, pos + len);
         mark_inode_dirty(inode);
         luci_dbg_inode(inode, "updating inode new size %llu", inode->i_size);
     }
-#   endif    
+    #endif
     // Ensure we trigger page writeback once, dirty pages exceeds threshold
     balance_dirty_pages_ratelimited(mapping);
     return len;
@@ -563,21 +568,28 @@ __luci_cluster_write_compressed(struct address_space *mapping, struct page *page
         return index;
     }
 
-    luci_info_inode(inode, "dirty pages :%u in range lookup %lu-%lu", nr_pages,
-        index, next_index);
+    luci_info_inode(inode, "dirty pages :%u in range lookup %lu-%lu(%u)", nr_pages,
+        index, next_index, cluster);
     // sanity checks
     for (i = 0, nr_dirty = 0; i < nr_pages; i++) {
         struct page * page = pvec.pages[i];
         // check if dirty page belongs to cluster
         if (cluster != luci_cluster_no(page_index(page))) {
+            // Fix : we were missing writes due to skipping page not belonging
+            // to a cluster
+            next_index = page_index(page);
+            luci_info_inode(inode, "dirty page (%lu)  does not belong to this "
+                "cluster(%u), resetting next index", next_index, cluster);
             break;
         }
-        // page must be dirty, since radix lookup says it's dirty
-        // Otherwise, somebody else wrote it for us
-        //BUG_ON(!PageDirty(page));
+        // Fix : Its not clear at times why dirty flag is clean, even though its
+        // tagged dirty in radix tree. There is no race condition associated,
+        // confirmed via log.
         if (!PageDirty(page)) {
-            luci_info("warning: somebody wrote the page for us");
-            continue;
+            luci_info_inode(inode, "warning: page (%lu) tagged dirty in radix "
+                "tree but flag is clean", page_index(page));
+            SetPageDirty(page);
+            luci_pageflags_dump(page);
         }
         luci_pgtrack(page, "page dirty cluster :%u", cluster);
         // dirty page must have uptodate data
@@ -595,8 +607,8 @@ __luci_cluster_write_compressed(struct address_space *mapping, struct page *page
 
     //pagevec_reinit(&pvec);
     if (nr_dirty == 0) {
-        luci_dbg("no dirty pages in cluster %u(%lu-%lu)", cluster, index,
-            next_index);
+        luci_dbg_inode(inode, "no dirty pages in cluster %u(%lu-%lu)",
+            cluster, index, next_index);
         goto skip;
     } else {
         luci_info_inode(inode, "dirty pages:%u in cluster %u(%lu)", nr_dirty,
@@ -729,7 +741,8 @@ luci_writepage_compressed(struct page *page, struct writeback_control *wbc)
             page_index(page));
     }
     BUG_ON(PagePrivate(page));
-    luci_info_inode(inode, "exiting write pages compressed");
+    luci_info_inode(inode, "exiting write pages compressed(%lu)",
+        wbc->nr_to_write);
     return (next_index != ULONG_MAX) ? 0 : -EIO;
 
 }
@@ -771,6 +784,8 @@ cycle:
         start_index = next_index;
         // For integrity sync, we have to write all pages we tagged
         if (wbc->nr_to_write <= 0 && wbc->sync_mode == WB_SYNC_NONE) {
+            luci_info_inode(inode, "ending writepages cycle(%lu-%lu)",
+                start_index, next_index);
             done = 1;
         }
         // explicit rescheduling in places that are safe
@@ -790,7 +805,8 @@ cycle:
         mapping->writeback_index = done_index;
     }
 
-    luci_info_inode(inode, "exiting writing pages compressed");
+    luci_info_inode(inode, "exiting writing pages compressed(%lu)",
+        wbc->nr_to_write);
     return 0;
 }
 
@@ -811,10 +827,10 @@ int luci_read_compressed(struct page *page, blkptr *bp)
     unsigned long pg_index = cluster * CLUSTER_NRPAGE;
     struct page *compressed_pages[CLUSTER_NRPAGE], *cached_pages[CLUSTER_NRPAGE];
 
-#   ifdef DEBUG_COMPRESSION
+    #ifdef DEBUG_COMPRESSION
     luci_info("total_in :%lu aligned bytes :%u disk start :%llu",
             total_in, aligned_bytes, disk_start);
-#   endif
+    #endif
 
     memset((char*)compressed_pages, 0, CLUSTER_NRPAGE * sizeof(struct page *));
     // allocate pages for compressed blocks
@@ -982,11 +998,11 @@ repeat:
 
     /* copy bytes from the working buffer to the pages */
     copy_bytes = total_out - copied_offset;
-#   ifdef DEBUG_COMPRESSION
+    #ifdef DEBUG_COMPRESSION
     luci_info("decompress buf2page params: copy_bytes :%lu, copied_offset :%lu"
         " deflatebuf_offset :%lu, skip_bytes :%lu", copy_bytes, copied_offset,
         deflatebuf_offset, skip_bytes);
-#   endif
+    #endif
     while (copy_bytes > 0) {
         //bytes = min(bio_cur_bytes(bio), copy_bytes);
         unsigned long cur_bytes = bio_cur_bytes(bio);

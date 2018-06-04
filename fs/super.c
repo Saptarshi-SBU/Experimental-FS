@@ -322,7 +322,7 @@ luci_evict_inode(struct inode * inode)
    luci_dbg_inode(inode, "evicting inode");
 
    // dump layout here for sanity
-   if (dbgfsparam.layout && inode->i_size &&
+   if (dbgfsparam.layout && inode->i_size && (inode->i_ino == TEST_INODE) &&
        (luci_dump_layout(inode) < 0)) {
        luci_err("inode invalid layout detected");
    }

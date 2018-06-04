@@ -5893,3 +5893,44 @@ May 24 00:24:00 localhost kernel: [ 8396.727252] LUCI-FS populate_bmap_tree
 Bug:
 [ 1782.915518] LUCI-FS populate_bmap_tree2 :inode :13 :dump iallocated iblock
 259 level :2 block[1-ffff8800bbc3e000-1805-1806]1807
+
+Missing page:
+
+Jun  3 13:46:30 localhost kernel: [91244.023574] LUCI-FS
+luci_writepages_compressed :inode :21 :writing pages cycle completed(3072-3072)
+Jun  3 13:46:30 localhost kernel: [91244.023590] LUCI-FS
+luci_writepages_compressed :inode :21 :next_index page (3072) is dirty
+Jun  3 13:46:30 localhost kernel: [91244.023591] LUCI-FS
+luci_writepages_compressed :inode :21 :exiting writing pages compressed(0)
+Jun  3 13:46:30 localhost kernel: [91244.023601] LUCI-FS
+luci_writepages_compressed :inode :22 :writing pages wbc:
+(0-9223372036854775807) dirty :3072
+
+
+Jun  3 17:01:26 localhost kernel: [102940.750612] LUCI-FS luci_cluster_update_bp
+:inode :15 :updating bp 10849-0-0(0) for file block 346  cluster 346
+Jun  3 17:01:26 localhost kernel: [102940.751056] LUCI-FS
+luci_writepage_compressed :inode :15 :writing page for cluster :480(480), wbc:
+(0-9223372036854775807) dirty :32
+Jun  3 17:01:26 localhost kernel: [102940.751061] LUCI-FS
+__luci_cluster_write_compressed :inode :15 :dirty pages :1 in range lookup
+480-481(480)
+Jun  3 17:01:26 localhost kernel: [102940.751063] LUCI-FS
+__luci_cluster_write_compressed :inode :15 :warning: somebody wrote the page
+(480) for us
+Jun  3 17:01:26 localhost kernel: [102940.751068] LUCI-FS
+luci_writepage_compressed :inode :15 :writing page for cluster :481(481), wbc:
+(0-9223372036854775807) dirty :32
+Jun  3 17:01:26 localhost kernel: [102940.751070] LUCI-FS
+__luci_cluster_write_compressed :inode :15 :dirty pages :1 in range lookup
+481-482(481)
+Jun  3 17:01:26 localhost kernel: [102940.751072] LUCI-FS
+__luci_cluster_write_compressed :inode :15 :warning: somebody wrote the page
+(481) for us
+Jun  3 17:01:26 localhost kernel: [102940.751075] LUCI-FS
+luci_writepage_compressed :inode :15 :writing page for cluster :482(482), wbc:
+(0-9223372036854775807) dirty :32
+Jun  3 17:01:26 localhost kernel: [102940.751077] LUCI-FS
+__luci_cluster_write_compressed :inode :15 :dirty pages :1 in range lookup
+482-483(482)
+

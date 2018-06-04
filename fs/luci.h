@@ -616,7 +616,7 @@ extern debugfs_t dbgfsparam;
                              page_count(page), ## a); \
                     }
 #define luci_dump_blkptr(inode, fb, bp) { \
-                    printk (KERN_DEBUG "LUCI-FS %s inode :%lu file block :%lu "\
+                    printk (KERN_INFO "LUCI-FS %s inode :%lu file block :%lu "\
                             "bp(%u-%x-%u)\n", __func__, inode->i_ino, (fb), \
                             (bp)->blockno, (bp)->flags, (bp)->length); \
                     }
@@ -715,6 +715,8 @@ int luci_prepare_chunk(struct page *page, loff_t pos, unsigned len);
 int luci_commit_chunk(struct page *page, loff_t pos, unsigned len);
 
 /* inode.c */
+#define TEST_INODE 21
+
 #define COMPR_CREATE_ALLOC  0x01
 #define COMPR_BLK_UPDATE    0x02
 #define COMPR_BLK_INSERT    0x04
