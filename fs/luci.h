@@ -21,6 +21,7 @@
 
 #include <linux/fs.h>
 #include <linux/mm.h>
+#include <linux/smp.h>
 #include <linux/pagemap.h>
 #include <linux/blockgroup_lock.h>
 #include <linux/percpu_counter.h>
@@ -620,7 +621,16 @@ extern debugfs_t dbgfsparam;
                             "bp(%u-%x-%u)\n", __func__, inode->i_ino, (fb), \
                             (bp)->blockno, (bp)->flags, (bp)->length); \
                     }
-
+#define luci_dump_bh(inode, msg, bh) { \
+                    printk (KERN_INFO "LUCI-FS %s inode :%lu %s bh[cpu:%d]: " \
+                           "(%lu-%s-%s-%s-%u)\n",__func__, inode->i_ino, msg, \
+                           (smp_processor_id()), \
+                           bh->b_blocknr, \
+                           buffer_mapped(bh) ? "mapped" : "unmapped", \
+                           buffer_dirty(bh) ? "dirty" : "clean", \
+                           buffer_locked(bh) ? "locked" : "unlocked", \
+                           atomic_read(&bh->b_count)); \
+                    }
 // useful for debugging data integrity issues
 static void inline
 luci_dump_bytes(const char *msg, struct page *page, unsigned int len)

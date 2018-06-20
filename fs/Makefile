@@ -1,5 +1,5 @@
 obj-m := luci.o
-ccflags-y = -DLUCIFS_DEBUG -DLUCIFS_COMPRESSION -O2
+ccflags-y = -DLUCIFS_DEBUG -DDEBUG_BLOCK -DLUCIFS_COMPRESSION -O2
 luci-y := super.o inode.o dir.o file.o ialloc.o cluster.o compression.o zlib.o
 
 all:

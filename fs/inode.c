@@ -276,6 +276,9 @@ walk_bmap(struct inode *inode, Indirect ichain[], long index[],
     memset(currbh->b_data, 0, currbh->b_size);
     set_buffer_uptodate(currbh);
     unlock_buffer(currbh);
+    #ifdef DEBUG_BH
+    luci_dump_bh(inode, "allocating bh for block(meta/data)", currbh);
+    #endif
 
     // offset to indirect block table to store block address entry
     ichain[curr_level].key.blockno = curr_block;
@@ -361,6 +364,9 @@ walk_bmap_meta(struct inode *inode, Indirect ichain[], long index[],
         memset(currbh->b_data, 0, currbh->b_size);
         set_buffer_uptodate(currbh);
         unlock_buffer(currbh);
+        #ifdef DEBUG_BH
+        luci_dump_bh(inode, "allocating bh for meta block", currbh);
+        #endif
 
         // offset to indirect block table to store block address entry
         ichain[curr_level].key.blockno = curr_block;
@@ -407,6 +413,12 @@ walk_bmap_meta(struct inode *inode, Indirect ichain[], long index[],
         }
         #endif
         unlock_buffer(parent_bh);
+        // meta data buffers are not part of inode's address space. They
+        // do not lie in radix tree pages for the inode. They are part of
+        // bdev's address space. Here we, add buffers to inode's address
+        // space private list as part of associated mapping. (note we use
+        // sb_bread/sb_getblk for creating pages for meta data, wherein we
+        // pass super block and not the inode itself)
         mark_buffer_dirty_inode(parent_bh, inode);
     }
 
@@ -414,7 +426,6 @@ walk_bmap_meta(struct inode *inode, Indirect ichain[], long index[],
     luci_info_inode(inode, "allocated iblock %lu level :%d(%d) block %u(%x-%u) "
         "index %u", i_block, curr_level, depth, ichain[curr_level].key.blockno,
         ichain[curr_level].key.flags, ichain[curr_level].key.length, slot);
-    }
     #endif
     return walk_bmap_meta(inode, ichain, index, ++curr_level, depth,
         i_block, bh);
@@ -446,7 +457,9 @@ luci_get_branch(struct inode *inode,
             goto failure;
         }
         p->bh = bh;
-        //add_chain (p, bh, LUCI_I(inode)->i_data + *ipaths);
+        #ifdef DEBUG_BH
+        luci_dump_bh(inode, "fetching bh for meta block", bh);
+        #endif
     }
 
     if (!p->key.blockno) {
@@ -474,7 +487,10 @@ luci_get_branch(struct inode *inode,
             goto failure;
         }
         p->bh = bh;
-        //add_chain(p, bh, (blkptr*)bh->b_data + *ipaths);
+        #ifdef DEBUG_BH
+        luci_dump_bh(inode, "fetching bh for block(meta/data)", bh);
+        #endif
+
         #ifdef DEBUG_BLOCK
         luci_info_inode(inode, "block walk path ipath[%d] %d-%u-%u[%ld][%lu]", i,
             p->key.blockno, p->key.flags, p->key.length, *ipaths, parent_block);
@@ -482,7 +498,7 @@ luci_get_branch(struct inode *inode,
         parent_block = p->key.blockno;
         i++;
     }
-    #undef DEBUG_BLOCK
+    //#undef DEBUG_BLOCK
     return NULL;
 
 failure:
@@ -604,8 +620,13 @@ done:
     // Fix : free buffer-heads associated with the lookup
     // The metadata pages are already in memory
     partial = ichain + depth - 1;
-    while (partial > ichain) {
-        brelse(partial->bh);
+    while (partial >= ichain) {
+        if (partial->bh != NULL) {
+            brelse(partial->bh);
+            #ifdef DEBUG_BH
+            luci_dump_bh(inode, "dropping bh", partial->bh);
+            #endif
+        }
         partial--;
     }
     return err;
@@ -632,7 +653,9 @@ luci_find_leaf_block(struct inode * inode, unsigned long i_block)
             bp.flags = LUCI_COMPR_FLAG;
             bp.length = (unsigned int)bh.b_size;
         }
+        #ifdef DEBUG_BLOCK
         luci_dump_blkptr(inode, i_block, &bp);
+        #endif
     }
     return bp;
 }
@@ -1401,7 +1424,6 @@ luci_readpage(struct file *file, struct page *page)
             cachep = find_or_create_page(page->mapping, page_index(page), GFP_KERNEL);
         }
         BUG_ON(!cachep);
-        BUG_ON(!PageLocked(page));
         if (!PageUptodate(cachep)) {
             unsigned long file_block = page_offset(page)/luci_chunk_size(inode);
             blkptr bp = luci_find_leaf_block(inode, file_block);
@@ -1426,8 +1448,18 @@ luci_readpage(struct file *file, struct page *page)
             unlock_page(cachep);
         }
         put_page(cachep);
+
         // Needed otherwise will result in an EIO
         SetPageUptodate(page);
+        BUG_ON(page_has_buffers(page));
+
+        luci_pgtrack(page, "read page completed for inode %lu", inode->i_ino);
+
+        // Ideally page should be locked, but seen cases
+        // where page is not locked. TBD.
+        if (PageLocked(page)) {
+            unlock_page(page);
+        }
         luci_dbg_inode(inode, "compressed read completed for pg index :%lu",
             page_index(page));
         goto done;

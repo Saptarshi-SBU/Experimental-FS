@@ -45,14 +45,6 @@ luci_pageflags_dump(struct page* page)
 }
 
 static void
-luci_bh_dump(struct buffer_head *bh)
-{
-    luci_dbg("buffer mapped :%d buffer dirty :%d buffer locked :%d refcount :%d",
-        buffer_mapped(bh), buffer_dirty(bh), buffer_locked(bh),
-        atomic_read(&bh->b_count));
-}
-
-static void
 luci_bio_dump(struct bio * bio, const char *msg)
 {
 #ifdef HAVE_BIO_ITER
@@ -126,44 +118,19 @@ luci_end_compressed_bio_write(struct bio *bio, int error)
     int i = 0;
     struct bio_vec *bvec;
     // TBD: Check for status associated with each bvec page
-    // We do not set any writeback flag, so end_page_writeback(page)
-    // is not necessary
+    // We do not set any writeback flag, so end_page_writeback(page) not needed
     bio_for_each_segment_all(bvec, bio, i) {
         struct page * page = bvec->bv_page;
-        page->mapping = NULL;
+        // compressed blocks are no_bh based
+        BUG_ON(page_has_buffers(page));
         luci_pageflags_dump(page);
         if (PageLocked(page)) {
            unlock_page(page);
         }
+        page->mapping = NULL;
+        // release temp buffer alloted for compressed page
         put_page(page);
     }
-}
-
-static void
-luci_release_page(struct page * page)
-{
-    struct buffer_head *bh, *head;
-    if (page_has_buffers(page)) {
-        head = bh = page_buffers(page);
-        do {
-            // need get_bh & put_bh since bh can have 0 refcounts
-            BUG_ON(buffer_locked(bh));
-            lock_buffer(bh);
-            get_bh(bh);
-            luci_bh_dump(bh);
-            clear_buffer_dirty(bh);
-            set_buffer_uptodate(bh);
-            unlock_buffer(bh);
-            put_bh(bh);
-            bh = bh->b_this_page;
-        } while (bh != head);
-    }
-
-    luci_pageflags_dump(page);
-    if (PageLocked(page)) {
-        unlock_page(page);
-    }
-    //put_page(page);
 }
 
 static void
@@ -180,7 +147,14 @@ luci_end_bio_write(struct bio *bio, int error)
     // is not necessary
     bio_for_each_segment_all(bvec, bio, i) {
         struct page * page = bvec->bv_page;
-        luci_release_page(page);
+        // L0 blocks are no_bh based
+        BUG_ON(page_has_buffers(page));
+        luci_pageflags_dump(page);
+        if (PageLocked(page)) {
+            unlock_page(page);
+        }
+        // Note we do not do put_page for original page. Since
+        // write did not take any additional refcount on the page
     }
 }
 
@@ -287,6 +261,7 @@ luci_submit_write(struct inode * inode, struct page **pages,
     while (i < nr_pages) {
        unsigned int length;
        length = min((unsigned long)PAGE_SIZE, aligned_bytes);
+       BUG_ON(page_has_buffers(pages[i]));
        ret = bio_add_page(bio, pages[i], length, 0);
        if (ret < length) {
            ret = -EIO;
