@@ -35,6 +35,7 @@
 #include <linux/err.h>
 #include <linux/sched.h>
 #include <linux/pagemap.h>
+#include <linux/mempool.h>
 #include <linux/bio.h>
 
 #include "compression.h"
@@ -44,6 +45,8 @@
 struct workspace {
     z_stream strm;
     char *buf;
+    // reserve pages for delfate/inflate
+    mempool_t *pool;
     struct list_head list;
 };
 
@@ -51,15 +54,23 @@ void zlib_free_workspace(struct list_head *ws)
 {
     struct workspace *workspace = list_entry(ws, struct workspace, list);
 
-    vfree(workspace->strm.workspace);
-    kfree(workspace->buf);
+    if (workspace->strm.workspace) {
+        vfree(workspace->strm.workspace);
+    }
+
+    if (workspace->buf) {
+        kfree(workspace->buf);
+    }
+    if (workspace->pool) {
+        mempool_destroy(workspace->pool);
+    }
     kfree(workspace);
 }
 
 struct list_head *zlib_alloc_workspace(void)
 {
-    struct workspace *workspace;
     int workspacesize;
+    struct workspace *workspace;
 
     workspace = kzalloc(sizeof(*workspace), GFP_NOFS);
     if (!workspace)
@@ -69,7 +80,8 @@ struct list_head *zlib_alloc_workspace(void)
             zlib_inflate_workspacesize());
     workspace->strm.workspace = vmalloc(workspacesize);
     workspace->buf = kmalloc(PAGE_SIZE, GFP_NOFS);
-    if (!workspace->strm.workspace || !workspace->buf)
+    workspace->pool = mempool_create_page_pool(ZLIB_MEMPOOL_PAGES, 0);
+    if (!workspace->strm.workspace || !workspace->buf || !workspace->pool)
         goto fail;
 
     INIT_LIST_HEAD(&workspace->list);
@@ -91,7 +103,6 @@ int zlib_compress_pages(struct list_head *ws,
         unsigned long *total_in,
         unsigned long *total_out)
 {
-    struct workspace *workspace = list_entry(ws, struct workspace, list);
     int ret;
     char *data_in;
     char *cpage_out;
@@ -102,6 +113,7 @@ int zlib_compress_pages(struct list_head *ws,
     unsigned long len = *total_out;
     unsigned long nr_dest_pages = *out_pages;
     const unsigned long max_out = nr_dest_pages * PAGE_SIZE;
+    struct workspace *workspace = list_entry(ws, struct workspace, list);
 
     *out_pages = 0;
     *total_out = 0;
@@ -126,7 +138,7 @@ int zlib_compress_pages(struct list_head *ws,
     }
     data_in = kmap(in_page);
 
-    out_page = alloc_page(GFP_NOFS | __GFP_HIGHMEM);
+    out_page = mempool_alloc(workspace->pool, GFP_NOFS | __GFP_HIGHMEM);
     if (out_page == NULL) {
         ret = -ENOMEM;
         goto out;
@@ -172,7 +184,7 @@ int zlib_compress_pages(struct list_head *ws,
                 ret = -E2BIG;
                 goto out;
             }
-            out_page = alloc_page(GFP_NOFS | __GFP_HIGHMEM);
+            out_page = mempool_alloc(workspace->pool, GFP_NOFS | __GFP_HIGHMEM);
             if (out_page == NULL) {
                 ret = -ENOMEM;
                 goto out;
@@ -483,10 +495,20 @@ next:
     return ret;
 }
 
+void
+zlib_remit_workspace(struct list_head *ws, struct page *out_page)
+{
+    struct workspace *workspace = list_entry(ws, struct workspace, list);
+    if (out_page != NULL) {
+        mempool_free(out_page, workspace->pool);
+    }
+}
+
 const struct luci_compress_op luci_zlib_compress = {
-    .alloc_workspace	= zlib_alloc_workspace,
+    .alloc_workspace    = zlib_alloc_workspace,
     .free_workspace     = zlib_free_workspace,
-    .compress_pages	= zlib_compress_pages,
-    .decompress_bio	= zlib_decompress_bio,
-    .decompress		= zlib_decompress,
+    .remit_workspace    = zlib_remit_workspace,
+    .compress_pages     = zlib_compress_pages,
+    .decompress_bio     = zlib_decompress_bio,
+    .decompress         = zlib_decompress,
 };

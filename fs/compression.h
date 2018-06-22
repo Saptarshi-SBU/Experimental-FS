@@ -14,6 +14,8 @@
 
 #define ZLIB_COMPRESSION_LEVEL 3
 
+#define ZLIB_MEMPOOL_PAGES (CLUSTER_NRPAGE * 1024 * 10)
+
 #define DEBUG_COMPRESSION
 
 typedef enum luci_compression_type {
@@ -78,6 +80,12 @@ struct luci_compress_op {
 			 struct page *dest_page,
 			 unsigned long start_byte,
 			 size_t srclen, size_t destlen);
+
+      /*
+       * return borrowed pages from workspace after work is done.
+       */
+       void (*remit_workspace)(struct list_head *workspace,
+			       struct page *pages);
 };
 
 extern const struct luci_compress_op luci_zlib_compress;

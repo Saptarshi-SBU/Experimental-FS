@@ -558,7 +558,7 @@ static inline void verify_size(void)
 //debugfs params
 typedef struct debugfs {
     struct dentry *dirent;
-    u32 debug;
+    u32 log;
     struct dentry *dirent_dbg;
     u32 layout;
     struct dentry *dirent_layout;
@@ -583,20 +583,22 @@ typedef struct debugfs {
 extern debugfs_t dbgfsparam;
 
 #define luci_dbg(f, a...)  { \
-	            if (dbgfsparam.debug) \
-                       printk (KERN_DEBUG "LUCI-FS %s :"f"\n", __func__, ## a); \
+	            if (dbgfsparam.log) \
+                        printk (KERN_DEBUG "LUCI-FS %s :"f"\n", __func__, ## a); \
                     }
 #define luci_dbg_inode(inode, f, a...)  { \
-	            if (dbgfsparam.debug) \
-                       printk (KERN_DEBUG "LUCI-FS %s :inode :%lu :"f"\n", __func__, \
-                          inode->i_ino, ## a); \
+	            if (dbgfsparam.log) \
+                        printk (KERN_DEBUG "LUCI-FS %s :inode :%lu :"f"\n", __func__, \
+                            inode->i_ino, ## a); \
                     }
 #define luci_info(f, a...)  { \
-                    printk (KERN_INFO "LUCI-FS %s : "f"\n", __func__, ## a); \
+	            if (dbgfsparam.log) \
+                        printk (KERN_INFO "LUCI-FS %s : "f"\n", __func__, ## a); \
                     }
 #define luci_info_inode(inode, f, a...)  { \
-                    printk (KERN_INFO "LUCI-FS %s :inode :%lu :"f"\n", __func__, \
-                        inode->i_ino, ## a); \
+	            if (dbgfsparam.log) \
+                        printk (KERN_INFO "LUCI-FS %s :inode :%lu :"f"\n", __func__, \
+                            inode->i_ino, ## a); \
                     }
 #define luci_err(f, a...)  { \
                     printk (KERN_ERR "LUCI-FS %s : error "f"\n", __func__, ## a); \
@@ -617,19 +619,21 @@ extern debugfs_t dbgfsparam;
                              page_count(page), ## a); \
                     }
 #define luci_dump_blkptr(inode, fb, bp) { \
-                    printk (KERN_INFO "LUCI-FS %s inode :%lu file block :%lu "\
+	            if (dbgfsparam.log) \
+                        printk (KERN_INFO "LUCI-FS %s inode :%lu file block :%lu "\
                             "bp(%u-%x-%u)\n", __func__, inode->i_ino, (fb), \
                             (bp)->blockno, (bp)->flags, (bp)->length); \
                     }
 #define luci_dump_bh(inode, msg, bh) { \
-                    printk (KERN_INFO "LUCI-FS %s inode :%lu %s bh[cpu:%d]: " \
-                           "(%lu-%s-%s-%s-%u)\n",__func__, inode->i_ino, msg, \
-                           (smp_processor_id()), \
-                           bh->b_blocknr, \
-                           buffer_mapped(bh) ? "mapped" : "unmapped", \
-                           buffer_dirty(bh) ? "dirty" : "clean", \
-                           buffer_locked(bh) ? "locked" : "unlocked", \
-                           atomic_read(&bh->b_count)); \
+	            if (dbgfsparam.log) \
+                        printk (KERN_INFO "LUCI-FS %s inode :%lu %s bh[cpu:%d]:"\
+                            "(%lu-%s-%s-%s-%u)\n",__func__, inode->i_ino, msg, \
+                            (smp_processor_id()), \
+                            bh->b_blocknr, \
+                            buffer_mapped(bh) ? "mapped" : "unmapped", \
+                            buffer_dirty(bh) ? "dirty" : "clean", \
+                            buffer_locked(bh) ? "locked" : "unlocked", \
+                            atomic_read(&bh->b_count)); \
                     }
 // useful for debugging data integrity issues
 static void inline

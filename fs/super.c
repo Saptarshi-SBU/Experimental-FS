@@ -910,8 +910,8 @@ init_debugfs(void) {
         printk(KERN_ERR "failed to init debugfs params");
         return (-ENODEV);
     }
-    dbgfsparam.dirent_dbg = debugfs_create_u32("debug", 0644,
-        dbgfsparam.dirent, &dbgfsparam.debug);
+    dbgfsparam.dirent_dbg = debugfs_create_u32("log", 0644,
+        dbgfsparam.dirent, &dbgfsparam.log);
     if (dbgfsparam.dirent_dbg == NULL) {
         printk(KERN_ERR "error creating file");
         return (-ENODEV);
