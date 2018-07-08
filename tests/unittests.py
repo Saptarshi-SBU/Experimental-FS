@@ -14,12 +14,14 @@ from shutil import copyfile
 from setup import RunCommand
 
 TESTDIR='/mnt'
-HOMEDIR="/run/media/ssen/NIKON D3200/DCIM/100D3200"
+#HOMEDIR="/run/media/ssen/NIKON D3200/DCIM/100D3200"
+HOMEDIR="/home"
 NRFILES=500
+LARGEFILE='/dev/sda'
+NRRUNS=10
 
 def GetLargeFile():
-    files = os.listdir(HOMEDIR)
-    return os.path.abspath(files[0])
+    return LARGEFILE
 
 def GetLuciFile():
     return '{path}/test-{id}'.format(path=TESTDIR, id=random.randint(1, 100))
@@ -53,23 +55,25 @@ class LuciUnitTests(unittest.TestCase):
         """
             Unit test to copy a large file
         """
-        cmd = 'cp {srcpath} {destpath}'.format\
-            (srcpath=GetLargeFile(), destpath=GetLuciFile())
-        rc = RunCommand(cmd)
-        self.assertEqual(rc, 0)
+        for i in range(0, NRRUNS):
+            cmd = 'cp {srcpath} {destpath}'.format\
+                (srcpath=GetLargeFile(), destpath=GetLuciFile())
+            rc = RunCommand(cmd)
+            self.assertEqual(rc, 0)
 
-    @unittest.skip('skip test')
+    #@unittest.skip('skip test')
     def test_DDLargeFile(self):
         """
             Unit test to copy large file using dd
         """
         blockSize = '4k'
         total_blocks = 2000000
-        cmd = 'dd if={srcpath} of={destpath} bs={bs} count={count}'.format\
-            (srcpath=GetLargeFile(), destpath=GetLuciFile(), bs=blockSize, \
-             count=total_blocks)
-        rc = RunCommand(cmd)
-        self.assertEqual(rc, 0)
+        for i in range(0, NRRUNS):
+            cmd = 'dd if={srcpath} of={destpath} bs={bs} count={count}'.format\
+                (srcpath=GetLargeFile(), destpath=GetLuciFile(), bs=blockSize, \
+                 count=total_blocks)
+            rc = RunCommand(cmd)
+            self.assertEqual(rc, 0)
 
     @unittest.skip('skip test')
     def test_CopyDir(self):
@@ -88,7 +92,7 @@ class LuciUnitTests(unittest.TestCase):
             if count >= nr:
                 break
 
-    #@unittest.skip('skip test')
+    @unittest.skip('skip test')
     def test_Validation(self):
         """
           Unit test to validate data by running md5 checksumming

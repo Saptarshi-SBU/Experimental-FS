@@ -1466,6 +1466,8 @@ luci_readpage(struct file *file, struct page *page)
     }
 #endif
 uncompressed_read:
+    // trace mpage_readpage with unlock issue
+    printk(KERN_INFO "MPAGE READPAGE\n");
     ret = mpage_readpage(page, luci_get_block);
 done:
     return ret;

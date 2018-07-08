@@ -177,7 +177,7 @@ int zlib_compress_pages(struct list_head *ws,
         if (workspace->strm.avail_out == 0) {
             kunmap(out_page);
             if (nr_pages == nr_dest_pages) {
-                printk(KERN_INFO "compression failed, cannot "
+                printk(KERN_DEBUG "compression failed, cannot "
                         "accomodate in alloted pages %d(%ld)", nr_pages,
                         nr_dest_pages);
                 out_page = NULL;

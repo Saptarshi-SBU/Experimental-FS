@@ -5934,3 +5934,37 @@ Jun  3 17:01:26 localhost kernel: [102940.751077] LUCI-FS
 __luci_cluster_write_compressed :inode :15 :dirty pages :1 in range lookup
 482-483(482)
 
+
+scsi-bio:
+
+[239389.986854]  <IRQ>
+[239389.986864]
+[239389.986874]  [<ffffffff8133d26b>] bio_endio+0x5b/0xa0
+[239389.986890]  [<ffffffff81343ff0>] blk_update_request+0x90/0x320
+[239389.986914]  [<ffffffff814b23c4>] scsi_end_request+0x34/0x1e0
+[239389.986936]  [<ffffffff814b26ea>] scsi_io_completion+0x11a/0x6b0
+[239389.986960]  [<ffffffff811e1bdf>] ? kfree+0xff/0x140
+[239389.986981]  [<ffffffff814a81af>] scsi_finish_command+0xcf/0x130
+[239389.987003]  [<ffffffff814b1c67>] scsi_softirq_done+0x137/0x160
+[239389.987026]  [<ffffffff8134ab60>] blk_done_softirq+0x90/0xc0
+[239389.987049]  [<ffffffff81096fa5>] __do_softirq+0xf5/0x2e0
+[239389.987070]  [<ffffffff8109746d>] irq_exit+0x10d/0x120
+[239389.987091]  [<ffffffff81731938>] do_IRQ+0x58/0xf0
+[239389.987111]  [<ffffffff8172f76d>] common_interrupt+0x6d/0x6d
+[239389.987131]  <EOI>
+
+perf top:
+
+   6.65%  [zlib_deflate]                      [k] pqdownheap
+   6.63%  [zlib_deflate]                      [k] longest_match
+   4.20%  [zlib_deflate]                      [k] deflate_fast
+   3.87%  [zlib_deflate]                      [k] compress_block
+   2.19%  [zlib_deflate]                      [k] zlib_tr_tally
+   1.99%  [zlib_deflate]                      [k] build_tree
+   1.18%  [zlib_deflate]                      [k] scan_tree
+   0.51%  [zlib_deflate]                      [k] fill_window
+   0.15%  [zlib_deflate]                      [k] zlib_tr_init
+
+
+
+

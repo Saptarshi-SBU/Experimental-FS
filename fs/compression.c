@@ -130,6 +130,30 @@ luci_end_compressed_bio_write(struct bio *bio, int error)
 
 static void
 #ifdef HAVE_NEW_BIO_END
+luci_end_compressed_bio_write_async(struct bio *bio)
+#else
+luci_end_compressed_bio_write_async(struct bio *bio, int error)
+#endif
+{
+    int i = 0;
+    struct bio_vec *bvec;
+    struct list_head *ws;
+    // TBD: Check for status associated with each bvec page
+    // We do not set any writeback flag, so end_page_writeback(page) not needed
+    bio_for_each_segment_all(bvec, bio, i) {
+        struct page * page = bvec->bv_page;
+        BUG_ON(page_has_buffers(page));
+        BUG_ON(PageLocked(page));
+        luci_pageflags_dump(page);
+        // pages belong to mempool
+        ws = (struct list_head*) page->private;
+        BUG_ON(ws == NULL);
+        luci_zlib_compress.remit_workspace(ws, page);
+    }
+}
+
+static void
+#ifdef HAVE_NEW_BIO_END
 luci_end_bio_write(struct bio *bio)
 #else
 luci_end_bio_write(struct bio *bio, int error)
@@ -140,13 +164,30 @@ luci_end_bio_write(struct bio *bio, int error)
     // TBD: Check for status associated with each bvec page
     // We do not set any writeback flag, so end_page_writeback(page)
     // is not necessary
+    BUG_ON(error);
     bio_for_each_segment_all(bvec, bio, i) {
         struct page * page = bvec->bv_page;
-        // L0 blocks are no_bh based
-        BUG_ON(page_has_buffers(page));
         luci_pageflags_dump(page);
+        // L0 blocks are no_bh based
+        if (page_has_buffers(page)) {
+            struct inode * inode = page->mapping->host;
+            struct buffer_head *bh = page_buffers(page);
+            panic("unexpected page buffer inode :%lu bh (%lu-%s-%s-%s-%u)\n",
+                inode->i_ino, bh->b_blocknr,
+                buffer_mapped(bh) ? "mapped" : "unmapped",
+                buffer_dirty(bh)  ? "dirty" : "clean",
+                buffer_locked(bh) ? "locked" : "unlocked",
+                atomic_read(&bh->b_count));
+        }
+        luci_pgtrack(page, "write completed for page");
+        if (PageWriteback(page)) {
+            end_page_writeback(page);
+            // TBD: In case write fails, we redirty the page
+        }
         if (PageLocked(page)) {
             unlock_page(page);
+            // We assume if a page is locked, then an extra refcount is taken
+            put_page(page);
         }
         // Note we do not do put_page for original page. Since
         // write did not take any additional refcount on the page
@@ -175,7 +216,7 @@ luci_bio_alloc(struct block_device *bdev, unsigned long start,
 
 static struct bio*
 luci_prepare_bio(struct inode * inode, struct page **pages,
-     unsigned long total, unsigned long disk_start, bool write)
+     unsigned long total, unsigned long disk_start, bool write, struct list_head *ws)
 {
     int ret;
     struct bio *bio;
@@ -202,6 +243,10 @@ luci_prepare_bio(struct inode * inode, struct page **pages,
     while (i < nr_pages) {
        unsigned int length;
        length = min((unsigned long)PAGE_SIZE, aligned_bytes);
+       if (write && ws) {
+           BUG_ON((void *) pages[i]->private != NULL);
+           pages[i]->private = (unsigned long) ws;
+       }
        ret = bio_add_page(bio, pages[i], length, 0);
        if (ret < length) {
            luci_err_inode(inode, "bio add page failed");
@@ -214,8 +259,7 @@ luci_prepare_bio(struct inode * inode, struct page **pages,
     }
 
     if (aligned_bytes) {
-        luci_err("failed to consume output, left %lu", aligned_bytes);
-        BUG();
+        panic("failed to consume output, left %lu", aligned_bytes);
     }
     #ifdef NEW_BIO_SUBMIT
     bio->bi_opf = write ? REQ_OP_WRITE : REQ_OP_READ;
@@ -240,7 +284,7 @@ luci_submit_write(struct inode * inode, struct page **pages,
     struct bio *bio;
 
     // compressed bio
-    bio = luci_prepare_bio(inode, pages, total_out, disk_start, true);
+    bio = luci_prepare_bio(inode, pages, total_out, disk_start, true, NULL);
     if (IS_ERR(bio)) {
         ret = -EIO;
         luci_err("failed to allocate bio for write");
@@ -283,6 +327,38 @@ luci_submit_write(struct inode * inode, struct page **pages,
     return ret;
 }
 
+static int
+luci_submit_write_async(struct inode * inode, struct page **pages,
+     unsigned long total_out, unsigned long disk_start, bool compressed,
+     struct list_head *ws)
+{
+    ktime_t start;
+    struct bio *bio;
+
+    // compressed bio
+    bio = luci_prepare_bio(inode, pages, total_out, disk_start, true, ws);
+    if (IS_ERR(bio)) {
+        luci_err("failed to allocate bio for write");
+        BUG();
+    }
+
+    if (compressed) {
+        bio->bi_end_io = luci_end_compressed_bio_write_async;
+    } else {
+        bio->bi_end_io = luci_end_bio_write;
+    }
+    luci_bio_dump(bio, "submitting bio write");
+
+    start = ktime_get();
+    #ifdef NEW_BIO_SUBMIT
+    bio->bi_opf = REQ_OP_WRITE;
+    submit_bio(bio);
+    #else
+    submit_bio(WRITE, bio);
+    #endif
+    UPDATE_AVG_LATENCY_NS(dbgfsparam.avg_io_lat, start);
+    return 0;
+}
 
 // Give a page where data will be copied. The page will be locked.
 // This is for buffered writes. Currently, we do not handle partial writes.
@@ -346,7 +422,7 @@ luci_write_compressed_end(struct address_space *mapping,
 
 static int
 __luci_write_compressed(struct page * page, struct pagevec *pvec,
-    struct writeback_control *wbc)
+    struct writeback_control *wbc, bool *compressed)
 {
     int ret, delta;
     int i = 0;
@@ -360,7 +436,6 @@ __luci_write_compressed(struct page * page, struct pagevec *pvec,
     unsigned long nr_blocks, nr_pages_out,
         total_in, total_out, start_compr_block, disk_start, block_no;
     blkptr bp_array[CLUSTER_NRBLOCKS_MAX];
-    bool compressed = true;
 
     cluster = luci_cluster_no(index);
 
@@ -422,7 +497,7 @@ __luci_write_compressed(struct page * page, struct pagevec *pvec,
         }
 
         // uncompressed params
-        compressed = false;
+        *compressed = false;
         total_out = CLUSTER_SIZE;
         nr_pages_out = CLUSTER_NRPAGE;
 
@@ -449,7 +524,7 @@ __luci_write_compressed(struct page * page, struct pagevec *pvec,
     }
 
     for (i = 0, block_no = start_compr_block; i < nr_blocks; i++) {
-        if (compressed) {
+        if (*compressed) {
             bp_reset(&bp_array[i], start_compr_block, total_out, LUCI_COMPR_FLAG);
         } else {
             bp_reset(&bp_array[i], block_no++, 0, 0);
@@ -461,7 +536,12 @@ __luci_write_compressed(struct page * page, struct pagevec *pvec,
 
     // issue compressed write
     disk_start = start_compr_block * blocksize;
-    ret = luci_submit_write(inode, pages_vec, total_out, disk_start, compressed);
+    #ifdef LUCI_SYNC_WRITE
+    ret = luci_submit_write(inode, pages_vec, total_out, disk_start, *compressed);
+    #else
+    ret = luci_submit_write_async(inode, pages_vec, total_out, disk_start, *compressed,
+            *compressed ? ws : NULL);
+    #endif
     if (ret) {
         // TBD: Handle uncompressed write
         luci_err("failed write for cluster %u, status %d", cluster, ret);
@@ -483,10 +563,12 @@ failed_write:
     // TBD: free blocks
 exit:
 
+    #ifdef LUCI_SYNC_WRITE
     i = 0;
-    while (compressed && (i < nr_pages_out)) {
+    while (*compressed && (i < nr_pages_out)) {
         luci_zlib_compress.remit_workspace(ws, pages_vec[i++]);
     }
+    #endif
 
     if (pages_vec) {
         kfree(pages_vec);
@@ -501,7 +583,7 @@ __luci_cluster_write_compressed(struct address_space *mapping, struct page *page
 {
     int ret;
     struct pagevec pvec;
-    bool write_failed = false;
+    bool write_failed = false, compressed = true;
     pgoff_t next_index = index;
     unsigned i, nr_pages, nr_dirty;
     struct page *begin_page = NULL;
@@ -598,7 +680,7 @@ repeat:
 
     // all pages in the cluster are now in the page cache.
     // do compression and submit write
-    ret = __luci_write_compressed(begin_page, &pvec, wbc);
+    ret = __luci_write_compressed(begin_page, &pvec, wbc, &compressed);
     if (ret) {
         luci_err_inode(inode, "compressed write failed :%d", ret);
         write_failed = true;
@@ -611,6 +693,11 @@ repeat:
         dbgfsparam.nrwrites += nr_dirty;
     }
 
+    if (!compressed) {
+        goto skip;
+    }
+
+    //#ifdef LUCI_SYNC_WRITE
     // unlock pages in the cluster
     for (i = 0; i < pagevec_count(&pvec); i++) {
         struct page *page = pvec.pages[i];
@@ -633,6 +720,7 @@ repeat:
             put_page(page);
         }
     }
+    //#endif
 
 skip:
     //pagevec_release(&pvec);
@@ -803,7 +891,7 @@ int luci_read_compressed(struct page *page, blkptr *bp)
 
     // compressed bio
     bio = luci_prepare_bio(inode, compressed_pages, aligned_bytes, disk_start,
-                           false);
+                           false, NULL);
     if (IS_ERR(bio)) {
         ret = -EIO;
         luci_err("failed to allocate bio for read");
@@ -837,7 +925,7 @@ int luci_read_compressed(struct page *page, blkptr *bp)
     }
 
     // original bio
-    org_bio = luci_prepare_bio(inode, cached_pages, CLUSTER_SIZE, 0, false);
+    org_bio = luci_prepare_bio(inode, cached_pages, CLUSTER_SIZE, 0, false, NULL);
     if (IS_ERR(org_bio)) {
         ret = -EIO;
         luci_err("failed to allocate bio for decompressing pages");
