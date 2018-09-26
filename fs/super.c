@@ -746,6 +746,15 @@ restart:
     // keep df command happy; report correct available size
     percpu_counter_set(&sbi->s_freeblocks_counter,
         lsb->s_free_blocks_count);
+
+    // initialize workqueues
+    sbi->comp_write_wq = alloc_workqueue("comp write", WQ_UNBOUND, 0);
+    if (!sbi->comp_write_wq) {
+        luci_err("failed to allocate workqueue");
+        ret = -ENOMEM;
+        goto failed;
+    }
+
     printk(KERN_DEBUG "super_block read successfully");
     return 0;
 
@@ -781,6 +790,12 @@ luci_free_super(struct super_block * sb) {
           brelse(sbi->s_sbh);
           sbi->s_sbh = NULL;
        }
+
+       if (sbi->comp_write_wq) {
+           destroy_workqueue(sbi->comp_write_wq);
+           sbi->comp_write_wq = NULL;
+       }
+
        kfree(sbi);
        sb->s_fs_info = NULL;
     }
@@ -944,6 +959,13 @@ init_debugfs(void) {
     dbgfsparam.dirent_nrwrites = debugfs_create_u64("nrwrites", 0644,
         dbgfsparam.dirent, &dbgfsparam.nrwrites);
     if (dbgfsparam.dirent_nrwrites == NULL) {
+        printk(KERN_ERR "error creating file");
+        return (-ENODEV);
+    }
+
+    dbgfsparam.dirent_nrbatches = debugfs_create_u64("nrbatches", 0644,
+        dbgfsparam.dirent, &dbgfsparam.nrbatches);
+    if (dbgfsparam.dirent_nrbatches == NULL) {
         printk(KERN_ERR "error creating file");
         return (-ENODEV);
     }

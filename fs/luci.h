@@ -29,6 +29,7 @@
 #include <linux/debugfs.h>
 #include <linux/log2.h>
 #include <linux/printk.h>
+#include <linux/workqueue.h>
 
 #define CONCAT_(x,y) x##y
 #define CONCAT(x,y) CONCAT_(x,y)
@@ -40,7 +41,6 @@ typedef int luci_grpblk_t;
 
 /* data type for filesystem-wide blocks number */
 typedef unsigned long luci_fsblk_t;
-
 
 /*
  * Structure of the super block
@@ -163,6 +163,9 @@ struct luci_sb_info {
      * of the mount options.
      */
     spinlock_t s_lock;
+
+    // Workqueue for compressed writes
+    struct workqueue_struct *comp_write_wq;
 };
 
 static inline struct luci_sb_info *LUCI_SB(struct super_block *sb)
@@ -570,6 +573,8 @@ typedef struct debugfs {
     struct dentry *dirent_tracedata;
     u64 nrwrites;
     struct dentry *dirent_nrwrites;
+    u64 nrbatches; //count
+    struct dentry *dirent_nrbatches;
     u64 avg_balloc_lat; //ns
     struct dentry *dirent_balloc_lat;
     u64 avg_deflate_lat; //ns

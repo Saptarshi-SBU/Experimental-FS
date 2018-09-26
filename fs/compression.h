@@ -18,11 +18,31 @@
 
 #define DEBUG_COMPRESSION
 
+#define WBC_FMT  "wbc: (%llu-%llu) dirty :%lu"
+#define WBC_ARGS(wbc) wbc->range_start, wbc->range_end, wbc->nr_to_write
+
 typedef enum luci_compression_type {
 	LUCI_COMPRESS_NONE  = 0,
 	LUCI_COMPRESS_ZLIB  = 1,
 	LUCI_COMPRESS_TYPES = 1,
 }luci_comp_type;
+
+// Work item for compressed write
+struct comp_write_work
+{
+    struct page *begin_page;
+    struct page *pageout;
+    struct pagevec *pvec;
+    struct work_struct work;
+};
+
+struct comp_ws {
+    struct list_head idle_ws;
+    spinlock_t ws_lock;
+    int num_ws;
+    atomic_t alloc_ws;
+    wait_queue_head_t ws_wait;
+};
 
 struct luci_compress_op {
     struct list_head *(*alloc_workspace)(void);

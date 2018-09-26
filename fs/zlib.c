@@ -143,6 +143,7 @@ int zlib_compress_pages(struct list_head *ws,
         ret = -ENOMEM;
         goto out;
     }
+    out_page->private = (unsigned long)NULL;
     cpage_out = kmap(out_page);
     pages[0] = out_page;
     nr_pages = 1;
@@ -189,6 +190,7 @@ int zlib_compress_pages(struct list_head *ws,
                 ret = -ENOMEM;
                 goto out;
             }
+            out_page->private = (unsigned long)NULL;
             cpage_out = kmap(out_page);
             pages[nr_pages] = out_page;
             nr_pages++;

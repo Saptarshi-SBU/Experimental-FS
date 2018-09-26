@@ -5953,7 +5953,7 @@ scsi-bio:
 [239389.987111]  [<ffffffff8172f76d>] common_interrupt+0x6d/0x6d
 [239389.987131]  <EOI>
 
-perf top:
+perf top with async write submit:
 
    6.65%  [zlib_deflate]                      [k] pqdownheap
    6.63%  [zlib_deflate]                      [k] longest_match
@@ -5964,7 +5964,3 @@ perf top:
    1.18%  [zlib_deflate]                      [k] scan_tree
    0.51%  [zlib_deflate]                      [k] fill_window
    0.15%  [zlib_deflate]                      [k] zlib_tr_init
-
-
-
-

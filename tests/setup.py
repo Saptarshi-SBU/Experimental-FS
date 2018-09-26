@@ -25,7 +25,7 @@ def sysFsSettings(enable):
 
     obj = Sysctl.factory('sys')
     value = int(enable)
-    obj.write('kernel.debug.luci.debug', value)
+    obj.write('kernel.debug.luci.log', value)
     obj.printSettings()
 
 def RunCommand(cmd, strict = True):
@@ -112,7 +112,7 @@ class LUCIBuilder(Builder):
             format(fs='luci', dev=dev, point='/mnt')
         RunCommand(cmd)
         procFsSettings(True)
-        sysFsSettings(False)
+        #sysFsSettings(False)
 
     @staticmethod
     def cleanupModule():
@@ -131,6 +131,8 @@ class LUCIBuilder(Builder):
     def IOStats():
         ''' print counters '''
         print ("****luci internal stats***")
+        with open('/sys/kernel/debug/luci/nrbatches') as f:
+            nr_batches = int(f.read())
         with open('/sys/kernel/debug/luci/nrwrites') as f:
             nr_writes = int(f.read())
         with open('/sys/kernel/debug/luci/avg_balloc_lat') as f:
@@ -141,8 +143,9 @@ class LUCIBuilder(Builder):
             inflate_latency = int(f.read())
         with open('/sys/kernel/debug/luci/avg_io_lat') as f:
             io_latency = int(f.read())
-        print("nr_writes: {} balloc latency: {} ns deflate latency: {} ns zlib "
-              "latency: {} ns io latency {} ns".format(str(nr_writes), \
+        print("nr_batches: {} nr_writes: {} balloc latency: {} ns " \
+              "deflate latency: {} ns zlib latency: {} ns io latency " \
+              "{} ns".format(str(nr_batches), str(nr_writes), \
               str(balloc_latency), str(deflate_latency), \
               str(inflate_latency), str(io_latency)))
 

@@ -26,7 +26,7 @@
     #define HAVE_TRUNCATEPAGES_FINAL
 #endif
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0))
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,0,5))
     #include <linux/dcache.h>
     #define HAVE_CHECKINODEPERM
     #define DENTRY_INODE(dentry) (dentry->d_inode)
