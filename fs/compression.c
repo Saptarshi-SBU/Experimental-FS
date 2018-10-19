@@ -128,6 +128,7 @@ luci_end_bio_write_compressed(struct bio *bio, int error)
         luci_pgtrack(page, "write completed for compressed page ");
         luci_zlib_compress.remit_workspace(ws, page);
     }
+    bio_put(bio);
 }
 
 static void
@@ -174,6 +175,7 @@ luci_end_bio_write(struct bio *bio, int error)
             put_page(page);
         }
     }
+    bio_put(bio);
 }
 
 static struct bio *
@@ -441,6 +443,9 @@ release:
                 //redirty_page_for_writepage(wbc, page);
         }
 
+        // drop ref obtained from grab_cache_page_nowait
+        put_page(page);
+
         // We are dropping it in context of luci_writepage only
         if (async_work->pageout && async_work->pageout == page)
             put_page(page);
@@ -494,6 +499,7 @@ luci_try_batch_and_issue_compressed_work(struct address_space *mapping,
                 "cluster(%u)", page_index(page), cluster);
             goto exit;
         }
+        page_cache_get(page);
         pagevec_add(page_vec, page);
     }
 
@@ -503,7 +509,7 @@ luci_try_batch_and_issue_compressed_work(struct address_space *mapping,
 
     // do compression and submit write
     async_work = (struct comp_write_work *) kmalloc
-            (sizeof(struct comp_write_work), GFP_KERNEL);
+            (sizeof(struct comp_write_work), GFP_NOFS);
 
     if (!async_work) {
         luci_err_inode(inode, "failed to allocate work item\n");
@@ -582,8 +588,11 @@ luci_batch_and_issue_compressed_work(struct address_space *mapping,
     luci_dbg_inode(inode, "scan %u pages in pagevec index range %lu-%lu",
         nr_pages, index, next_index);
 
-    if (!nr_pages)
+    if (!nr_pages) {
+        pagevec_release(page_vec);
+        kfree(page_vec);
         return index;
+    }
 
     // check if pagevec contains dirty pages belonging to cluster
     // Fixed: missing writes for pages not from this cluster
@@ -649,10 +658,11 @@ repeat:
 
     // do compression and submit write
     async_work = (struct comp_write_work *) kmalloc
-            (sizeof(struct comp_write_work), GFP_KERNEL);
+            (sizeof(struct comp_write_work), GFP_NOFS);
 
     if (!async_work) {
         luci_err_inode(inode, "failed to allocate work item\n");
+        kfree(page_vec);
         return -ENOMEM;
     }
 
@@ -1138,7 +1148,7 @@ void free_workspace(int type, struct list_head *workspace)
      int *num_ws = &luci_comp_ws[idx].num_ws;
 
      spin_lock(ws_lock);
-     if (*num_ws < num_online_cpus()) {
+     if (*num_ws <= num_online_cpus()) {
         list_add(workspace, idle_ws);
 	(*num_ws)++;
 	spin_unlock(ws_lock);
