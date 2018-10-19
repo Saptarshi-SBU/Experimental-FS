@@ -552,10 +552,11 @@ luci_get_block(struct inode *inode, sector_t iblock,
         set_buffer_boundary(bh_result);
     }
 
+    mutex_lock(&(LUCI_I(inode)->truncate_mutex));
     partial = luci_get_branch(inode, depth, ipaths, ichain, &err);
     if (err < 0) {
         luci_err_inode(inode, "error reading block to path :%u", err);
-        return err;
+        goto exit;
     }
 
     if (!partial) {
@@ -629,6 +630,9 @@ done:
         }
         partial--;
     }
+
+exit:
+    mutex_unlock(&(LUCI_I(inode)->truncate_mutex));
     return err;
 }
 

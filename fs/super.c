@@ -374,6 +374,7 @@ static void
 init_once(void *foo)
 {
     struct luci_inode_info *li = (struct luci_inode_info *) foo;
+    mutex_init(&li->truncate_mutex);
     rwlock_init(&li->i_meta_lock);
     inode_init_once(&li->vfs_inode);
 }
