@@ -135,6 +135,8 @@ class LUCIBuilder(Builder):
             nr_batches = int(f.read())
         with open('/sys/kernel/debug/luci/nrwrites') as f:
             nr_writes = int(f.read())
+        with open('/sys/kernel/debug/luci/rlsebsy') as f:
+            nr_rlsebsy = int(f.read())
         with open('/sys/kernel/debug/luci/avg_balloc_lat') as f:
             balloc_latency = int(f.read())
         with open('/sys/kernel/debug/luci/avg_deflate_lat') as f:
@@ -143,9 +145,10 @@ class LUCIBuilder(Builder):
             inflate_latency = int(f.read())
         with open('/sys/kernel/debug/luci/avg_io_lat') as f:
             io_latency = int(f.read())
-        print("nr_batches: {} nr_writes: {} balloc latency: {} ns " \
-              "deflate latency: {} ns zlib latency: {} ns io latency " \
-              "{} ns".format(str(nr_batches), str(nr_writes), \
+        print("nr_batches: {} nr_writes: {} nr_rlsebsy: {} "\
+              "balloc latency: {} ns deflate latency: {} ns "
+              "zlib latency: {} ns io latency {} ns".format \
+              (str(nr_batches), str(nr_writes), str(nr_rlsebsy), \
               str(balloc_latency), str(deflate_latency), \
               str(inflate_latency), str(io_latency)))
 

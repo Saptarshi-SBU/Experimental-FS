@@ -575,6 +575,8 @@ typedef struct debugfs {
     struct dentry *dirent_nrwrites;
     u64 nrbatches; //count
     struct dentry *dirent_nrbatches;
+    u64 rlsebsy; //count
+    struct dentry *dirent_rlsebsy;
     u64 avg_balloc_lat; //ns
     struct dentry *dirent_balloc_lat;
     u64 avg_deflate_lat; //ns

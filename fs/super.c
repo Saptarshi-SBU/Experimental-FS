@@ -971,6 +971,13 @@ init_debugfs(void) {
         return (-ENODEV);
     }
 
+    dbgfsparam.dirent_rlsebsy = debugfs_create_u64("rlsebsy", 0644,
+        dbgfsparam.dirent, &dbgfsparam.rlsebsy);
+    if (dbgfsparam.dirent_rlsebsy == NULL) {
+        printk(KERN_ERR "error creating file");
+        return (-ENODEV);
+    }
+
     dbgfsparam.dirent_balloc_lat = debugfs_create_u64("avg_balloc_lat", 0644,
         dbgfsparam.dirent, &dbgfsparam.avg_balloc_lat);
     if (dbgfsparam.dirent_balloc_lat == NULL) {

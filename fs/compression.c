@@ -52,12 +52,14 @@ luci_bio_dump(struct bio * bio, const char *msg)
 {
 #ifdef HAVE_BIO_ITER
      luci_dbg("%s bio : bi_max_vecs :%u bi_vcnt :%d bi_size :%u bi_sector :%lu"
-        " bytes: %u", msg, bio->bi_max_vecs, bio->bi_vcnt, bio->bi_iter.bi_size,
-        bio->bi_iter.bi_sector, bio_cur_bytes(bio));
+        " bytes: %u index :%lu\n", msg, bio->bi_max_vecs, bio->bi_vcnt,
+        bio->bi_iter.bi_size, bio->bi_iter.bi_sector, bio_cur_bytes(bio),
+        page_index(bio_page(bio)));
 #else
      luci_dbg("%s bio : bi_max_vecs :%u bi_vcnt :%d bi_size :%u bi_sector :%lu"
-        " bytes :%u", msg, bio->bi_max_vecs, bio->bi_vcnt, bio->bi_size,
-        bio->bi_sector, bio_cur_bytes(bio));
+        " bytes :%u index :%lu\n", msg, bio->bi_max_vecs, bio->bi_vcnt,
+        bio->bi_size, bio->bi_sector, bio_cur_bytes(bio),
+        page_index(bio_page(bio)));
 #endif
      //luci_dump_bytes("bio page", bio_page(bio), PAGE_SIZE);
 }

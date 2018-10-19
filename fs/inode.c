@@ -1484,6 +1484,14 @@ luci_readpages(struct file *file, struct address_space *mapping,
     return mpage_readpages(mapping, pages, nr_pages, luci_get_block);
 }
 
+static int luci_releasepage(struct page *page, gfp_t wait)
+{
+    int rlse = try_to_free_buffers(page);
+    if (!rlse)
+        dbgfsparam.rlsebsy++;
+     return rlse;
+}
+
 // Depth first traversal of blocks
 // assumes file is not truncated during this operation
 int
@@ -1550,4 +1558,5 @@ const struct address_space_operations luci_aops = {
     .writepages     = luci_writepages,
     .write_begin    = luci_write_begin,
     .write_end      = luci_write_end,
+    .releasepage    = luci_releasepage,
 };
