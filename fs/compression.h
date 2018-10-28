@@ -16,7 +16,7 @@
 
 #define ZLIB_MEMPOOL_PAGES (4 * 1024) //16 MB
 
-#define DEBUG_COMPRESSION
+//#define DEBUG_COMPRESSION
 
 #define WBC_FMT  "wbc: (%llu-%llu) dirty :%lu"
 #define WBC_ARGS(wbc) wbc->range_start, wbc->range_end, wbc->nr_to_write
@@ -37,10 +37,10 @@ struct comp_write_work
 };
 
 struct comp_ws {
-    struct list_head idle_ws;
-    spinlock_t ws_lock;
     int num_ws;
     atomic_t alloc_ws;
+    spinlock_t ws_lock;
+    struct list_head idle_ws;
     wait_queue_head_t ws_wait;
 };
 
@@ -87,19 +87,10 @@ struct luci_compress_op {
       * be contiguous.  They all correspond to the range of bytes covered by
       * the compressed extent.
       */
-      int (*decompress_bio)(struct list_head *workspace, unsigned long total_in,
-                            struct bio *bio, struct bio *org_bio);
-
-      /*
-       * a less complex decompression routine.  Our compressed data fits in a
-       * single page, and we want to read a single page out of it.
-       * start_byte tells us the offset into the compressed data we're interested in
-       */
-       int (*decompress)(struct list_head *workspace,
-			 unsigned char *data_in,
-			 struct page *dest_page,
-			 unsigned long start_byte,
-			 size_t srclen, size_t destlen);
+      int (*decompress_pages)(struct list_head *workspace,
+                              unsigned long total_in,
+                              struct bio *compr_bio,
+                              struct bio *uncompr_bio);
 
       /*
        * return borrowed pages from workspace after work is done.
@@ -127,12 +118,6 @@ int luci_read_compressed(struct page * page, blkptr *bp);
 
 int luci_submit_compressed_read(struct inode *inode, struct bio *bio,
     int mirror_num, unsigned long bio_flags);
-
-int luci_util_decompress_buf2page(char *buf, unsigned long buf_start,
-    unsigned long total_out, u64 disk_start, struct bio *bio);
-
-void luci_util_clear_biovec_end(struct bio_vec *bvec, int vcnt,
-    unsigned long pg_index, unsigned long pg_offset);
 
 struct list_head *find_workspace(int type);
 

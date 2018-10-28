@@ -100,5 +100,6 @@ luci_cluster_update_bp(struct page *page, struct inode *inode, blkptr bp_new [])
     }
     delta = luci_account_delta(bp_old, bp_new, i);
     luci_dbg_inode(inode, "delta bytes :%d", delta);
+    pr_info("delta bytes :%d", delta);
     return delta;
 }

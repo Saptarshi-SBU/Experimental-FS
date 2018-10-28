@@ -324,8 +324,11 @@ gotit:
    li->i_active_block_group = group;
    li->i_dir_start_lookup = 0;
    li->i_state = LUCI_STATE_NEW;
-   inode->i_generation = sbi->s_next_generation++;
+   #ifdef LUCIFS_COMPRESSION
+   li->i_size_comp = 0;
+   #endif
    if (insert_inode_locked(inode) < 0) {
+   inode->i_generation = sbi->s_next_generation++;
       luci_dbg("inode locked during create inode :%lu", ino);
       err = -EIO;
       goto fail;

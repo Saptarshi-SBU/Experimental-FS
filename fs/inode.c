@@ -82,6 +82,9 @@ luci_getattr_private(const struct dentry *dentry, struct kstat *stat)
     struct inode *inode = DENTRY_INODE(dentry);
     generic_fillattr(inode, stat);
     stat->blksize = sb->s_blocksize;
+#ifdef LUCIFS_COMPRESSION
+    luci_info_inode(inode, "phy size :%llu\n", LUCI_I(inode)->i_size_comp);
+#endif
     luci_dbg_inode(inode, "get attributes");
     return 0;
 }
@@ -760,6 +763,9 @@ luci_iget(struct super_block *sb, unsigned long ino) {
     li->i_active_block_group = li->i_block_group;
     li->i_dir_start_lookup = 0;
     li->i_dtime = le32_to_cpu(raw_inode->i_dtime);
+#ifdef LUCIFS_COMPRESSION
+    li->i_size_comp = raw_inode->osd1.linux1.l_i_reserved1;
+#endif
 
     if (inode->i_nlink == 0 && (inode->i_mode == 0 || li->i_dtime)) {
         /* this inode is deleted */
@@ -967,14 +973,13 @@ gotit:
 static int
 __luci_write_inode(struct inode *inode, int do_sync)
 {
-    struct luci_inode_info *ei = LUCI_I(inode);
+    int n, err = 0;
     struct super_block *sb = inode->i_sb;
-    ino_t ino = inode->i_ino;
-    struct buffer_head * bh;
-    struct luci_inode * raw_inode = luci_get_inode(sb, ino, &bh);
-    int n;
-    int err = 0;
+    struct buffer_head *bh;
+    struct luci_inode *raw_inode;
+    struct luci_inode_info *ei = LUCI_I(inode);
 
+    raw_inode = luci_get_inode(sb, inode->i_ino, &bh);
     if (IS_ERR(raw_inode))
         return -EIO;
 
@@ -1001,18 +1006,24 @@ __luci_write_inode(struct inode *inode, int do_sync)
     raw_inode->i_faddr = cpu_to_le32(ei->i_faddr);
     raw_inode->i_file_acl = cpu_to_le32(ei->i_file_acl);
 
+#ifdef LUCIFS_COMPRESSION
+    raw_inode->osd1.linux1.l_i_reserved1 = cpu_to_le32(ei->i_size_comp);
+#endif
     raw_inode->i_generation = cpu_to_le32(inode->i_generation);
+
     for (n = 0; n < LUCI_N_BLOCKS; n++)
         raw_inode->i_block[n] = ei->i_data[n];
+
     mark_buffer_dirty(bh);
     if (do_sync) {
         sync_dirty_buffer(bh);
         if (buffer_req(bh) && !buffer_uptodate(bh)) {
             luci_err("IO error syncing luci inode [%s:%08lx]\n", sb->s_id,
-               (unsigned long) ino);
+               (unsigned long) inode->i_ino);
             err = -EIO;
         }
     }
+
     ei->i_state &= ~LUCI_STATE_NEW;
     brelse (bh);
     return err;
@@ -1395,42 +1406,51 @@ done:
     return ret;
 }
 
+#ifdef DEBUG_BLOCK2
 static void
 luci_check_bp(struct inode *inode, unsigned long file_block)
 {
     blkptr bp = luci_find_leaf_block(inode, file_block);
     luci_dump_blkptr(inode, file_block, &bp);
 }
+#endif
 
+// file can be null in cases, when the API is in internally
+// invoked via luci_get_page(do_read_cache_page->filler)
 static int
 luci_readpage(struct file *file, struct page *page)
 {
     int ret = 0;
 #ifdef LUCIFS_COMPRESSION
+    blkptr bp;
     struct page *cachep;
-    // file can be null in cases, when the API is in internally
-    // invoked via luci_get_page(do_read_cache_page->filler)
+    unsigned long file_block;
     struct inode *inode = page->mapping->host;
+
     if (S_ISREG(inode->i_mode)) {
-        // file limits are already checked by vfs
+
         if (page_offset(page) > inode->i_size) {
-            luci_err_inode(inode, "page offset (%llu) > file size (%llu)",
-                page_offset(page), inode->i_size);
-            panic("invalid offset to readpage");
+            zero_user(page, 0, PAGE_SIZE);
+            SetPageUptodate(page);
+            if (PageLocked(page))
+                unlock_page(page);
+            luci_err_inode(inode, "offset exceed inode size, offset (%llu) > "
+                "file size (%llu)", page_offset(page), i_size_read(inode));
+            goto done;
         }
+
         // We can safely assume page is present in cache, due to page readahead
-        // and locked
-        // Fixed : we need to pass page index
+        // and locked. Fixed : we need to pass page index
         cachep = find_get_page(inode->i_mapping, page_index(page));
-        // Fix me
         if (!cachep) {
             luci_err("page (%lu) not found in cache, allocating", page_index(page));
             cachep = find_or_create_page(page->mapping, page_index(page), GFP_KERNEL);
         }
         BUG_ON(!cachep);
+
         if (!PageUptodate(cachep)) {
-            unsigned long file_block = page_offset(page)/luci_chunk_size(inode);
-            blkptr bp = luci_find_leaf_block(inode, file_block);
+            file_block = page_offset(page)/luci_chunk_size(inode);
+            bp = luci_find_leaf_block(inode, file_block);
             #ifdef DEBUG_BLOCK
             luci_dump_blkptr(inode, file_block, &bp);
             #endif
@@ -1460,11 +1480,10 @@ luci_readpage(struct file *file, struct page *page)
 
         luci_pgtrack(page, "read page completed for inode %lu", inode->i_ino);
 
-        // Ideally page should be locked, but seen cases
-        // where page is not locked. TBD.
-        if (PageLocked(page)) {
+        // Ideally page should be locked, but seen cases where page is not locked. TBD.
+        if (PageLocked(page))
             unlock_page(page);
-        }
+
         luci_dbg_inode(inode, "compressed read completed for pg index :%lu",
             page_index(page));
         goto done;
@@ -1553,7 +1572,7 @@ const struct inode_operations luci_dir_inode_operations = {
 
 const struct address_space_operations luci_aops = {
     .readpage       = luci_readpage,
-    //.readpages      = luci_readpages,
+    //.readpages      = luci_readpages, // FIXME :readahead causes deadlock
     .writepage      = luci_writepage,
     .writepages     = luci_writepages,
     .write_begin    = luci_write_begin,

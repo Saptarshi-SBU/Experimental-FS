@@ -5964,3 +5964,23 @@ perf top with async write submit:
    1.18%  [zlib_deflate]                      [k] scan_tree
    0.51%  [zlib_deflate]                      [k] fill_window
    0.15%  [zlib_deflate]                      [k] zlib_tr_init
+
+=========================================================================
+
+[128094.012795] total_in :4132 avail_in :4096
+[128094.012861] LUCI: INFLATE strm.total in :2224, avail in :1870 consumed out
+:0 total decompressed :4096 avail out :0
+[128094.012863] LUCI-FS luci_util_decompress_buf2page : params: tocopy :4096,
+used_pages :0 prev_out :0, skip_bytes :0
+[128094.012864] bio page :ffffea0005e39bc0
+[128094.012908] LUCI: INFLATE strm.total in :4094, avail in :0 consumed out
+:4096 total decompressed :8117 avail out :75
+[128094.012910] LUCI-FS luci_util_decompress_buf2page : params: tocopy :4021,
+used_pages :4096 prev_out :4096, skip_bytes :0
+[128094.012911] bio page :ffffea0006686780
+[128094.012915] LUCI: INFLATE strm.total in :4126, avail in :4064 consumed out
+:8117 total decompressed :8192 avail out :4021
+[128094.012917] LUCI-FS luci_util_decompress_buf2page : params: tocopy :75,
+used_pages :4096 prev_out :8117, skip_bytes :0
+[128094.012918] bio page :ffffea0006686780
+[128094.012919] inflate completed

@@ -212,7 +212,7 @@ struct luci_inode {
     __le32  i_flags;    /* File flags */
     union {
         struct {
-            __le32  l_i_reserved1;
+            __le32  l_i_reserved1; // used by compression to store block count
         } linux1;
         struct {
             __le32  h_i_translator;
@@ -291,6 +291,11 @@ struct luci_inode_info {
      */
     struct rw_semaphore xattr_sem;
 #endif
+
+#ifdef LUCIFS_COMPRESSION
+    __u64  i_size_comp;
+#endif   
+
     rwlock_t i_meta_lock;
 
     /*
@@ -300,7 +305,9 @@ struct luci_inode_info {
      * luci_reserve_window_node.
      */
     struct mutex truncate_mutex;
+
     struct inode    vfs_inode;
+
     struct list_head i_orphan;  /* unlinked but open inodes */
 };
 
@@ -736,7 +743,7 @@ int luci_prepare_chunk(struct page *page, loff_t pos, unsigned len);
 int luci_commit_chunk(struct page *page, loff_t pos, unsigned len);
 
 /* inode.c */
-#define TEST_INODE 21
+#define TEST_INODE 210
 
 #define COMPR_CREATE_ALLOC  0x01
 #define COMPR_BLK_UPDATE    0x02

@@ -15,8 +15,10 @@ from setup import RunCommand
 
 TESTDIR='/mnt'
 #HOMEDIR="/run/media/ssen/NIKON D3200/DCIM/100D3200"
-HOMEDIR="/home"
-NRFILES=500
+#HOMEDIR="/run/media/root/Shilpita/sen_santa_cruz_dec2016/DCIM/100D3200"
+HOMEDIR="/home/ssen/Downloads/pics_bakup"
+#HOMEDIR="/home"
+NRFILES=100
 LARGEFILE='/dev/sda'
 NRRUNS=10
 
@@ -61,7 +63,7 @@ class LuciUnitTests(unittest.TestCase):
             rc = RunCommand(cmd)
             self.assertEqual(rc, 0)
 
-    #@unittest.skip('skip test')
+    @unittest.skip('skip test')
     def test_DDLargeFile(self):
         """
             Unit test to copy large file using dd
@@ -75,7 +77,7 @@ class LuciUnitTests(unittest.TestCase):
             rc = RunCommand(cmd)
             self.assertEqual(rc, 0)
 
-    @unittest.skip('skip test')
+    #@unittest.skip('skip test')
     def test_CopyDir(self):
         """
           Unit test to copy directory
