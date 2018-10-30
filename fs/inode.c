@@ -792,6 +792,7 @@ luci_iget(struct super_block *sb, unsigned long ino) {
     } else {
         luci_err("Inode mode not supported");
     }
+
     brelse(bh);
     // clears the new state
     unlock_new_inode(inode);

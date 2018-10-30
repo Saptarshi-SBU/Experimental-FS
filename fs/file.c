@@ -86,6 +86,35 @@ int luci_mmap (struct file * file, struct vm_area_struct *vma) {
    return generic_file_mmap(file, vma);
 }
 
+static int luci_ioctl_getflags(struct file *file, void __user *arg)
+{
+   unsigned int flags = 0;
+   struct luci_inode_info *li = LUCI_I(file_inode(file));
+
+   if (li->i_flags & LUCI_INODE_COMPRESS)
+       flags |= FS_COMPR_FL;
+   else if (li->i_flags & LUCI_INODE_NOCOMPRESS)
+       flags |= FS_NOCOMP_FL;
+
+   if (copy_to_user(arg, &flags, sizeof(flags)))
+       return -EFAULT;
+
+   return 0;
+}
+
+long luci_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+   switch (cmd) {
+   case FS_IOC_GETFLAGS:
+           return luci_ioctl_getflags(file, (void __user *)arg);
+   case FS_IOC_SETFLAGS:
+   case FS_IOC_GETVERSION:
+   default:
+           luci_err("not supported ioctl :0x%x\n", cmd);
+           return -ENOTTY;
+   }
+}
+
 const struct file_operations luci_file_operations = {
         .llseek         = luci_llseek,
 #if defined(HAVE_NEW_SYNC_WRITE)
@@ -107,4 +136,6 @@ const struct file_operations luci_file_operations = {
         .mmap           = luci_mmap,
         .fsync          = generic_file_fsync,
         .splice_read    = generic_file_splice_read,
+
+        .unlocked_ioctl = luci_ioctl,
 };

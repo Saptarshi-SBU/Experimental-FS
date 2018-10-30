@@ -471,6 +471,12 @@ enum {
 #define set_opt(o, opt)         o |= opt
 
 /*
+ * Inode i_flags
+ */
+#define LUCI_INODE_COMPRESS      (1 << 0)
+#define LUCI_INODE_NOCOMPRESS    (1 << 1)
+
+/*
  * Maximal mount counts between two filesystem checks
  */
 #define LUCI_DFL_MAX_MNT_COUNT      20  /* Allow 20 mounts */

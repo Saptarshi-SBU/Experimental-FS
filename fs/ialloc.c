@@ -235,12 +235,14 @@ out:
 }
 
 // Behaviour Control Flags based on module parameters
-void
-luci_init_inode_flags(struct inode *inode) {
-   struct luci_sb_info *sbi = LUCI_SB(inode->i_sb);
+static void luci_init_inode_flags(struct inode *inode) {
    if (S_ISREG(inode->i_mode)) {
       struct luci_inode_info *li = LUCI_I(inode);
-      li->i_flags |= sbi->s_mount_opt;
+#ifdef LUCIFS_COMPRESSION
+      li->i_flags |= LUCI_INODE_COMPRESS;
+#else
+      li->i_flags |= LUCI_INODE_NOCOMPRESS;
+#endif
    }
 }
 
