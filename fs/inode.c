@@ -15,6 +15,7 @@
 #include <linux/ktime.h>
 #include "kern_feature.h"
 #include "luci.h"
+#include "cluster.h"
 #include "compression.h"
 
 static int
@@ -525,6 +526,86 @@ no_block:
     return p;
 }
 
+/* compute checksum */
+u32 luci_compute_cksum(struct page *page, size_t size, u32 crc_seed)
+{
+    u32 crc;
+    void *kaddr;
+
+    BUG_ON(size > PAGE_SIZE);
+    BUG_ON(!size);
+
+    kaddr = kmap(page);
+    crc = crc32_le(crc_seed, kaddr, size);
+    kunmap(kaddr);
+    luci_info("crc for page, length :%lu crc:0x%x\n", size, crc);
+    return crc;
+}
+
+int luci_compute_compressed_cksum(struct page **pages, unsigned nr_pages,
+                                  size_t length)
+{
+    int i;
+    u32 crc = ~0U;
+    unsigned bytes = 0;
+
+    for (i = 0; i < nr_pages; i++) {
+        BUG_ON(length == 0);
+        bytes = min((size_t)length, (size_t)PAGE_SIZE);
+        crc = luci_compute_cksum(pages[i], bytes, crc);
+        length -= bytes;
+    }
+    BUG_ON(length);
+    return crc;
+}
+
+int luci_verify_compressed_cksum(struct bio *bio, blkptr *bp)
+{
+    int i = 0;
+    struct bio_vec *bvec;
+    size_t length = bp->length, bytes = 0;
+    u32 crc = ~0U;
+
+    bio_for_each_segment_all(bvec, bio, i) {
+        BUG_ON(length == 0);
+        bytes = min((size_t)length, (size_t)PAGE_SIZE);
+        crc = luci_compute_cksum(bvec->bv_page, bytes, crc);
+        length -= bytes;
+    }
+    BUG_ON(length);
+
+    luci_info("bp EXP cksum :0x%x GOT cksum :0x%x\n", bp->checksum, crc);
+    if (bp->checksum != crc) {
+        luci_err("checksum error detected\n");
+        return -EBADE;
+    }
+    return 0;
+}
+
+
+int luci_verify_cksum(struct page *page, blkptr *bp)
+{
+    int err = 0;
+
+    if (PageDirty(page) || PageWriteback(page)) {
+        luci_info("cannot verify checksum for page, page dirty/writeback\n");
+        return 0;
+    }
+
+    if (!PageUptodate(page)) {
+        //luci_info("cannot verify checksum for page, page is not uptodate\n");
+        //return 0;
+    }
+
+    if (bp->checksum != luci_compute_cksum(page, bp->length, ~0U)) {
+        err = -EBADE;
+        luci_err("checksum error detected: 0x%x\n", bp->checksum);
+    } else
+        luci_info("bp checksum :%x\n", bp->checksum);
+
+    return err;
+}
+
 int
 luci_get_block(struct inode *inode, sector_t iblock,
         struct buffer_head *bh_result, int create)
@@ -537,6 +618,9 @@ luci_get_block(struct inode *inode, sector_t iblock,
     Indirect *partial;
     long ipaths[LUCI_MAX_DEPTH];
     Indirect ichain[LUCI_MAX_DEPTH];
+#if 0
+    struct buffer_head *bh_leaf;
+#endif
 
     luci_dbg_inode(inode, "getting block for inode :%lu, i_block :%lu "
         "create :%s", inode->i_ino, iblock, create ? "alloc" : "noalloc");
@@ -589,19 +673,32 @@ luci_get_block(struct inode *inode, sector_t iblock,
 gotit:
         block_no = ichain[depth - 1].key.blockno;
         if (bh_result) {
+
            map_bh(bh_result, inode->i_sb, block_no);
-           // indicates block was compressed
-           if (ichain[depth - 1].key.flags & LUCI_COMPR_FLAG) {
-               bh_result->b_state |= BH_PrivateStart;
+
+           if (bh_result->b_state & BH_PrivateStart)
+               *(u32*) bh_result->b_data = ichain[depth - 1].key.checksum;
+
+           if (ichain[depth - 1].key.flags & LUCI_COMPR_FLAG)
                bh_result->b_size = (size_t) ichain[depth - 1].key.length;
-           }
+           else
+               bh_result->b_state &= ~BH_PrivateStart;
+
            luci_dump_blkptr(inode, iblock, &ichain[depth - 1].key);
         }
 
-        luci_dbg_inode(inode, "i_block :%lu paths :%d :%d :%d :%d", iblock,
+        luci_info_inode(inode, "i_block :%lu paths :%d :%d :%d :%d", iblock,
            ichain[0].key.blockno, ichain[1].key.blockno, ichain[2].key.blockno,
            ichain[3].key.blockno);
-        err = 0;
+
+        #if 0
+        bh_leaf = sb_bread(inode->i_sb, block_no);
+        BUG_ON(bh_leaf == NULL);
+        BUG_ON(bh_leaf->b_page == NULL);
+        err = luci_verify_checksum(bh_leaf->b_page, &ichain[depth - 1].key);
+        brelse(bh_leaf);
+        #endif
+
     } else {
         if (create) {
             nr_blocks = (ichain + depth) - partial;
@@ -646,7 +743,7 @@ exit:
 }
 
 blkptr
-luci_find_leaf_block(struct inode * inode, unsigned long i_block)
+luci_find_leaf_block(struct inode *inode, unsigned long i_block)
 {
     int ret;
     blkptr bp;
@@ -654,19 +751,22 @@ luci_find_leaf_block(struct inode * inode, unsigned long i_block)
 
     memset((char*)&bh, 0, sizeof(struct buffer_head));
     memset((char*)&bp, 0, sizeof(blkptr));
+
+    // let get block know we are a special guest
+    bh.b_state = BH_PrivateStart;
+    bh.b_data = (void *)&bp.checksum;
     ret = luci_get_block(inode, i_block, &bh, 0);
     if (ret < 0) {
         luci_err_inode(inode, "error get leaf block : %lu", i_block);
         BUG();
     }
+
     if (buffer_mapped(&bh)) {
         bp.blockno = bh.b_blocknr;
-        // For now this indicates this block was compressed
-        if (bh.b_state & BH_PrivateStart) {
+        bp.checksum = *(u32*)bh.b_data;
+        bp.length = (unsigned int)bh.b_size;
+        if (bh.b_state & BH_PrivateStart)
             bp.flags = LUCI_COMPR_FLAG;
-            bp.length = (unsigned int)bh.b_size;
-            bp.checksum = ~0; // only for debug
-        }
         #ifdef DEBUG_BLOCK
         luci_dump_blkptr(inode, i_block, &bp);
         #endif
@@ -1430,6 +1530,7 @@ static int
 luci_readpage(struct file *file, struct page *page)
 {
     int ret = 0;
+    bool do_verify = false;
 #ifdef LUCIFS_COMPRESSION
     blkptr bp;
     struct page *cachep;
@@ -1463,8 +1564,9 @@ luci_readpage(struct file *file, struct page *page)
             #ifdef DEBUG_BLOCK
             luci_dump_blkptr(inode, file_block, &bp);
             #endif
+            do_verify = true;
             if (bp.flags & LUCI_COMPR_FLAG) {
-                luci_dbg_inode(inode, "reading compressed page :%lu",
+                luci_info_inode(inode, "reading compressed page :%lu",
                     page_index(page));
                 ret = luci_read_compressed(page, &bp);
                 if (ret != 0) {
@@ -1472,7 +1574,7 @@ luci_readpage(struct file *file, struct page *page)
                 }
             } else {
                 put_page(cachep);
-                luci_dbg_inode(inode, "reading uncompressed page :%lu",
+                luci_info_inode(inode, "reading uncompressed page :%lu",
                     page_index(page));
                 goto uncompressed_read;
             }
@@ -1501,6 +1603,12 @@ luci_readpage(struct file *file, struct page *page)
 uncompressed_read:
     // trace mpage_readpage with unlock issue
     ret = mpage_readpage(page, luci_get_block);
+    if (!ret && do_verify) {
+        BUG_ON(!PageUptodate(page));
+        if ((ret = luci_verify_cksum(page, &bp)) < 0)
+            luci_err("checksum error detected on data block\n");
+    }
+
 done:
     return ret;
 }

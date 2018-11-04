@@ -5,7 +5,7 @@
 #include <linux/pagevec.h>
 #include <linux/pagemap.h>
 
-#include "luci.h"
+//#include "luci.h"
 
 // Cluster size in terms of file system pages
 // Since compression is done at page level, this will make things simple for us.
@@ -27,8 +27,8 @@
 static inline unsigned long
 luci_cluster_no(pgoff_t index) { return index/CLUSTER_NRPAGE; }
 
-int
-luci_cluster_update_bp(struct page *page, struct inode *inode, blkptr bp[]);
+//int
+//luci_cluster_update_bp(struct page *page, struct inode *inode, blkptr bp[]);
 
 #endif
 

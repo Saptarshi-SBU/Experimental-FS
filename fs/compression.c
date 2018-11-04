@@ -27,7 +27,6 @@
 #include <linux/writeback.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-#include <linux/crc32.h>
 
 #include "kern_feature.h"
 #include "luci.h"
@@ -72,26 +71,6 @@ bp_reset(blkptr *bp, unsigned long block, unsigned int size,
     bp->length = size;
     bp->flags = flags;
     bp->checksum = checksum;
-}
-
-/* compute checksum */
-u32 luci_compute_checksum(struct page **pages, int nr_pages, size_t size)
-{
-    int i;
-    u32 crc = ~0U;
-    size_t length;
-    void *kaddr;
-
-    BUG_ON(size > PAGE_SIZE * nr_pages);
-    for (i = 0; i < nr_pages; i++) {
-            BUG_ON(!size);
-            length = min((size_t)size, (size_t)PAGE_SIZE);
-            kaddr = kmap(pages[i]);
-            crc = crc32_le(crc, kaddr, length);
-            size -= length;
-            kunmap(kaddr);
-    }
-    return crc;
 }
 
 /* when we finish reading compressed pages from the disk, we
@@ -388,7 +367,7 @@ __luci_compress_and_write(struct work_struct *work)
         UPDATE_AVG_LATENCY_NS(dbgfsparam.avg_deflate_lat, start);
         LUCI_COMPRESS_RESULT(cluster, page_index(async_work->begin_page),
                              total_in, total_out);
-        crc32[0] = luci_compute_checksum(page_cluster, nr_pages_out, total_out);  
+        crc32[0] = luci_compute_compressed_cksum(page_cluster, nr_pages_out, total_out);
     } else {
         compressed = false;
         total_out = CLUSTER_SIZE;
@@ -402,7 +381,7 @@ __luci_compress_and_write(struct work_struct *work)
         nr_pages_out = CLUSTER_NRPAGE;
         for (i = 0; i < nr_pages_out; i++) {
             page_cluster[i] = async_work->pvec->pages[i];
-            crc32[i] = luci_compute_checksum(&page_cluster[i], 1, PAGE_SIZE);  
+            crc32[i] = luci_compute_cksum(page_cluster[i], PAGE_SIZE, ~0U);
         }
     }
 
@@ -835,6 +814,9 @@ int luci_read_compressed(struct page *page, blkptr *bp)
     #endif
         goto free_readbio;
     }
+
+    if (luci_verify_compressed_cksum(comp_bio, bp) < 0)
+            goto free_compbio;
 
     // bio for page tree pages
     memset((char*)pgtree_pages, 0, CLUSTER_NRPAGE * sizeof(struct page *));

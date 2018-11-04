@@ -30,11 +30,14 @@
 #include <linux/log2.h>
 #include <linux/printk.h>
 #include <linux/workqueue.h>
+#include <linux/crc32.h>
 
 #define CONCAT_(x,y) x##y
 #define CONCAT(x,y) CONCAT_(x,y)
 #define _STATIC_ASSERT(R) \
     struct CONCAT(X, __COUNTER__) { unsigned int static_assert: (R) ? 1 : -1; }
+
+#define BH_PrivateStart2 (BH_PrivateStart + 1)
 
 /* data type for block offset of block group */
 typedef int luci_grpblk_t;
@@ -294,7 +297,7 @@ struct luci_inode_info {
 
 #ifdef LUCIFS_COMPRESSION
     __u64  i_size_comp;
-#endif   
+#endif
 
     rwlock_t i_meta_lock;
 
@@ -655,6 +658,7 @@ extern debugfs_t dbgfsparam;
                             buffer_locked(bh) ? "locked" : "unlocked", \
                             atomic_read(&bh->b_count)); \
                     }
+
 // useful for debugging data integrity issues
 static void inline
 luci_dump_bytes(const char *msg, struct page *page, unsigned int len)
@@ -749,7 +753,7 @@ int luci_prepare_chunk(struct page *page, loff_t pos, unsigned len);
 int luci_commit_chunk(struct page *page, loff_t pos, unsigned len);
 
 /* inode.c */
-#define TEST_INODE 15
+#define TEST_INODE 13
 
 #define COMPR_CREATE_ALLOC  0x01
 #define COMPR_BLK_UPDATE    0x02
@@ -760,6 +764,10 @@ extern int luci_get_block(struct inode *, sector_t, struct buffer_head *, int);
 extern int luci_dump_layout(struct inode * inode);
 blkptr luci_find_leaf_block(struct inode * inode, unsigned long i_block);
 int luci_insert_block(struct inode * inode, unsigned long i_block, blkptr *bp);
+u32 luci_compute_cksum(struct page *page, size_t size, u32);
+int luci_compute_compressed_cksum(struct page **pages, unsigned nr_pages, size_t length);
+int luci_verify_cksum(struct page *page, blkptr *bp);
+int luci_verify_compressed_cksum(struct bio *bio, blkptr *bp);
 
 /* ialloc.c */
 extern struct buffer_head *
@@ -772,6 +780,10 @@ extern struct inode *
    luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr);
 int luci_new_block(struct inode *, unsigned int, unsigned long *);
 int luci_free_block(struct inode *inode, unsigned long block);
+
+/*cluster */
+int
+luci_cluster_update_bp(struct page *page, struct inode *inode, blkptr bp[]);
 
 extern const struct inode_operations luci_file_inode_operations;
 extern const struct file_operations luci_file_operations;
