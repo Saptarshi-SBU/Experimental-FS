@@ -311,9 +311,10 @@ walk_bmap(struct inode *inode, Indirect ichain[], long index[],
         for (i = 0; i <= slot; i++) {
             blkptr *bp = (blkptr*) parent_bh->b_data + i;
             luci_info_inode(inode, "dump iallocated iblock %lu level :%d "
-                "block[%u-%p-%lu-%u]%u", i_block, curr_level, i,
+                "block[%u-%p-%lu-%u-0x%x]%u", i_block, curr_level, i,
                 parent_bh->b_data, parent_bh->b_blocknr,
-                ichain[curr_level - 1].key.blockno, bp->blockno);
+                ichain[curr_level - 1].key.blockno,
+                bp->checksum, bp->blockno);
         }
         #endif
         unlock_buffer(parent_bh);
@@ -321,9 +322,10 @@ walk_bmap(struct inode *inode, Indirect ichain[], long index[],
     }
 
     #ifdef DEBUG_BLOCK
-    luci_info_inode(inode, "allocated iblock %lu level :%d(%d) block %u(%x-%u) "
+    luci_info_inode(inode, "allocated iblock %lu level :%d(%d) block %u(%x-%u-0x%x) "
         "index %u", i_block, curr_level, depth, ichain[curr_level].key.blockno,
-        ichain[curr_level].key.flags, ichain[curr_level].key.length, slot);
+        ichain[curr_level].key.flags, ichain[curr_level].key.length,
+        ichain[curr_level].key.checksum, slot);
     #endif
     return walk_bmap(inode, ichain, index, ++curr_level, depth,
         i_block);
@@ -377,6 +379,7 @@ walk_bmap_meta(struct inode *inode, Indirect ichain[], long index[],
     // Data block is preallocated
     } else {
         ichain[curr_level].key.blockno = bh->b_blocknr;
+        ichain[curr_level].key.checksum = *(u32*)(bh->b_data);
         ichain[curr_level].bh = NULL;
         if ((bh->b_state & BH_PrivateStart)) {
             ichain[curr_level].key.flags |= LUCI_COMPR_FLAG;
@@ -426,9 +429,10 @@ walk_bmap_meta(struct inode *inode, Indirect ichain[], long index[],
     }
 
     #ifdef DEBUG_BLOCK
-    luci_info_inode(inode, "allocated iblock %lu level :%d(%d) block %u(%x-%u) "
+    luci_info_inode(inode, "allocated iblock %lu level :%d(%d) block %u(%x-%u-0x%x) "
         "index %u", i_block, curr_level, depth, ichain[curr_level].key.blockno,
-        ichain[curr_level].key.flags, ichain[curr_level].key.length, slot);
+        ichain[curr_level].key.flags, ichain[curr_level].key.length,
+        ichain[curr_level].key.checksum, slot);
     #endif
     return walk_bmap_meta(inode, ichain, index, ++curr_level, depth,
         i_block, bh);
@@ -474,8 +478,8 @@ luci_get_branch(struct inode *inode,
 
     //#define DEBUG_BLOCK
     #ifdef DEBUG_BLOCK
-    luci_info_inode(inode, "block walk path ipath[%d] %d[%ld]", i,
-        p->key.blockno, *ipaths);
+    luci_info_inode(inode, "block walk path ipath[%d] %d-%u-%u-0x%x[%ld]", i,
+        p->key.blockno, p->key.flags, p->key.length, p->key.checksum, *ipaths);
     #endif
     i++;
     while (i < depth) {
@@ -495,8 +499,9 @@ luci_get_branch(struct inode *inode,
         #endif
 
         #ifdef DEBUG_BLOCK
-        luci_info_inode(inode, "block walk path ipath[%d] %d-%u-%u[%ld][%lu]", i,
-            p->key.blockno, p->key.flags, p->key.length, *ipaths, parent_block);
+        luci_info_inode(inode, "block walk path ipath[%d] %d-%u-%u-0x%x[%ld][%lu]", i,
+            p->key.blockno, p->key.flags, p->key.length, p->key.checksum,
+            *ipaths, parent_block);
         #endif
         parent_block = p->key.blockno;
         i++;
@@ -570,13 +575,14 @@ luci_get_block(struct inode *inode, sector_t iblock,
             BUG_ON(ichain[depth - 1].p == NULL);
             // update L0 block ptr at L1
             ichain[depth - 1].p->blockno = bh_result->b_blocknr;
+            ichain[depth - 1].p->checksum = *(u32*)bh_result->b_data;
             if (bh_result->b_state & BH_PrivateStart) {
                 ichain[depth - 1].p->flags |= LUCI_COMPR_FLAG;
                 ichain[depth - 1].p->length = (unsigned short) bh_result->b_size;
             }
-            luci_dbg_inode(inode, "iblock :%lu data block :%u(%x-%u) depth :%d",
+            luci_info_inode(inode, "iblock :%lu data block :%u(%x-%u-0x%x) depth :%d",
                 iblock, ichain[depth - 1].p->blockno, ichain[depth - 1].p->flags,
-                ichain[depth - 1].p->length, depth);
+                ichain[depth - 1].p->length, ichain[depth - 1].p->checksum, depth);
             // Fix: on exit free buffer-heads allocated during block lookup
             goto done;
         }
@@ -659,6 +665,7 @@ luci_find_leaf_block(struct inode * inode, unsigned long i_block)
         if (bh.b_state & BH_PrivateStart) {
             bp.flags = LUCI_COMPR_FLAG;
             bp.length = (unsigned int)bh.b_size;
+            bp.checksum = ~0; // only for debug
         }
         #ifdef DEBUG_BLOCK
         luci_dump_blkptr(inode, i_block, &bp);
@@ -675,6 +682,7 @@ luci_insert_block(struct inode * inode, unsigned long i_block, blkptr *bp)
 
     memset((char*)&bh, 0, sizeof(struct buffer_head));
     bh.b_blocknr = bp->blockno;
+    bh.b_data = (void *)&bp->checksum;
     if (bp->flags == LUCI_COMPR_FLAG) {
         bh.b_size = (size_t) bp->length;
         bh.b_state = BH_PrivateStart; // flag for compressed block

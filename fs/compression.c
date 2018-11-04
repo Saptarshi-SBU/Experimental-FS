@@ -27,6 +27,7 @@
 #include <linux/writeback.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
+#include <linux/crc32.h>
 
 #include "kern_feature.h"
 #include "luci.h"
@@ -66,10 +67,31 @@ luci_bio_dump(struct bio * bio, const char *msg)
 
 static void
 bp_reset(blkptr *bp, unsigned long block, unsigned int size,
-    unsigned short flags) {
+    unsigned short flags, u32 checksum) {
     bp->blockno = block;
     bp->length = size;
     bp->flags = flags;
+    bp->checksum = checksum;
+}
+
+/* compute checksum */
+u32 luci_compute_checksum(struct page **pages, int nr_pages, size_t size)
+{
+    int i;
+    u32 crc = ~0U;
+    size_t length;
+    void *kaddr;
+
+    BUG_ON(size > PAGE_SIZE * nr_pages);
+    for (i = 0; i < nr_pages; i++) {
+            BUG_ON(!size);
+            length = min((size_t)size, (size_t)PAGE_SIZE);
+            kaddr = kmap(pages[i]);
+            crc = crc32_le(crc, kaddr, length);
+            size -= length;
+            kunmap(kaddr);
+    }
+    return crc;
 }
 
 /* when we finish reading compressed pages from the disk, we
@@ -317,6 +339,7 @@ __luci_compress_and_write(struct work_struct *work)
     unsigned cluster, blocksize;
     struct page **page_cluster;
     struct comp_write_work *async_work;
+    u32 crc32[CLUSTER_NRPAGE];
     blkptr bp_array[CLUSTER_NRBLOCKS_MAX];
     unsigned long start_compr_block, disk_start, block_no, nr_blocks;
     unsigned long nr_pages_out = CLUSTER_NRPAGE, total_in = CLUSTER_SIZE, total_out = CLUSTER_SIZE;
@@ -365,6 +388,7 @@ __luci_compress_and_write(struct work_struct *work)
         UPDATE_AVG_LATENCY_NS(dbgfsparam.avg_deflate_lat, start);
         LUCI_COMPRESS_RESULT(cluster, page_index(async_work->begin_page),
                              total_in, total_out);
+        crc32[0] = luci_compute_checksum(page_cluster, nr_pages_out, total_out);  
     } else {
         compressed = false;
         total_out = CLUSTER_SIZE;
@@ -376,8 +400,10 @@ __luci_compress_and_write(struct work_struct *work)
         }
 
         nr_pages_out = CLUSTER_NRPAGE;
-        for (i = 0; i < nr_pages_out; i++)
+        for (i = 0; i < nr_pages_out; i++) {
             page_cluster[i] = async_work->pvec->pages[i];
+            crc32[i] = luci_compute_checksum(&page_cluster[i], 1, PAGE_SIZE);  
+        }
     }
 
     // FIXME: We COW on a new write.
@@ -391,9 +417,9 @@ __luci_compress_and_write(struct work_struct *work)
 
     for (i = 0, block_no = start_compr_block; i < CLUSTER_NRBLOCKS_MAX; i++) {
         if (compressed)
-            bp_reset(&bp_array[i], start_compr_block, total_out, LUCI_COMPR_FLAG);
+            bp_reset(&bp_array[i], start_compr_block, total_out, LUCI_COMPR_FLAG, crc32[0]);
         else
-            bp_reset(&bp_array[i], block_no++, 0, 0);
+            bp_reset(&bp_array[i], block_no++, 0, 0, crc32[i]);
     }
 
     delta = luci_cluster_update_bp(async_work->begin_page, inode, bp_array);

@@ -188,8 +188,8 @@ static inline struct luci_sb_info *LUCI_SB(struct super_block *sb)
  */
 typedef struct blkptr {
     __le32 blockno;
-    __le32 length;
-    __le16 checksum;
+    __le16 length;
+    __le32 checksum;
     __le32 birth;
     __le16 flags;
 }__attribute__ ((aligned (8), packed)) blkptr;
@@ -641,8 +641,8 @@ extern debugfs_t dbgfsparam;
 #define luci_dump_blkptr(inode, fb, bp) { \
 	            if (dbgfsparam.log) \
                         printk (KERN_INFO "LUCI-FS %s inode :%lu file block :%lu "\
-                            "bp(%u-%x-%u)\n", __func__, inode->i_ino, (fb), \
-                            (bp)->blockno, (bp)->flags, (bp)->length); \
+                            "bp(%u-%x-%u-0x%x)\n", __func__, inode->i_ino, (fb), \
+                            (bp)->blockno, (bp)->flags, (bp)->length, (bp)->checksum); \
                     }
 #define luci_dump_bh(inode, msg, bh) { \
 	            if (dbgfsparam.log) \
@@ -749,7 +749,7 @@ int luci_prepare_chunk(struct page *page, loff_t pos, unsigned len);
 int luci_commit_chunk(struct page *page, loff_t pos, unsigned len);
 
 /* inode.c */
-#define TEST_INODE 210
+#define TEST_INODE 15
 
 #define COMPR_CREATE_ALLOC  0x01
 #define COMPR_BLK_UPDATE    0x02

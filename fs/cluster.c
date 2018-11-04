@@ -75,29 +75,35 @@ luci_cluster_update_bp(struct page *page, struct inode *inode, blkptr bp_new [])
     cluster = luci_cluster_no(page_index(page));
     luci_dbg_inode(inode, "lookup bp for cluster %lu(%lu)", cluster,
         page_index(page));
+
+    // save the bp
     luci_cluster_lookup_bp(page, inode, bp_old);
+
     // update block pointer
     luci_cluster_file_range(page, &begin_block, &end_block);
     for (i = 0, curr_block = begin_block; curr_block <= end_block; curr_block++) {
-        luci_info_inode(inode, "updating bp %u-%x-%u(%u) for file block %lu "
-            " cluster %lu", bp_new[i].blockno, bp_new[i].flags,
-            bp_new[i].length, bp_old[i].blockno, curr_block, cluster);
         ret = luci_insert_block(inode, curr_block, &bp_new[i++]);
         BUG_ON(ret < 0);
+        luci_info_inode(inode, "updated bp %u-%x-%u(%u)-0x%x for file block %lu "
+            "cluster %lu", bp_new[i].blockno, bp_new[i].flags, bp_new[i].length,
+            bp_old[i].blockno, bp_new[i].checksum, curr_block, cluster);
     }
-    // free old block pointers
+
     i = 0;
     curr_block = begin_block;
+    // free old block pointers
     while (curr_block <= end_block) {
         unsigned blockno;
+
         blockno = bp_old[i++].blockno;
         // This may not be a bug, since we may free the bimtap while freeing
         // other leaf entries that belong to the same cluster
-        if (blockno) {
+        if (blockno)
             luci_free_block(inode, blockno);
-        }
+
         curr_block++;
     }
+
     delta = luci_account_delta(bp_old, bp_new, i);
     luci_dbg_inode(inode, "delta bytes :%d", delta);
     pr_info("delta bytes :%d", delta);
