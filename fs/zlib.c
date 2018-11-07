@@ -28,9 +28,8 @@
 #include <linux/pagemap.h>
 #include <linux/mempool.h>
 
-#include "compression.h"
-#include "cluster.h"
 #include "kern_feature.h"
+#include "compress.h"
 
 struct workspace {
     char *buf;
@@ -171,8 +170,8 @@ buff_notfull:
                 BUG_ON(ret == Z_STREAM_ERROR);  /* state not clobbered */
 
                 #ifdef DEBUG_COMPRESSION
-                luci_info("zlib: DEFLATE (%u/%d) strm.total in :%lu avail in :%u "
-                        "total out :%lu avail out :%u start :0x%llx\n",
+                luci_info("zlib: DEFLATE (%u/%d) strm.total in :%lu avail in :%lu "
+                        "total out :%lu avail out :%lu start :0x%llx\n",
                         nr_pages, flush,
                         workspace->strm.total_in, workspace->strm.avail_in,
                         workspace->strm.total_out, workspace->strm.avail_out,
@@ -287,11 +286,11 @@ int zlib_decompress_pages(struct list_head *ws,
     char *data_in;
     size_t src_len = total_in;
     unsigned long i, consumed_out = 0;
-    struct page *pages_in[CLUSTER_NRPAGE];
+    struct page *pages_in[EXTENT_NRPAGE];
     unsigned long total_pages_in = compr_bio->bi_vcnt;
     struct workspace *workspace = list_entry(ws, struct workspace, list);
 
-    memset((char*)pages_in, 0, CLUSTER_NRPAGE * sizeof(struct page*));
+    memset((char*)pages_in, 0, EXTENT_NRPAGE * sizeof(struct page*));
 
     BUG_ON(compr_bio->bi_vcnt == 0);
     for (i = 0; i < compr_bio->bi_vcnt; i++) {
@@ -339,8 +338,8 @@ int zlib_decompress_pages(struct list_head *ws,
         }
 
         #ifdef DEBUG_COMPRESSION
-        pr_info("zlib: INFLATE strm.total in :%lu, avail in :%u "
-                "consumed out :%lu total decompressed :%lu avail out :%u\n",
+        luci_info("zlib: INFLATE strm.total in :%lu, avail in :%lu "
+                "consumed out :%lu total decompressed :%lu avail out :%lu\n",
                 workspace->strm.total_in, workspace->strm.avail_in, consumed_out,
                 workspace->strm.total_out, workspace->strm.avail_out);
         #endif

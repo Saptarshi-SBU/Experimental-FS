@@ -1,25 +1,27 @@
-#ifndef __LUCI_COMPRESSION_
-#define __LUCI_COMPRESSION_
+#ifndef __LUCI_COMPRESSION_H_
+#define __LUCI_COMPRESSION_H_
 
+#include <linux/wait.h>
+#include <linux/list.h>
+#include <linux/types.h>
 #include <linux/pagemap.h>
+#include <linux/spinlock.h>
+
 #include "kern_feature.h"
 #include "luci.h"
 
+//#define DEBUG_COMPRESSION
+
 // Updating file size with compressed size may not be correct.
 // POSIX applications use file size attribute for accessing logical offsets.
-// Use this to verify total blocks alloted against compressed size (TEST).
-//#define LUCI_ATTRSIZE_COMPRESSED
-
-#define LUCI_COMPR_FLAG  0x1
 
 #define ZLIB_COMPRESSION_LEVEL 3
 
 #define ZLIB_MEMPOOL_PAGES (4 * 1024) //16 MB
 
-//#define DEBUG_COMPRESSION
-
-#define WBC_FMT  "wbc: (%llu-%llu) dirty :%lu"
-#define WBC_ARGS(wbc) wbc->range_start, wbc->range_end, wbc->nr_to_write
+#define LUCI_COMPRESS_RESULT(cluster, index, total_in, total_out) \
+    luci_dbg("compress result : cluster %u index %lu in %lu out %lu", cluster, \
+        index, total_in, total_out);
 
 typedef enum luci_compression_type {
 	LUCI_COMPRESS_NONE  = 0,
@@ -27,22 +29,6 @@ typedef enum luci_compression_type {
 	LUCI_COMPRESS_TYPES = 1,
 }luci_comp_type;
 
-// Work item for compressed write
-struct comp_write_work
-{
-    struct page *begin_page;
-    struct page *pageout;
-    struct pagevec *pvec;
-    struct work_struct work;
-};
-
-struct comp_ws {
-    int num_ws;
-    atomic_t alloc_ws;
-    spinlock_t ws_lock;
-    struct list_head idle_ws;
-    wait_queue_head_t ws_wait;
-};
 
 struct luci_compress_op {
     struct list_head *(*alloc_workspace)(void);
@@ -101,27 +87,19 @@ struct luci_compress_op {
 
 extern const struct luci_compress_op luci_zlib_compress;
 
-int luci_write_compressed_begin(struct address_space *mapping,
-    loff_t pos, unsigned len, unsigned flags, struct page **pagep);
+struct luci_context_pool {
+    atomic_t count;
+    spinlock_t lock;
+    wait_queue_head_t waitq;
+    const struct luci_compress_op *op;
+    struct list_head idle_list;
+};
 
-int luci_write_compressed_end(struct address_space *mapping,
-    loff_t pos, unsigned len, unsigned flags, struct page *pagep);
+extern struct luci_context_pool ctxpool;
 
-int luci_writepage_compressed(struct page *page, struct writeback_control *wbc);
+struct list_head *luci_compression_context(void);
 
-int luci_writepages_compressed(struct address_space *mapping,
-    struct writeback_control *wbc);
-
-int luci_write_compressed(struct page * page, struct writeback_control *wbc);
-
-int luci_read_compressed(struct page * page, blkptr *bp);
-
-int luci_submit_compressed_read(struct inode *inode, struct bio *bio,
-    int mirror_num, unsigned long bio_flags);
-
-struct list_head *find_workspace(int type);
-
-void free_workspace(int type, struct list_head *workspace);
+void put_compression_context(struct list_head *);
 
 void init_luci_compress(void);
 

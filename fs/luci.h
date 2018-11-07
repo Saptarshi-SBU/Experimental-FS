@@ -22,22 +22,40 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/smp.h>
+#include <linux/bio.h>
+#include <linux/log2.h>
+#include <linux/types.h>
+#include <linux/rbtree.h>
+#include <linux/printk.h>
+#include <linux/pagevec.h>
 #include <linux/pagemap.h>
+#include <linux/debugfs.h>
+#include <linux/workqueue.h>
 #include <linux/blockgroup_lock.h>
 #include <linux/percpu_counter.h>
-#include <linux/rbtree.h>
-#include <linux/debugfs.h>
-#include <linux/log2.h>
-#include <linux/printk.h>
-#include <linux/workqueue.h>
-#include <linux/crc32.h>
+
+#include "kern_feature.h"
 
 #define CONCAT_(x,y) x##y
 #define CONCAT(x,y) CONCAT_(x,y)
 #define _STATIC_ASSERT(R) \
     struct CONCAT(X, __COUNTER__) { unsigned int static_assert: (R) ? 1 : -1; }
 
-#define BH_PrivateStart2 (BH_PrivateStart + 1)
+#define BYTE_SHIFT 3
+
+#define SECTOR_SHIFT 9
+
+#define SECTOR_SIZE (1U << (SECTOR_SHIFT))
+
+static inline s64 ktime_ns_delta(const ktime_t later, const ktime_t earlier)
+{
+    return ktime_to_ns(ktime_sub(later, earlier));
+}
+
+#define UPDATE_AVG_LATENCY_NS(X, START) \
+{ \
+    X =  (X + ktime_ns_delta(ktime_get(), START))/2; \
+}
 
 /* data type for block offset of block group */
 typedef int luci_grpblk_t;
@@ -171,17 +189,11 @@ struct luci_sb_info {
     struct workqueue_struct *comp_write_wq;
 };
 
-static inline struct luci_sb_info *LUCI_SB(struct super_block *sb)
-{
-    return sb->s_fs_info;
-}
-
 /*
  * Constants relative to the data blocks
  */
-//#define LUCI_NDIR_BLOCKS        12
 #define LUCI_NDIR_BLOCKS        2 // ((12 + 1 + 1) * 32)/sizeof(blkptr)
-#define LUCI_IND_BLOCK          LUCI_NDIR_BLOCKS
+#define LUCI_IND_BLOCK          (LUCI_NDIR_BLOCKS)
 #define LUCI_DIND_BLOCK         (LUCI_IND_BLOCK + 1)
 #define LUCI_TIND_BLOCK         (LUCI_DIND_BLOCK + 1)
 #define LUCI_N_BLOCKS           (LUCI_TIND_BLOCK + 1)
@@ -198,6 +210,16 @@ typedef struct blkptr {
 }__attribute__ ((aligned (8), packed)) blkptr;
 
 #define COMPR_LEN(bp) (bp->length)
+
+static void inline
+bp_reset(blkptr *bp, unsigned long block, unsigned int size,
+         unsigned short flags, u32 checksum) {
+    bp->blockno = block;
+    bp->length = size;
+    bp->flags = flags;
+    bp->checksum = checksum;
+}
+
 /*
  * Structure of an inode on the disk
  */
@@ -279,7 +301,6 @@ struct luci_inode_info {
     __u32   i_block_group;
     /* current block group servicing new block allocations */
     __u32   i_active_block_group;
-
     /* block reservation info */
     struct luci_block_alloc_info *i_block_alloc_info;
 
@@ -298,9 +319,7 @@ struct luci_inode_info {
 #ifdef LUCIFS_COMPRESSION
     __u64  i_size_comp;
 #endif
-
     rwlock_t i_meta_lock;
-
     /*
      * truncate_mutex is for serialising luci_truncate() against
      * luci_getblock().  It also protects the internals of the inode's
@@ -308,21 +327,9 @@ struct luci_inode_info {
      * luci_reserve_window_node.
      */
     struct mutex truncate_mutex;
-
-    struct inode    vfs_inode;
-
+    struct inode vfs_inode;
     struct list_head i_orphan;  /* unlinked but open inodes */
 };
-
-/*
- * Inode dynamic state flags
- */
-#define LUCI_STATE_NEW          0x00000001 /* inode is newly created */
-
-static inline struct luci_inode_info *LUCI_I(struct inode *inode)
-{
-    return container_of(inode, struct luci_inode_info, vfs_inode);
-}
 
 /*
  * Structure of a blocks group descriptor
@@ -338,21 +345,6 @@ struct luci_group_desc
     __le16  bg_pad;
     __le32  bg_reserved[3];
 };
-
-/*
- * Macro-instructions used to manage group descriptors
- */
-#define LUCI_BLOCKS_PER_GROUP(s)    (LUCI_SB(s)->s_blocks_per_group)
-#define LUCI_DESC_PER_BLOCK(s)      (LUCI_SB(s)->s_desc_per_block)
-#define LUCI_INODES_PER_GROUP(s)    (LUCI_SB(s)->s_inodes_per_group)
-#define LUCI_DESC_PER_BLOCK_BITS(s) (LUCI_SB(s)->s_desc_per_block_bits)
-
-static inline luci_fsblk_t
-luci_group_first_block_no(struct super_block *sb, unsigned long group_no)
-{
-    return group_no * (luci_fsblk_t)LUCI_BLOCKS_PER_GROUP(sb) +
-        le32_to_cpu(LUCI_SB(sb)->s_lsb->s_first_data_block);
-}
 
 /*
  * Structure of a directory entry
@@ -386,7 +378,7 @@ struct luci_dir_entry_2 {
 enum {
     LUCI_FT_UNKNOWN     = 0,
     LUCI_FT_REG_FILE    = 1,
-    LUCI_FT_DIR     = 2,
+    LUCI_FT_DIR         = 2,
     LUCI_FT_CHRDEV      = 3,
     LUCI_FT_BLKDEV      = 4,
     LUCI_FT_FIFO        = 5,
@@ -396,11 +388,22 @@ enum {
 };
 
 /*
+ * luci mount options
+ */
+struct luci_mount_options {
+    unsigned long s_mount_opt;
+    kuid_t s_resuid;
+    kgid_t s_resgid;
+};
+
+
+/*
  * Define LUCI_RESERVATION to reserve data blocks for expanding files
  */
 #define LUCI_DEFAULT_RESERVE_BLOCKS     8
+
 /*max window size: 1024(direct blocks) + 3([t,d]indirect blocks) */
-#define LUCI_MAX_RESERVE_BLOCKS         1027
+#define LUCI_MAX_RESERVE_BLOCKS           1027
 #define LUCI_RESERVE_WINDOW_NOT_ALLOCATED 0
 /*
  * The second extended file system version
@@ -411,37 +414,48 @@ enum {
 /*
  * Special inode numbers
  */
-#define LUCI_BAD_INO         1  /* Bad blocks inode */
-#define LUCI_ROOT_INO        2  /* Root inode */
-#define LUCI_BOOT_LOADER_INO     5  /* Boot loader inode */
-#define LUCI_UNDEL_DIR_INO   6  /* Undelete directory inode */
+#define LUCI_BAD_INO            1  /* Bad blocks inode */
+#define LUCI_ROOT_INO           2  /* Root inode */
+#define LUCI_BOOT_LOADER_INO    5  /* Boot loader inode */
+#define LUCI_UNDEL_DIR_INO      6  /* Undelete directory inode */
+
+/*
+ * Inode dynamic state flags
+ */
+#define LUCI_STATE_NEW          0x00000001 /* inode is newly created */
 
 /* First non-reserved inode for old luci filesystems */
 #define LUCI_GOOD_OLD_FIRST_INO 11
 
 /*
+ * Macro-instructions used to manage group descriptors
+ */
+#define LUCI_BLOCKS_PER_GROUP(s)    (LUCI_SB(s)->s_blocks_per_group)
+#define LUCI_DESC_PER_BLOCK(s)      (LUCI_SB(s)->s_desc_per_block)
+#define LUCI_INODES_PER_GROUP(s)    (LUCI_SB(s)->s_inodes_per_group)
+#define LUCI_DESC_PER_BLOCK_BITS(s) (LUCI_SB(s)->s_desc_per_block_bits)
+
+/*
  * Macro-instructions used to manage several block sizes
  */
-#define LUCI_MIN_BLOCK_SIZE     1024
-#define LUCI_MAX_BLOCK_SIZE     4096
-#define LUCI_MIN_BLOCK_LOG_SIZE       10
-#define LUCI_BLOCK_SIZE(s)      ((s)->s_blocksize)
-#define LUCI_ADDR_PER_BLOCK(s)      (LUCI_BLOCK_SIZE(s) / sizeof (blkptr))
-#define LUCI_BLOCK_SIZE_BITS(s)     ((s)->s_blocksize_bits)
-//#define LUCI_ADDR_PER_BLOCK_BITS(s) (LUCI_SB(s)->s_addr_per_block_bits)
-#define LUCI_ADDR_PER_BLOCK_BITS(s) (ilog2(LUCI_ADDR_PER_BLOCK(s)))
-#define LUCI_INODE_SIZE(s)      (LUCI_SB(s)->s_inode_size)
-#define LUCI_FIRST_INO(s)       (LUCI_SB(s)->s_first_ino)
+#define LUCI_MIN_BLOCK_SIZE             1024
+#define LUCI_MAX_BLOCK_SIZE             4096
+#define LUCI_MIN_BLOCK_LOG_SIZE         10
+#define LUCI_BLOCK_SIZE(s)              ((s)->s_blocksize)
+#define LUCI_ADDR_PER_BLOCK(s)          (LUCI_BLOCK_SIZE(s) / sizeof (blkptr))
+#define LUCI_BLOCK_SIZE_BITS(s)         ((s)->s_blocksize_bits)
+#define LUCI_ADDR_PER_BLOCK_BITS(s)     (ilog2(LUCI_ADDR_PER_BLOCK(s)))
+#define LUCI_INODE_SIZE(s)              (LUCI_SB(s)->s_inode_size)
+#define LUCI_FIRST_INO(s)               (LUCI_SB(s)->s_first_ino)
 
 /*
  * Macro-instructions used to manage fragments
  */
-#define LUCI_MIN_FRAG_SIZE      1024
-#define LUCI_MAX_FRAG_SIZE      4096
-#define LUCI_MIN_FRAG_LOG_SIZE        10
-#define LUCI_FRAG_SIZE(s)       (LUCI_SB(s)->s_frag_size)
-#define LUCI_FRAGS_PER_BLOCK(s)     (LUCI_SB(s)->s_frags_per_block)
-
+#define LUCI_MIN_FRAG_SIZE              1024
+#define LUCI_MAX_FRAG_SIZE              4096
+#define LUCI_MIN_FRAG_LOG_SIZE          10
+#define LUCI_FRAG_SIZE(s)               (LUCI_SB(s)->s_frag_size)
+#define LUCI_FRAGS_PER_BLOCK(s)         (LUCI_SB(s)->s_frags_per_block)
 
 /*
  * File system states
@@ -456,18 +470,18 @@ enum {
 #define LUCI_MOUNT_OLDALLOC     0x000002  /* Don't use the new Orlov allocator */
 #define LUCI_MOUNT_GRPID        0x000004  /* Create files with directory's group */
 #define LUCI_MOUNT_DEBUG        0x000008  /* Some debugging messages */
-#define LUCI_MOUNT_ERRORS_CONT      0x000010  /* Continue on errors */
-#define LUCI_MOUNT_ERRORS_RO        0x000020  /* Remount fs ro on errors */
-#define LUCI_MOUNT_ERRORS_PANIC     0x000040  /* Panic on errors */
+#define LUCI_MOUNT_ERRORS_CONT  0x000010  /* Continue on errors */
+#define LUCI_MOUNT_ERRORS_RO    0x000020  /* Remount fs ro on errors */
+#define LUCI_MOUNT_ERRORS_PANIC 0x000040  /* Panic on errors */
 #define LUCI_MOUNT_MINIX_DF     0x000080  /* Mimics the Minix statfs */
 #define LUCI_MOUNT_NOBH         0x000100  /* No buffer_heads */
 #define LUCI_MOUNT_NO_UID32     0x000200  /* Disable 32-bit UIDs */
-#define LUCI_MOUNT_XATTR_USER       0x004000  /* Extended user attributes */
-#define LUCI_MOUNT_POSIX_ACL        0x008000  /* POSIX Access Control Lists */
+#define LUCI_MOUNT_XATTR_USER   0x004000  /* Extended user attributes */
+#define LUCI_MOUNT_POSIX_ACL    0x008000  /* POSIX Access Control Lists */
 #define LUCI_MOUNT_XIP          0x010000  /* Execute in place */
 #define LUCI_MOUNT_USRQUOTA     0x020000  /* user quota */
 #define LUCI_MOUNT_GRPQUOTA     0x040000  /* group quota */
-#define LUCI_MOUNT_RESERVATION      0x080000  /* Preallocation */
+#define LUCI_MOUNT_RESERVATION  0x080000  /* Preallocation */
 #define LUCI_MOUNT_EXTENTS      0x100000  /* Extent allocation */
 
 #define clear_opt(o, opt)       o &= ~opt
@@ -488,11 +502,11 @@ enum {
 /*
  * Behaviour when detecting errors
  */
-#define LUCI_ERRORS_CONTINUE        1   /* Continue execution */
+#define LUCI_ERRORS_CONTINUE    1   /* Continue execution */
 #define LUCI_ERRORS_RO          2   /* Remount fs read-only */
 #define LUCI_ERRORS_PANIC       3   /* Panic */
 #define LUCI_ERRORS_DEFAULT     LUCI_ERRORS_CONTINUE
-#define EFSCORRUPTED                    EUCLEAN /* Filesystem is corrupted */
+#define EFSCORRUPTED            EUCLEAN /* Filesystem is corrupted */
 
 /*
  * Revision levels
@@ -514,34 +528,24 @@ enum {
 /*
  * Default mount options
  */
-#define LUCI_DEFM_DEBUG     0x0001
-#define LUCI_DEFM_BSDGROUPS 0x0002
+#define LUCI_DEFM_DEBUG         0x0001
+#define LUCI_DEFM_BSDGROUPS     0x0002
 #define LUCI_DEFM_XATTR_USER    0x0004
-#define LUCI_DEFM_ACL       0x0008
-#define LUCI_DEFM_UID16     0x0010
-
-/*
- * luci mount options
- */
-struct luci_mount_options {
-    unsigned long s_mount_opt;
-    kuid_t s_resuid;
-    kgid_t s_resgid;
-};
+#define LUCI_DEFM_ACL           0x0008
+#define LUCI_DEFM_UID16         0x0010
 
 /*
  * LUCI_DIR_PAD defines the directory entries boundaries
  *
  * NOTE: It must be a multiple of 4
  */
-#define LUCI_DIR_PAD            4
-#define LUCI_DIR_ROUND          (LUCI_DIR_PAD - 1)
-#define LUCI_DIR_REC_LEN(name_len)  (((name_len) + 8 + LUCI_DIR_ROUND) & \
-                     ~LUCI_DIR_ROUND)
-#define LUCI_MAX_REC_LEN        ((1<<16)-1)
+#define LUCI_DIR_PAD                4
+#define LUCI_DIR_ROUND              (LUCI_DIR_PAD - 1)
+#define LUCI_DIR_REC_LEN(name_len)  (((name_len) + 8 + LUCI_DIR_ROUND) & ~LUCI_DIR_ROUND)
+#define LUCI_MAX_REC_LEN            ((1<<16) - 1)
 
 #define LUCI_NAME_LEN           255
-#define LUCI_SUPER_MAGIC    0xEF53
+#define LUCI_SUPER_MAGIC        0xEF53
 #define LUCI_LINK_MAX           32000
 #define LUCI_MAX_DEPTH          4
 
@@ -565,11 +569,156 @@ static inline void verify_size(void)
 #undef A
 }
 
+typedef struct {
+   blkptr *p; // block entry
+   blkptr key;
+   struct buffer_head *bh;
+} Indirect;
+
+#define IS_INLINE(level) ((level) == 0)
+
+static inline struct luci_sb_info *LUCI_SB(struct super_block *sb)
+{
+    return sb->s_fs_info;
+}
+
+static inline luci_fsblk_t
+luci_group_first_block_no(struct super_block *sb, unsigned long group_no)
+{
+    return (group_no * (luci_fsblk_t)LUCI_BLOCKS_PER_GROUP(sb)) +
+           le32_to_cpu(LUCI_SB(sb)->s_lsb->s_first_data_block);
+}
+
+static inline struct
+luci_inode_info *LUCI_I(struct inode *inode)
+{
+    return container_of(inode, struct luci_inode_info, vfs_inode);
+}
+
+static inline unsigned
+luci_chunk_size(struct inode *inode)
+{
+    return inode->i_sb->s_blocksize;
+}
+
+static inline unsigned
+luci_sectors_per_block(struct inode *inode)
+{
+    return luci_chunk_size(inode)/512;
+}
+
+static inline unsigned long
+sector_align(unsigned long n)
+{
+    sector_t nsec = (n + SECTOR_SIZE - 1)/SECTOR_SIZE;
+    return (long)nsec << SECTOR_SHIFT;
+}
+
+/* utils.c */
+void inline luci_pageflags_dump(struct page* page, const char *msg);
+void inline luci_dump_bytes(const char *msg, struct page *page, unsigned int len);
+void inline luci_bio_dump(struct bio * bio, const char *msg);
+void copy_pages(struct page *dst_page, struct page *src_page, unsigned long dst_off,
+                unsigned long src_off, unsigned long len);
+bool inline areas_overlap(unsigned long src, unsigned long dst, unsigned long len);
+
+/* super.c */
+struct luci_group_desc *
+luci_get_group_desc(struct super_block *sb, unsigned int block_group, struct buffer_head **bh);
+int luci_write_inode(struct inode *inode, struct writeback_control *wbc);
+int luci_truncate(struct inode *inode, loff_t size);
+
+/* dir.c */
+
+//#define DEBUG_DENTRY
+
+inline __le16 luci_rec_len_to_disk(unsigned dlen);
+inline unsigned luci_rec_len_from_disk(__le16 dlen);
+struct luci_dir_entry_2 *luci_next_entry(struct luci_dir_entry_2 *p);
+struct luci_dir_entry_2 * luci_find_entry (struct inode *,const struct qstr *, struct page **);
+
+void luci_put_page(struct page *page);
+struct page *luci_get_page(struct inode *dir, unsigned long n);
+int luci_prepare_chunk(struct page *page, loff_t pos, unsigned len);
+int luci_commit_chunk(struct page *page, loff_t pos, unsigned len);
+unsigned luci_last_byte(struct inode *inode, unsigned long page_nr);
+
+/* inode.c */
+#define TEST_INODE 13
+
+#define LUCI_COMPR_FLAG  0x1
+
+#define COMPR_CREATE_ALLOC  0x01
+#define COMPR_BLK_UPDATE    0x02
+#define COMPR_BLK_INSERT    0x04
+
+#ifdef HAVE_NEW_GETATTR
+int luci_getattr(const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags);
+#else
+int luci_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat);
+#endif
+extern struct inode *luci_iget(struct super_block *sb, unsigned long ino);
+extern int luci_get_block(struct inode *, sector_t, struct buffer_head *, int);
+extern blkptr luci_bmap_fetch_L0bp(struct inode *inode, unsigned long i_block);
+extern int luci_bmap_insert_L0bp(struct inode *inode, unsigned long i_block, blkptr *bp);
+extern int luci_dump_layout(struct inode * inode);
+
+/* crc32 */
+u32 luci_compute_page_cksum(struct page *page, size_t length, u32 crc_seed);
+int luci_compute_pages_cksum(struct page **pages, unsigned nr_pages, size_t length);
+int luci_validate_page_cksum(struct page *page, blkptr *bp);
+int luci_validate_pages_cksum(struct page **pages, unsigned nr_pages, blkptr *bp);
+
+/* ialloc.c */
+extern struct buffer_head *read_inode_bitmap(struct super_block *sb, unsigned long block_group);
+extern struct buffer_head *read_block_bitmap(struct super_block *sb, unsigned long block_group);
+extern void luci_free_inode (struct inode * inode);
+extern void luci_release_inode(struct super_block *sb, int group, int dir);
+extern struct inode * luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr);
+int luci_new_block(struct inode *, unsigned int, unsigned long *);
+int luci_free_block(struct inode *inode, unsigned long block);
+
+/*page-io.c */
+
+#define EXTENT_NRPAGE 4
+
+#define EXTENT_NRBLOCKS_MAX 32
+
+#define EXTENT_SIZE (EXTENT_NRPAGE * PAGE_SIZE)
+
+#define EXTENT_NRBLOCKS(sb) ((EXTENT_SIZE) / LUCI_BLOCK_SIZE(sb))
+
+struct extent_write_work
+{
+    struct work_struct   work;
+    struct page         *begin_page;
+    struct page         *pageout;
+    struct pagevec      *pvec;
+};
+
+static inline unsigned long luci_extent_no(pgoff_t index)
+{
+    return index/EXTENT_NRPAGE;
+}
+
+int luci_write_extent_begin(struct address_space *mapping,
+    loff_t pos, unsigned len, unsigned flags, struct page **pagep);
+int luci_write_extent_end(struct address_space *mapping,
+    loff_t pos, unsigned len, unsigned flags, struct page *pagep);
+int luci_write_extent(struct page *page, struct writeback_control *wbc);
+int luci_write_extents(struct address_space *mapping,
+    struct writeback_control *wbc);
+int luci_read_extent(struct page * page, blkptr *bp);
+
+int luci_bmap_update_extent_bp(struct page *page, struct inode *inode, blkptr bp[]);
+
+extern const struct inode_operations luci_file_inode_operations;
+extern const struct file_operations luci_file_operations;
+extern const struct inode_operations luci_dir_inode_operations;
+extern const struct file_operations luci_dir_operations;
+extern const struct address_space_operations luci_aops;
 /*
  * Define LUCIFS_DEBUG to produce debug messages
- */
-/*
- * Debug code
  */
 
 //#define DEBUG_BMAP
@@ -641,12 +790,18 @@ extern debugfs_t dbgfsparam;
                              "page count :%u "f"\n", __func__, page_index(page), \
                              page_count(page), ## a); \
                     }
+
+#ifdef DEBUG_BLOCK
 #define luci_dump_blkptr(inode, fb, bp) { \
 	            if (dbgfsparam.log) \
                         printk (KERN_INFO "LUCI-FS %s inode :%lu file block :%lu "\
                             "bp(%u-%x-%u-0x%x)\n", __func__, inode->i_ino, (fb), \
                             (bp)->blockno, (bp)->flags, (bp)->length, (bp)->checksum); \
                     }
+#else
+#define luci_dump_blkptr(inode, fb, bp) { }
+#endif
+
 #define luci_dump_bh(inode, msg, bh) { \
 	            if (dbgfsparam.log) \
                         printk (KERN_INFO "LUCI-FS %s inode :%lu %s bh[cpu:%d]:"\
@@ -659,135 +814,4 @@ extern debugfs_t dbgfsparam;
                             atomic_read(&bh->b_count)); \
                     }
 
-// useful for debugging data integrity issues
-static void inline
-luci_dump_bytes(const char *msg, struct page *page, unsigned int len)
-{
-    bool map_page = true;
-
-    if (dbgfsparam.tracedata) {
-        void *kaddr = NULL;
-
-        if ((page_file_mapping(page)) || page_mapped(page)) {
-            map_page = false;
-        }
-
-        // page may belong to high mem
-        if (map_page) {
-            kmap(page);
-        }
-
-        kaddr = page_address(page);
-
-        print_hex_dump(KERN_INFO, msg, DUMP_PREFIX_OFFSET, 16,
-            1, kaddr, len, true);
-
-        if (map_page) {
-            // note :kunmap_atomic takes kaddr
-            kunmap(page);
-        }
-    }
-}
-
-// apparently kernel has function for us delta not ns delta
-static inline s64
-ktime_ns_delta(const ktime_t later, const ktime_t earlier)
-{
-    return ktime_to_ns(ktime_sub(later, earlier));
-}
-
-#define UPDATE_AVG_LATENCY_NS(X, START) \
-{ \
-    X =  (X + ktime_ns_delta(ktime_get(), START))/2; \
-}
-
-#define BYTE_SHIFT 3
-
-#define SECTOR_SHIFT 9
-
-#define SECTOR_SIZE (1U << (SECTOR_SHIFT))
-
-static inline unsigned long
-sector_align(unsigned long n)
-{
-    sector_t nsec = (n + SECTOR_SIZE - 1)/SECTOR_SIZE;
-    return (long)nsec << SECTOR_SHIFT;
-}
-
-typedef struct {
-   blkptr *p; // block entry
-   blkptr key;
-   struct buffer_head *bh;
-} Indirect;
-
-#define IS_INLINE(level) ((level) == 0)
-
-/* super.c */
-struct luci_group_desc *
-luci_get_group_desc(struct super_block *sb,
-   unsigned int block_group, struct buffer_head **bh);
-int
-luci_write_inode(struct inode *inode, struct writeback_control *wbc);
-int luci_truncate(struct inode *inode, loff_t size);
-
-/* dir.c */
-
-//#define DEBUG_DENTRY
-
-ino_t luci_inode_by_name(struct inode *, const struct qstr *);
-struct luci_dir_entry_2 * luci_find_entry (struct inode *,const struct qstr *, struct page **);
-inline unsigned luci_rec_len_from_disk(__le16 dlen);
-inline __le16 luci_rec_len_to_disk(unsigned dlen);
-struct luci_dir_entry_2 * luci_find_entry (struct inode * dir,
-        const struct qstr * child, struct page ** res);
-int luci_delete_entry(struct luci_dir_entry_2*, struct page*);
-unsigned luci_chunk_size(struct inode *inode);
-unsigned luci_sectors_per_block(struct inode *inode);
-int luci_empty_dir(struct inode *dir);
-
-struct page * luci_get_page(struct inode *dir, unsigned long n);
-void luci_put_page(struct page *page);
-unsigned luci_last_byte(struct inode *inode, unsigned long page_nr);
-int luci_match (int len, const char * const name, struct luci_dir_entry_2 * de);
-int luci_prepare_chunk(struct page *page, loff_t pos, unsigned len);
-int luci_commit_chunk(struct page *page, loff_t pos, unsigned len);
-
-/* inode.c */
-#define TEST_INODE 13
-
-#define COMPR_CREATE_ALLOC  0x01
-#define COMPR_BLK_UPDATE    0x02
-#define COMPR_BLK_INSERT    0x04
-
-extern struct inode *luci_iget (struct super_block *, unsigned long);
-extern int luci_get_block(struct inode *, sector_t, struct buffer_head *, int);
-extern int luci_dump_layout(struct inode * inode);
-blkptr luci_find_leaf_block(struct inode * inode, unsigned long i_block);
-int luci_insert_block(struct inode * inode, unsigned long i_block, blkptr *bp);
-u32 luci_compute_cksum(struct page *page, size_t size, u32);
-int luci_compute_compressed_cksum(struct page **pages, unsigned nr_pages, size_t length);
-int luci_verify_cksum(struct page *page, blkptr *bp);
-int luci_verify_compressed_cksum(struct bio *bio, blkptr *bp);
-
-/* ialloc.c */
-extern struct buffer_head *
-read_inode_bitmap(struct super_block *sb, unsigned long block_group);
-extern struct buffer_head *
-read_block_bitmap(struct super_block *sb, unsigned long block_group);
-extern void luci_free_inode (struct inode * inode);
-extern void luci_release_inode(struct super_block *sb, int group, int dir);
-extern struct inode *
-   luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr);
-int luci_new_block(struct inode *, unsigned int, unsigned long *);
-int luci_free_block(struct inode *inode, unsigned long block);
-
-/*cluster */
-int
-luci_cluster_update_bp(struct page *page, struct inode *inode, blkptr bp[]);
-
-extern const struct inode_operations luci_file_inode_operations;
-extern const struct file_operations luci_file_operations;
-extern const struct inode_operations luci_dir_inode_operations;
-extern const struct file_operations luci_dir_operations;
-extern const struct address_space_operations luci_aops;
 #endif

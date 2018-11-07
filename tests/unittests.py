@@ -77,7 +77,7 @@ class LuciUnitTests(unittest.TestCase):
             rc = RunCommand(cmd)
             self.assertEqual(rc, 0)
 
-    #@unittest.skip('skip test')
+    @unittest.skip('skip test')
     def test_CopyDir(self):
         """
           Unit test to copy directory
@@ -94,7 +94,7 @@ class LuciUnitTests(unittest.TestCase):
             if count >= nr:
                 break
 
-    @unittest.skip('skip test')
+    #@unittest.skip('skip test')
     def test_Validation(self):
         """
           Unit test to validate data by running md5 checksumming

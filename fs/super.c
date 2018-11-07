@@ -20,7 +20,7 @@
 #include <linux/debugfs.h>
 #include "kern_feature.h"
 #include "luci.h"
-#include "compression.h"
+#include "compress.h"
 
 MODULE_AUTHOR("Saptarshi.S");
 MODULE_ALIAS_FS("luci");

@@ -5,181 +5,122 @@
  *
  * ------------------------------------------------------------------*/
 #include <linux/fs.h>
+#include <linux/ktime.h>
+#include <linux/mpage.h>
 #include <linux/kernel.h>
-#include <linux/buffer_head.h>
-#include <linux/version.h>
-#include <linux/writeback.h>
 #include <linux/blkdev.h>
 #include <linux/dcache.h>
-#include <linux/mpage.h>
-#include <linux/ktime.h>
+#include <linux/version.h>
+#include <linux/writeback.h>
+#include <linux/buffer_head.h>
+
 #include "kern_feature.h"
 #include "luci.h"
-#include "cluster.h"
-#include "compression.h"
 
 static int
-luci_setsize(struct inode *inode, loff_t newsize)
+__luci_setsize(struct inode *inode, loff_t newsize)
 {
-    // Cannot modify size of directory
-    if (!S_ISREG(inode->i_mode)) {
-       luci_err_inode(inode, "luci :setsize not valid for inode");
-       return -EINVAL;
-    }
-    luci_truncate(inode, newsize);
-    truncate_setsize(inode, newsize);
-    inode->i_mtime = inode->i_ctime = LUCI_CURR_TIME;
-    // sync
-    if (inode_needs_sync(inode)) {
-       sync_mapping_buffers(inode->i_mapping);
-       sync_inode_metadata(inode, 1);
-    // async
+    int err = 0;
+
+    if (S_ISREG(inode->i_mode)) {
+        luci_dbg_inode(inode, "oldsize %llu newsize %llu\n",
+            inode->i_size, newsize);
+        luci_truncate(inode, newsize); // update bmap
+
+        truncate_setsize(inode, newsize);
+        inode->i_mtime = inode->i_ctime = LUCI_CURR_TIME;
+        if (inode_needs_sync(inode)) {
+            sync_mapping_buffers(inode->i_mapping);
+            sync_inode_metadata(inode, 1);
+        } else
+            mark_inode_dirty(inode);
     } else {
-       mark_inode_dirty(inode);
+        err = -EINVAL;
+        luci_err_inode(inode, "luci :cannot modify size of directory\n");
     }
-    return 0;
+
+    return err;
 }
 
 static int
 luci_setattr(struct dentry *dentry, struct iattr *attr)
 {
-    int err;
+    int err = 0;
     struct inode *inode = DENTRY_INODE(dentry);
+
     // check we have permissions to change attributes
 #ifdef HAVE_CHECKINODEPERM
     err = inode_change_ok(inode, attr);
 #else
     err = setattr_prepare(dentry, attr);
 #endif
-    if (err) {
-        return err;
+    if (err || !(attr->ia_valid & ATTR_SIZE))
+        return err ? err : -EPERM;
+
+    if (attr->ia_size != inode->i_size) {
+        // Wait for all pending direct I/O requests prior doing a truncate
+        inode_dio_wait(inode);
+        err = __luci_setsize(inode, attr->ia_size);
+        if (err)
+            goto exit;
+        setattr_copy(inode, attr);
+        mark_inode_dirty(inode);
     }
 
-    luci_dbg_inode(inode, "setattr");
-    // Wait for all pending direct I/O requests so that
-    // we can proceed with a truncate
-    inode_dio_wait(inode);
-
-    // check modify size
-    if (attr->ia_valid & ATTR_SIZE && attr->ia_size != inode->i_size) {
-       luci_dbg_inode(inode, "oldsize %llu newsize %llu", inode->i_size,
-          attr->ia_size);
-       err = luci_setsize(inode, attr->ia_size);
-       if (err) {
-           return err;
-       }
-    }
-    // does not mark inode dirty so explicitly marked dirty
-    setattr_copy(inode, attr);
-    mark_inode_dirty(inode);
-    //luci_dump_layout(inode);
-    return 0;
+exit:
+    return err;
 }
 
 static int
-luci_getattr_private(const struct dentry *dentry, struct kstat *stat)
+__luci_getattr_private(const struct dentry *dentry, struct kstat *stat)
 {
-    struct super_block *sb = dentry->d_sb;
     struct inode *inode = DENTRY_INODE(dentry);
+
     generic_fillattr(inode, stat);
-    stat->blksize = sb->s_blocksize;
-#ifdef LUCIFS_COMPRESSION
-    luci_info_inode(inode, "phy size :%llu\n", LUCI_I(inode)->i_size_comp);
-#endif
-    luci_dbg_inode(inode, "get attributes");
+    stat->blksize = inode->i_sb->s_blocksize;
     return 0;
 }
 
 #ifdef HAVE_NEW_GETATTR
-static int
-luci_getattr(const struct path *path, struct kstat *stat,
-        u32 request_mask, unsigned int query_flags)
+int
+luci_getattr(const struct path *path,
+             struct kstat *stat,
+             u32 request_mask,
+             unsigned int query_flags)
 {
-    return luci_getattr_private(path->dentry, stat);
+    return __luci_getattr_private(path->dentry, stat);
 }
 #else
-static int
-luci_getattr(struct vfsmount *mnt, struct dentry *dentry,
-        struct kstat *stat)
+int
+luci_getattr(struct vfsmount *mnt,
+             struct dentry *dentry,
+             struct kstat *stat)
 {
-    return luci_getattr_private(dentry, stat);
+    return __luci_getattr_private(dentry, stat);
 }
 #endif
 
-inline unsigned
-luci_chunk_size(struct inode *inode)
+const struct inode_operations luci_file_inode_operations =
 {
-    return inode->i_sb->s_blocksize;
-}
+    .setattr = luci_setattr,
+    .getattr = luci_getattr,
+};
 
-inline unsigned
-luci_sectors_per_block(struct inode *inode)
-{
-    return luci_chunk_size(inode)/512;
-}
-
+/* bmap functions */
 static inline void
-luci_set_de_type(struct luci_dir_entry_2 *de, struct inode *inode)
-{
-    // TBD
-    de->file_type  = 0;
-}
-
-int
-luci_prepare_chunk(struct page *page, loff_t pos, unsigned len)
-{
-    int ret = 0;
-    struct address_space *mapping = page->mapping;
-    struct inode *dir = mapping->host;
-    luci_dbg_inode(dir, "pos :%llu len :%u", pos, len);
-    ret =  __block_write_begin(page, pos, len, luci_get_block);
-    return ret;
-}
-
-// is this specific to directory usage ?
-int
-luci_commit_chunk(struct page *page, loff_t pos, unsigned len)
-{
-    int err = 0, ret;
-    struct address_space *mapping = page->mapping;
-    struct inode *dir = mapping->host;
-
-    dir->i_version++;
-    BUG_ON(!page_has_buffers(page));
-    ret = block_write_end(NULL, mapping, pos, len, len, page, NULL);
-    BUG_ON(ret != len);
-    // note directory inode size is updated here
-    if (pos + len > dir->i_size) {
-        i_size_write(dir, pos + len);
-        mark_inode_dirty(dir);
-        luci_dbg_inode(dir, "updating dir inode size %llu", dir->i_size);
-    }
-    if (IS_DIRSYNC(dir)) {
-        err = write_one_page(page, 1);
-        if (!err) {
-            err = sync_inode_metadata(dir, 1);
-        }
-    } else {
-        unlock_page(page);
-    }
-    luci_dbg_inode(dir,"pos :%llu len :%u err :%d", pos, len, err);
-    return err;
-}
-
-static inline void
-add_chain(Indirect *p, struct buffer_head *bh, blkptr *v)
+luci_bmap_add_chain(Indirect *p, struct buffer_head *bh, blkptr *v)
 {
     p->p = v;
-    memcpy((char*)&p->key, (char*)p->p, sizeof(blkptr));
     p->bh = bh;
+    memcpy((char*)&p->key, (char*)v, sizeof(blkptr));
 }
 
-// Update path based on block number, offsets into indices
+/* bmap search */
 static int
-luci_block_to_path(struct inode *inode,
-        long i_block,
-        long path[LUCI_MAX_DEPTH],
-        int *blocks_to_boundary)
+luci_bmap_get_indices(struct inode *inode,
+                   long i_block,
+                   long path[LUCI_MAX_DEPTH],
+                   int *blocks_to_boundary)
 {
     int n = 0;
     int final = 0;
@@ -188,10 +129,7 @@ luci_block_to_path(struct inode *inode,
     const long nr_indirect = LUCI_ADDR_PER_BLOCK(inode->i_sb);
     const long nr_dindirect = (1 << (LUCI_ADDR_PER_BLOCK_BITS(inode->i_sb) * 2));
 
-    if (i_block < 0) {
-        luci_err_inode(inode, "warning invalid i_block :%ld", file_block);
-        return -EINVAL;
-    }
+    BUG_ON(i_block < 0);
 
     if (i_block < nr_direct) {
         path[n++] = i_block;
@@ -205,20 +143,17 @@ luci_block_to_path(struct inode *inode,
         path[n++] = LUCI_IND_BLOCK;
         path[n++] = i_block;
         final = nr_indirect;
-        luci_dbg("block %ld maps to an indirect block\n", file_block);
+        luci_dbg("block %ld maps to an indirect block", file_block);
         goto done;
     }
 
     i_block -= nr_indirect;
-    // Imagery :
-    // 1st-Level : each row corresponds to n addr-bits blocks
-    // 2nd-Level : each row corresponds to index to the addr per block
     if (i_block < nr_dindirect) {
         path[n++] = LUCI_DIND_BLOCK;
         path[n++] = i_block >> LUCI_ADDR_PER_BLOCK_BITS(inode->i_sb);
         path[n++] = i_block & (LUCI_ADDR_PER_BLOCK(inode->i_sb) - 1);
         final = nr_indirect;
-        luci_dbg("block %ld maps to a double indirect block\n", file_block);
+        luci_dbg("block %ld maps to a double indirect block", file_block);
         goto done;
     }
 
@@ -231,243 +166,47 @@ luci_block_to_path(struct inode *inode,
             (LUCI_ADDR_PER_BLOCK(inode->i_sb) - 1);
         path[n++] = i_block & (LUCI_ADDR_PER_BLOCK(inode->i_sb) - 1);
         final = nr_indirect;
-        luci_dbg("block %ld maps to a triple indirect block\n", file_block);
+        luci_dbg("block %ld maps to a triple indirect block", file_block);
         goto done;
     }
 
-    luci_err_inode(inode, "warning block is too big");
+    luci_err_inode(inode, "file block :%lu exceeds bmap limits", file_block);
+    return -E2BIG;
+
 done:
-    if (blocks_to_boundary) {
+    if (blocks_to_boundary)
         *blocks_to_boundary = final - path[n - 1];
-    }
-    luci_info_inode(inode,"i_block :%lu n:%d indexes :%ld :%ld :%ld :%ld",
+
+    luci_info_inode(inode,"i_block :%lu n:%d bmap indices :%ld :%ld :%ld :%ld",
        file_block, n, path[0], path[1], path[2], path[3]);
     return n;
 }
 
-static int
-walk_bmap(struct inode *inode, Indirect ichain[], long index[],
-    int curr_level, int depth, unsigned long i_block)
-{
-    int ret, slot;
-    unsigned long curr_block;
-    struct buffer_head *parent_bh, *currbh;
-
-    // cur_level can never exceed leaf_level
-    if (curr_level > LUCI_MAX_DEPTH) {
-        panic("invalid current level");
-    }
-
-    // base case
-    if (curr_level >= depth) {
-        return 0;
-    }
-
-    ret = luci_new_block(inode, 1, &curr_block);
-    if (ret < 0) {
-        luci_err_inode(inode, "block map allocation failed %d\n", ret);
-        panic("block alloc failed :%d", ret);
-    }
-
-    if ((currbh = sb_getblk(inode->i_sb, curr_block)) == NULL) {
-        luci_err_inode(inode, "block read fail %lu iblock %lu\n",
-            curr_block, i_block);
-        panic("block read failed :%lu", curr_block);
-    }
-
-    //clear the newly allocated block
-    lock_buffer(currbh);
-    memset(currbh->b_data, 0, currbh->b_size);
-    set_buffer_uptodate(currbh);
-    unlock_buffer(currbh);
-    #ifdef DEBUG_BH
-    luci_dump_bh(inode, "allocating bh for block(meta/data)", currbh);
-    #endif
-
-    // offset to indirect block table to store block address entry
-    ichain[curr_level].key.blockno = curr_block;
-    ichain[curr_level].bh = currbh;
-    slot = index[curr_level];
-    if (IS_INLINE(curr_level)) {
-        // root node already has slot for holding block ptr in i_data
-        parent_bh = NULL;
-        ichain[curr_level].p = (blkptr*) LUCI_I(inode)->i_data + slot;
-    } else {
-        parent_bh = ichain[curr_level - 1].bh;
-        if (parent_bh == NULL) {
-            luci_err_inode(inode, "parent bh null(%d-%d-%lu)\n",
-                curr_level, depth, i_block);
-            panic("parent bh null");
-        }
-        ichain[curr_level].p = (blkptr*) parent_bh->b_data + slot;
-        lock_buffer(parent_bh);
-    }
-
-    // imp : i_data array updated here
-    memcpy((char*)ichain[curr_level].p, (char*)&ichain[curr_level].key,
-        sizeof(blkptr));
-    if (parent_bh != NULL) {
-        #ifdef DEBUG_BLOCK
-        int i;
-        for (i = 0; i <= slot; i++) {
-            blkptr *bp = (blkptr*) parent_bh->b_data + i;
-            luci_info_inode(inode, "dump iallocated iblock %lu level :%d "
-                "block[%u-%p-%lu-%u-0x%x]%u", i_block, curr_level, i,
-                parent_bh->b_data, parent_bh->b_blocknr,
-                ichain[curr_level - 1].key.blockno,
-                bp->checksum, bp->blockno);
-        }
-        #endif
-        unlock_buffer(parent_bh);
-        mark_buffer_dirty_inode(parent_bh, inode);
-    }
-
-    #ifdef DEBUG_BLOCK
-    luci_info_inode(inode, "allocated iblock %lu level :%d(%d) block %u(%x-%u-0x%x) "
-        "index %u", i_block, curr_level, depth, ichain[curr_level].key.blockno,
-        ichain[curr_level].key.flags, ichain[curr_level].key.length,
-        ichain[curr_level].key.checksum, slot);
-    #endif
-    return walk_bmap(inode, ichain, index, ++curr_level, depth,
-        i_block);
-}
-
-#ifdef LUCIFS_COMPRESSION
-static int
-walk_bmap_meta(struct inode *inode, Indirect ichain[], long index[],
-    int curr_level, int depth, unsigned long i_block, struct buffer_head *bh)
-{
-    int slot, ret;
-    unsigned long curr_block;
-    struct buffer_head *parent_bh, *currbh;
-
-    // cur_level can never exceed leaf_level
-    if (curr_level > LUCI_MAX_DEPTH) {
-        panic("invalid current level");
-    }
-
-    // base case
-    if (curr_level >= depth) {
-        return 0;
-    }
-
-    // We only allocate metadata block here
-    if (curr_level + 1 < depth) {
-        ret = luci_new_block(inode, 1, &curr_block);
-        if (ret < 0) {
-            luci_err_inode(inode, "block map allocation failed %d\n", ret);
-            panic("block alloc failed :%d", ret);
-        }
-
-        if ((currbh = sb_getblk(inode->i_sb, curr_block)) == NULL) {
-            luci_err_inode(inode, "block read fail %lu iblock %lu\n",
-                curr_block, i_block);
-            panic("block read failed :%lu", curr_block);
-        }
-
-        //clear the newly allocated block
-        lock_buffer(currbh);
-        memset(currbh->b_data, 0, currbh->b_size);
-        set_buffer_uptodate(currbh);
-        unlock_buffer(currbh);
-        #ifdef DEBUG_BH
-        luci_dump_bh(inode, "allocating bh for meta block", currbh);
-        #endif
-
-        // offset to indirect block table to store block address entry
-        ichain[curr_level].key.blockno = curr_block;
-        ichain[curr_level].bh = currbh;
-    // Data block is preallocated
-    } else {
-        ichain[curr_level].key.blockno = bh->b_blocknr;
-        ichain[curr_level].key.checksum = *(u32*)(bh->b_data);
-        ichain[curr_level].bh = NULL;
-        if ((bh->b_state & BH_PrivateStart)) {
-            ichain[curr_level].key.flags |= LUCI_COMPR_FLAG;
-            ichain[curr_level].key.length = (unsigned int) bh->b_size;
-        }
-    }
-
-    slot = index[curr_level];
-    if (IS_INLINE(curr_level)) {
-        // root node already has slot for holding block ptr in i_data
-        parent_bh = NULL;
-        ichain[curr_level].p = (blkptr*) LUCI_I(inode)->i_data + slot;
-    } else {
-        parent_bh = ichain[curr_level - 1].bh;
-        if (parent_bh == NULL) {
-            luci_err_inode(inode, "parent bh null(%d-%d-%lu)\n", curr_level,
-                depth, i_block);
-            panic("parent bh null");
-        }
-        ichain[curr_level].p = (blkptr*) parent_bh->b_data + slot;
-        lock_buffer(parent_bh);
-    }
-
-    // imp : i_data array updated here
-    memcpy((char*)ichain[curr_level].p, (char*)&ichain[curr_level].key,
-        sizeof(blkptr));
-
-    if (parent_bh != NULL) {
-        #ifdef DEBUG_BLOCK
-        int i;
-        for (i = slot; i <= slot; i++) {
-            blkptr *bp = (blkptr*) parent_bh->b_data + i;
-            luci_info_inode(inode, "dump iallocated iblock %lu level :%d "
-                    "block[%u-%p-%lu-%u]%u", i_block, curr_level, i,
-                    parent_bh->b_data, parent_bh->b_blocknr,
-                    ichain[curr_level - 1].key.blockno, bp->blockno);
-        }
-        #endif
-        unlock_buffer(parent_bh);
-        // meta data buffers are not part of inode's address space. They
-        // do not lie in radix tree pages for the inode. They are part of
-        // bdev's address space. Here we, add buffers to inode's address
-        // space private list as part of associated mapping. (note we use
-        // sb_bread/sb_getblk for creating pages for meta data, wherein we
-        // pass super block and not the inode itself)
-        mark_buffer_dirty_inode(parent_bh, inode);
-    }
-
-    #ifdef DEBUG_BLOCK
-    luci_info_inode(inode, "allocated iblock %lu level :%d(%d) block %u(%x-%u-0x%x) "
-        "index %u", i_block, curr_level, depth, ichain[curr_level].key.blockno,
-        ichain[curr_level].key.flags, ichain[curr_level].key.length,
-        ichain[curr_level].key.checksum, slot);
-    #endif
-    return walk_bmap_meta(inode, ichain, index, ++curr_level, depth,
-        i_block, bh);
-}
-#endif
-
-static inline Indirect *
-luci_get_branch(struct inode *inode,
-        int depth,
-        long ipaths[LUCI_MAX_DEPTH],
-        Indirect ichain[LUCI_MAX_DEPTH],
-        int *err)
+static Indirect *
+luci_bmap_get_path(struct inode *inode,
+                   int depth,
+                   long ipaths[LUCI_MAX_DEPTH],
+                   Indirect ichain[LUCI_MAX_DEPTH],
+                   int *err)
 {
     int i = 0;
     Indirect *p = ichain;
     struct buffer_head *bh = NULL;
     struct super_block *sb = inode->i_sb;
-    unsigned long parent_block = 0;
+    unsigned long parent_block = 0; // only for debug
+
+    BUG_ON(!depth);
 
     *err = 0;
 
-    if (depth == 1) {
-        add_chain (p, NULL, LUCI_I(inode)->i_data + *ipaths);
-    } else {
-        add_chain (p, NULL, LUCI_I(inode)->i_data + *ipaths);
-        if ((bh = sb_bread(sb, p->key.blockno)) == NULL)  {
-            luci_err_inode(inode, "metadata read error ipath[%d]%d", i,
-                    p->key.blockno);
-            goto failure;
-        }
+    if (depth == 1)
+        luci_bmap_add_chain (p, NULL, LUCI_I(inode)->i_data + *ipaths);
+    else {
+        luci_bmap_add_chain (p, NULL, LUCI_I(inode)->i_data + *ipaths);
+        if ((bh = sb_bread(sb, p->key.blockno)) == NULL)
+            panic("metadata read error inode :%lu ipath[%d]%u",
+                inode->i_ino, depth, p->key.blockno);
         p->bh = bh;
-        #ifdef DEBUG_BH
-        luci_dump_bh(inode, "fetching bh for meta block", bh);
-        #endif
     }
 
     if (!p->key.blockno) {
@@ -475,140 +214,251 @@ luci_get_branch(struct inode *inode,
         goto no_block;
     }
 
-    parent_block = p->key.blockno;
+    luci_info_inode(inode, "bmap get path, ipath[%d] %d-%u-%u-0x%x[%ld]",
+                            i,
+                            p->key.blockno,
+                            p->key.flags,
+                            p->key.length,
+                            p->key.checksum,
+                            *ipaths);
 
-    //#define DEBUG_BLOCK
-    #ifdef DEBUG_BLOCK
-    luci_info_inode(inode, "block walk path ipath[%d] %d-%u-%u-0x%x[%ld]", i,
-        p->key.blockno, p->key.flags, p->key.length, p->key.checksum, *ipaths);
-    #endif
-    i++;
-    while (i < depth) {
-        BUG_ON(bh == NULL);
-        add_chain(++p, NULL, (blkptr*)bh->b_data + *++ipaths);
-        if (!p->key.blockno) {
-            goto no_block;
-        }
-        if ((bh = sb_bread(sb, p->key.blockno)) == NULL)  {
-            luci_err_inode(inode, "metadata read error ipath[%d]%d", i,
-                    p->key.blockno);
-            goto failure;
-        }
-        p->bh = bh;
-        #ifdef DEBUG_BH
-        luci_dump_bh(inode, "fetching bh for block(meta/data)", bh);
-        #endif
-
-        #ifdef DEBUG_BLOCK
-        luci_info_inode(inode, "block walk path ipath[%d] %d-%u-%u-0x%x[%ld][%lu]", i,
-            p->key.blockno, p->key.flags, p->key.length, p->key.checksum,
-            *ipaths, parent_block);
-        #endif
+    while (++i < depth) {
         parent_block = p->key.blockno;
-        i++;
+
+        luci_bmap_add_chain(++p, NULL, (blkptr*)bh->b_data + *++ipaths);
+        if (!p->key.blockno)
+            goto no_block;
+
+        if ((bh = sb_bread(sb, p->key.blockno)) == NULL)
+            panic("metadata read error inode :%lu ipath[%d]%u",
+                inode->i_ino, depth, p->key.blockno);
+        else
+            p->bh = bh;
+
+        luci_info_inode(inode, "bmap get path, ipath[%d] %d-%u-%u-0x%x[%ld][%lu]",
+                                i,
+                                p->key.blockno,
+                                p->key.flags,
+                                p->key.length,
+                                p->key.checksum,
+                                *ipaths,
+                                parent_block);
     }
-    //#undef DEBUG_BLOCK
     return NULL;
 
-failure:
-    for (i = 0; i < LUCI_MAX_DEPTH; i++) {
-        if (!ichain[i].key.blockno) {
-            break;
-        }
-        brelse(ichain[i].bh);
-    }
-    *err = -EIO;
 no_block:
-    #ifdef DEBUG_BLOCK
     luci_info("found no key in block path walk at level %d for inode :%lu "
        "ipaths :%ld", i, inode->i_ino, *ipaths);
-    #endif
     return p;
 }
 
-/* compute checksum */
-u32 luci_compute_cksum(struct page *page, size_t size, u32 crc_seed)
+/*
+ * traverses bmap based on indices from getpath and populates block entries.
+ *
+ * Notes:
+ *      meta data buffers are not part of inode's address space. They
+ *      do not lie in radix tree pages for the inode. They are part of
+ *      bdev's address space. Here we, add buffers to inode's address
+ *      space private list as part of associated mapping. (note we use
+ *      sb_bread/sb_getblk for creating pages for meta data, wherein we
+ *      pass super block and not the inode itself)
+ */
+static int
+luci_bmap_allocate_entry(struct inode *inode,
+                         Indirect ichain[],
+                         long index[],
+                         int curr_level,
+                         int depth,
+                         unsigned long i_block)
 {
-    u32 crc;
-    void *kaddr;
+    int bmap_index;
+    unsigned long curr_block;
+    struct buffer_head *parent_bh, *currbh;
 
-    BUG_ON(size > PAGE_SIZE);
-    BUG_ON(!size);
+    BUG_ON (curr_level > LUCI_MAX_DEPTH);
 
-    kaddr = kmap(page);
-    crc = crc32_le(crc_seed, kaddr, size);
-    kunmap(kaddr);
-    luci_info("crc for page, length :%lu crc:0x%x\n", size, crc);
-    return crc;
-}
-
-int luci_compute_compressed_cksum(struct page **pages, unsigned nr_pages,
-                                  size_t length)
-{
-    int i;
-    u32 crc = ~0U;
-    unsigned bytes = 0;
-
-    for (i = 0; i < nr_pages; i++) {
-        BUG_ON(length == 0);
-        bytes = min((size_t)length, (size_t)PAGE_SIZE);
-        crc = luci_compute_cksum(pages[i], bytes, crc);
-        length -= bytes;
-    }
-    BUG_ON(length);
-    return crc;
-}
-
-int luci_verify_compressed_cksum(struct bio *bio, blkptr *bp)
-{
-    int i = 0;
-    struct bio_vec *bvec;
-    size_t length = bp->length, bytes = 0;
-    u32 crc = ~0U;
-
-    bio_for_each_segment_all(bvec, bio, i) {
-        BUG_ON(length == 0);
-        bytes = min((size_t)length, (size_t)PAGE_SIZE);
-        crc = luci_compute_cksum(bvec->bv_page, bytes, crc);
-        length -= bytes;
-    }
-    BUG_ON(length);
-
-    luci_info("bp EXP cksum :0x%x GOT cksum :0x%x\n", bp->checksum, crc);
-    if (bp->checksum != crc) {
-        luci_err("checksum error detected\n");
-        return -EBADE;
-    }
-    return 0;
-}
-
-
-int luci_verify_cksum(struct page *page, blkptr *bp)
-{
-    int err = 0;
-
-    if (PageDirty(page) || PageWriteback(page)) {
-        luci_info("cannot verify checksum for page, page dirty/writeback\n");
+    if (curr_level >= depth) // base case
         return 0;
+
+    if (luci_new_block(inode, 1, &curr_block) < 0)
+        panic("block allocation failed\n");
+
+    if ((currbh = sb_getblk(inode->i_sb, curr_block)) == NULL)
+        panic("block read failed for %lu/%lu\n", curr_block, i_block);
+
+    ichain[curr_level].key.blockno = curr_block;
+    ichain[curr_level].bh = currbh;
+
+    lock_buffer(currbh);
+
+    // b_data comes mapped
+    memset(currbh->b_data, 0, currbh->b_size);
+    set_buffer_uptodate(currbh);
+
+    unlock_buffer(currbh);
+
+    // lookup bmap memory index to update block entry
+    bmap_index = index[curr_level];
+    if (IS_INLINE(curr_level)) {
+        parent_bh = NULL;
+        ichain[curr_level].p = (blkptr*) LUCI_I(inode)->i_data + bmap_index;
+    } else {
+        parent_bh = ichain[curr_level - 1].bh;
+        if (!parent_bh)
+            panic("parent bh null %lu (%d-%d-%lu)\n", inode->i_ino,
+                curr_level, depth, i_block);
+        ichain[curr_level].p = (blkptr*) parent_bh->b_data + bmap_index;
+        lock_buffer(parent_bh);
     }
 
-    if (!PageUptodate(page)) {
-        //luci_info("cannot verify checksum for page, page is not uptodate\n");
-        //return 0;
+    // imp : update memory index (i_data array)
+    memcpy((char*)ichain[curr_level].p,
+           (char*)&ichain[curr_level].key,
+           sizeof(blkptr));
+
+    if (parent_bh != NULL) {
+        // scan and dump all entries in an indirect block
+        #ifdef DEBUG_BLOCK_PARANOIA
+        int i;
+        for (i = 0; i <= bmap_index; i++) {
+            blkptr *bp = (blkptr*) parent_bh->b_data + i;
+            luci_info_inode(inode, "bmap entry [%d] level [%d] for iblock %lu "
+                "block[%u-%lu-%u-%u-0x%x]", i, curr_level, i_block,
+                parent_bh->b_blocknr, ichain[curr_level - 1].key.blockno,
+                bp->blockno, bp->checksum);
+        }
+        #endif
+        unlock_buffer(parent_bh);
+        mark_buffer_dirty_inode(parent_bh, inode);
     }
 
-    if (bp->checksum != luci_compute_cksum(page, bp->length, ~0U)) {
-        err = -EBADE;
-        luci_err("checksum error detected: 0x%x\n", bp->checksum);
-    } else
-        luci_info("bp checksum :%x\n", bp->checksum);
+    luci_info_inode(inode, "created bmap entry, iblock %lu level %d-%u(%d) "
+        "block %u index %u\n", i_block, curr_level, bmap_index, depth,
+        ichain[curr_level].key.blockno, bmap_index);
 
-    return err;
+    return luci_bmap_allocate_entry(inode,
+                                    ichain,
+                                    index,
+                                    ++curr_level,
+                                    depth,
+                                    i_block);
 }
 
+static int
+luci_bmap_insert_entry(struct inode *inode,
+                       Indirect ichain[],
+                       long index[],
+                       int curr_level,
+                       int depth,
+                       unsigned long i_block,
+                       struct buffer_head *bh)
+{
+    int bmap_index;
+    unsigned long curr_block;
+    struct buffer_head *parent_bh, *currbh;
+
+    BUG_ON (curr_level > LUCI_MAX_DEPTH);
+
+    if (curr_level >= depth) // base case
+        return 0;
+
+    // only allocate till L1 block
+    if (curr_level + 1 < depth) {
+
+        if (luci_new_block(inode, 1, &curr_block) < 0)
+            panic("block allocation failed\n");
+
+        if ((currbh = sb_getblk(inode->i_sb, curr_block)) == NULL)
+            panic("block read failed for %lu/%lu", curr_block, i_block);
+
+        ichain[curr_level].key.blockno = curr_block;
+        ichain[curr_level].bh = currbh;
+
+        lock_buffer(currbh);
+
+        memset(currbh->b_data, 0, currbh->b_size);
+        set_buffer_uptodate(currbh);
+
+        unlock_buffer(currbh);
+
+    } else {
+        // update L1 block with L0 block ptr
+        ichain[curr_level].bh = NULL;
+        ichain[curr_level].key.blockno = bh->b_blocknr;
+        ichain[curr_level].key.checksum = *(u32*)(bh->b_data);
+
+        if ((bh->b_state & BH_PrivateStart)) {
+            ichain[curr_level].key.flags |= LUCI_COMPR_FLAG;
+            ichain[curr_level].key.length = (unsigned int) bh->b_size;
+        }
+    }
+
+    bmap_index = index[curr_level];
+    if (IS_INLINE(curr_level)) {
+        parent_bh = NULL;
+        ichain[curr_level].p = (blkptr*) LUCI_I(inode)->i_data + bmap_index;
+    } else {
+        parent_bh = ichain[curr_level - 1].bh;
+        if (parent_bh) {
+            ichain[curr_level].p = (blkptr*) parent_bh->b_data + bmap_index;
+            lock_buffer(parent_bh);
+        } else
+            panic("parent bh null %lu (%d-%d-%lu)", inode->i_ino,
+                curr_level, depth, i_block);
+    }
+
+    // imp : update memory index (i_data array)
+    memcpy((char*)ichain[curr_level].p,
+           (char*)&ichain[curr_level].key,
+           sizeof(blkptr));
+
+    if (parent_bh != NULL) {
+        #ifdef DEBUG_BLOCK_PARANOIA
+        int i;
+        for (i = bmap_index; i <= bmap_index; i++) {
+            blkptr *bp = (blkptr*) parent_bh->b_data + i;
+            luci_info_inode(inode, "bmap entry [%d] level [%d] for iblock %lu "
+                "block[%u-%lu-%u-%u-0x%x]",
+                 i,
+                 curr_level,
+                 i_block,
+                 parent_bh->b_blocknr,
+                 ichain[curr_level - 1].key.blockno,
+                 bp->blockno,
+                 bp->checksum);
+        }
+        #endif
+        unlock_buffer(parent_bh);
+        mark_buffer_dirty_inode(parent_bh, inode);
+    }
+
+    luci_info_inode(inode, "inserted bmap entry, iblock %lu level :%d(%d) "
+        "block %u(%x-%u-0x%x) index %u",
+        i_block,
+        curr_level,
+        depth,
+        ichain[curr_level].key.blockno,
+        ichain[curr_level].key.flags,
+        ichain[curr_level].key.length,
+        ichain[curr_level].key.checksum,
+        bmap_index);
+
+    return luci_bmap_insert_entry(inode,
+                                  ichain,
+                                  index,
+                                  ++curr_level,
+                                  depth,
+                                  i_block,
+                                  bh);
+}
+
+// We are abusing luci_get_block for updating block pointer
+// since it has common code for walking indirect block map.
 int
-luci_get_block(struct inode *inode, sector_t iblock,
-        struct buffer_head *bh_result, int create)
+luci_get_block(struct inode *inode,
+               sector_t iblock,
+               struct buffer_head *bh_result,
+               int flags)
 {
     int err = 0;
     int depth = 0;
@@ -618,122 +468,132 @@ luci_get_block(struct inode *inode, sector_t iblock,
     Indirect *partial;
     long ipaths[LUCI_MAX_DEPTH];
     Indirect ichain[LUCI_MAX_DEPTH];
-#if 0
-    struct buffer_head *bh_leaf;
-#endif
 
-    luci_dbg_inode(inode, "getting block for inode :%lu, i_block :%lu "
-        "create :%s", inode->i_ino, iblock, create ? "alloc" : "noalloc");
-    // Standard usage of get_block passes a valid bh_result. This is
-    // done to check if the buffer has an on-disk associated block.
     BUG_ON(bh_result == NULL);
+
     memset((char*)ipaths, 0, sizeof(long)*LUCI_MAX_DEPTH);
     memset((char*)ichain, 0, sizeof(Indirect)*LUCI_MAX_DEPTH);
 
-    depth = luci_block_to_path(inode, iblock, ipaths, &blocks_to_boundary);
-    if (!depth) {
-        luci_err_inode(inode, "get_block, invalid block depth!");
+    depth = luci_bmap_get_indices(inode,
+                                  iblock,
+                                  ipaths,
+                                  &blocks_to_boundary);
+    if (depth < 0)
         return -EIO;
-    }
-    luci_dbg_inode(inode, "get_block, block depth %d", depth);
 
-    //Buffer forms the boundary of contiguous blocks the next block is
-    //discontinuous (BH_Boundary). We need a new meta data block for fetching
-    //the next leaf block.
-    if (!blocks_to_boundary) {
+    //buffer forms boundary of contig blocks, (BH_Boundary)
+    if (!blocks_to_boundary)
         set_buffer_boundary(bh_result);
-    }
+
+    luci_dbg_inode(inode, "mapping block, i_block %lu, depth %d op :%s",
+                          iblock,
+                          depth,
+                          flags ? "create" : "lookup");
 
     mutex_lock(&(LUCI_I(inode)->truncate_mutex));
-    partial = luci_get_branch(inode, depth, ipaths, ichain, &err);
+
+    partial = luci_bmap_get_path(inode,
+                                 depth,
+                                 ipaths,
+                                 ichain,
+                                 &err);
     if (err < 0) {
-        luci_err_inode(inode, "error reading block to path :%u", err);
+        luci_err_inode(inode, "bmap error, err :%u", err);
         goto exit;
     }
 
+    // L0 block exists
     if (!partial) {
-        // We are abusing luci_get_block for updating block pointer
-        // since it has common code for walking indirect block map.
+
+        // update L0 block entry on COW
         if (S_ISREG(inode->i_mode) &&
-           ((create & COMPR_BLK_INSERT) || (create & COMPR_BLK_UPDATE))) {
-            BUG_ON(ichain[depth - 1].p == NULL);
+           ((flags & COMPR_BLK_INSERT) || (flags & COMPR_BLK_UPDATE))) {
+
             // update L0 block ptr at L1
+            BUG_ON(ichain[depth - 1].p == NULL);
             ichain[depth - 1].p->blockno = bh_result->b_blocknr;
             ichain[depth - 1].p->checksum = *(u32*)bh_result->b_data;
             if (bh_result->b_state & BH_PrivateStart) {
                 ichain[depth - 1].p->flags |= LUCI_COMPR_FLAG;
                 ichain[depth - 1].p->length = (unsigned short) bh_result->b_size;
             }
-            luci_info_inode(inode, "iblock :%lu data block :%u(%x-%u-0x%x) depth :%d",
-                iblock, ichain[depth - 1].p->blockno, ichain[depth - 1].p->flags,
-                ichain[depth - 1].p->length, ichain[depth - 1].p->checksum, depth);
-            // Fix: on exit free buffer-heads allocated during block lookup
+
+            luci_info_inode(inode, "COW L0 block iblock :%lu, %u(%x-%u-0x%x) "
+                "depth :%d",
+                iblock,
+                ichain[depth - 1].p->blockno,
+                ichain[depth - 1].p->flags,
+                ichain[depth - 1].p->length,
+                ichain[depth - 1].p->checksum,
+                depth);
+
+            // FIXED: on exit free buffer-heads allocated during block lookup
             goto done;
         }
+
 gotit:
         block_no = ichain[depth - 1].key.blockno;
-        if (bh_result) {
 
-           map_bh(bh_result, inode->i_sb, block_no);
+        // BH_Mapped, bh blockno, length
+        map_bh(bh_result, inode->i_sb, block_no);
 
-           if (bh_result->b_state & BH_PrivateStart)
-               *(u32*) bh_result->b_data = ichain[depth - 1].key.checksum;
+        // hack to fetch bp checksum from bmap lookup
+        if (bh_result->b_state & BH_PrivateStart)
+            *(u32*) bh_result->b_data = ichain[depth - 1].key.checksum;
 
-           if (ichain[depth - 1].key.flags & LUCI_COMPR_FLAG)
-               bh_result->b_size = (size_t) ichain[depth - 1].key.length;
-           else
-               bh_result->b_state &= ~BH_PrivateStart;
+        // update bp size with compressed length
+        if (ichain[depth - 1].key.flags & LUCI_COMPR_FLAG)
+            bh_result->b_size = (size_t) ichain[depth - 1].key.length;
+        else
+            bh_result->b_state &= ~BH_PrivateStart;
 
-           luci_dump_blkptr(inode, iblock, &ichain[depth - 1].key);
-        }
+        luci_dump_blkptr(inode, iblock, &ichain[depth - 1].key);
 
-        luci_info_inode(inode, "i_block :%lu paths :%d :%d :%d :%d", iblock,
-           ichain[0].key.blockno, ichain[1].key.blockno, ichain[2].key.blockno,
-           ichain[3].key.blockno);
-
-        #if 0
-        bh_leaf = sb_bread(inode->i_sb, block_no);
-        BUG_ON(bh_leaf == NULL);
-        BUG_ON(bh_leaf->b_page == NULL);
-        err = luci_verify_checksum(bh_leaf->b_page, &ichain[depth - 1].key);
-        brelse(bh_leaf);
-        #endif
+        luci_info_inode(inode, "i_block :%lu paths :%d :%d :%d :%d",
+                        iblock,
+                        ichain[0].key.blockno,
+                        ichain[1].key.blockno,
+                        ichain[2].key.blockno,
+                        ichain[3].key.blockno);
 
     } else {
-        if (create) {
+    // L0 block does not exist
+
+        if (flags) {
             nr_blocks = (ichain + depth) - partial;
             BUG_ON(nr_blocks == 0);
-            luci_dbg_inode(inode, "get block allocating i_block :%lu, "
-               "nr_blocks :%u", iblock, nr_blocks);
-            #ifdef LUCIFS_COMPRESSION
-            if (S_ISREG(inode->i_mode) && (create & COMPR_BLK_INSERT)) {
-                err = walk_bmap_meta(inode, ichain, ipaths, partial - ichain,
-                    depth, iblock, bh_result);
+            if (S_ISREG(inode->i_mode) && (flags & COMPR_BLK_INSERT)) {
+                err = luci_bmap_insert_entry(inode,
+                                             ichain,
+                                             ipaths,
+                                             partial - ichain,
+                                             depth,
+                                             iblock,
+                                             bh_result);
                 BUG_ON(err);
                 goto done;
-            }
-            #endif
-            err = walk_bmap(inode, ichain, ipaths, partial - ichain,
-                depth, iblock);
-            BUG_ON(err);
-            goto gotit;
-        } else {
+            } else {
+                err = luci_bmap_allocate_entry(inode,
+                                               ichain,
+                                               ipaths,
+                                               partial - ichain,
+                                               depth,
+                                               iblock);
+                BUG_ON(err);
+                goto gotit;
+           }
+        } else
             // We have a hole. mpage API identifies a hole if bh is not mapped.
             // So we are fine even if we do not have an block created for a hole.
-            luci_dbg_inode(inode, "found hole at block no :%u", block_no);
-        }
+            luci_dbg_inode(inode, "found hole at i_block :%lu", iblock);
     }
+
 done:
-    // Fix : free buffer-heads associated with the lookup
-    // The metadata pages are already in memory
+    // FIXED : free bhs associated with lookup, meta pages are already in memory
     partial = ichain + depth - 1;
     while (partial >= ichain) {
-        if (partial->bh != NULL) {
+        if (partial->bh != NULL)
             brelse(partial->bh);
-            #ifdef DEBUG_BH
-            luci_dump_bh(inode, "dropping bh", partial->bh);
-            #endif
-        }
         partial--;
     }
 
@@ -742,40 +602,40 @@ exit:
     return err;
 }
 
+// get bp info from bmap via bh entry
 blkptr
-luci_find_leaf_block(struct inode *inode, unsigned long i_block)
+luci_bmap_fetch_L0bp(struct inode *inode,
+                     unsigned long i_block)
 {
-    int ret;
     blkptr bp;
+    int create = 1;
     struct buffer_head bh;
 
-    memset((char*)&bh, 0, sizeof(struct buffer_head));
     memset((char*)&bp, 0, sizeof(blkptr));
+    memset((char*)&bh, 0, sizeof(struct buffer_head));
 
-    // let get block know we are a special guest
     bh.b_state = BH_PrivateStart;
     bh.b_data = (void *)&bp.checksum;
-    ret = luci_get_block(inode, i_block, &bh, 0);
-    if (ret < 0) {
-        luci_err_inode(inode, "error get leaf block : %lu", i_block);
-        BUG();
-    }
+    if (luci_get_block(inode, i_block, &bh, !create) < 0)
+        panic("error L0 bp, inode :%lu i_block: %lu", inode->i_ino, i_block);
 
+    // BH_Mapped
     if (buffer_mapped(&bh)) {
         bp.blockno = bh.b_blocknr;
         bp.checksum = *(u32*)bh.b_data;
         bp.length = (unsigned int)bh.b_size;
         if (bh.b_state & BH_PrivateStart)
             bp.flags = LUCI_COMPR_FLAG;
-        #ifdef DEBUG_BLOCK
         luci_dump_blkptr(inode, i_block, &bp);
-        #endif
     }
     return bp;
 }
 
+// passthrough bp info to bmap via bh entry
 int
-luci_insert_block(struct inode * inode, unsigned long i_block, blkptr *bp)
+luci_bmap_insert_L0bp(struct inode *inode,
+                      unsigned long i_block,
+                      blkptr *bp)
 {
     int ret;
     struct buffer_head bh;
@@ -783,21 +643,189 @@ luci_insert_block(struct inode * inode, unsigned long i_block, blkptr *bp)
     memset((char*)&bh, 0, sizeof(struct buffer_head));
     bh.b_blocknr = bp->blockno;
     bh.b_data = (void *)&bp->checksum;
+
     if (bp->flags == LUCI_COMPR_FLAG) {
         bh.b_size = (size_t) bp->length;
         bh.b_state = BH_PrivateStart; // flag for compressed block
     }
-    ret = luci_get_block(inode, i_block, &bh, COMPR_BLK_UPDATE |
-        COMPR_BLK_INSERT);
-    if (ret < 0) {
-        luci_err_inode(inode, "error inserting leaf i_block : %lu", i_block);
-        return ret;
-    }
-    return 0;
+
+    ret = luci_get_block(inode,
+                         i_block,
+                         &bh,
+                         COMPR_BLK_UPDATE | COMPR_BLK_INSERT);
+    if (ret < 0)
+        luci_err_inode(inode, "error inserting leaf i_block :%lu", i_block);
+
+    return ret;
 }
 
-// This code path gets trigerred when the inode has already been created on disk
-// and we are fetching inode. inode is loaded with raw inode details from disk
+static int
+luci_account_delta(blkptr bp_old [],
+                   blkptr bp_new [],
+                   unsigned nr_blocks)
+{
+    blkptr old, new;
+    int i, delta = 0, bytes_uncomp = 0;
+    bool new_extent = true, prv_extent = true;
+
+    BUG_ON(nr_blocks == 0);
+    for (i = 0; i < nr_blocks; i++) {
+        old = bp_old[i];
+        new = bp_new[i];
+
+        if ((old.flags & LUCI_COMPR_FLAG) && (new.flags & LUCI_COMPR_FLAG)) {
+            delta += (sector_align(new.length) - sector_align(old.length));
+            break;
+        } else if (new.flags & LUCI_COMPR_FLAG) {
+            bytes_uncomp += sector_align(old.length);
+            prv_extent = false;
+        } else if (old.flags & LUCI_COMPR_FLAG) {
+            bytes_uncomp += sector_align(new.length);
+            new_extent = false;
+        } else
+            delta += (sector_align(new.length) - sector_align(old.length));
+    }
+
+    if (!new_extent)
+        delta += (bytes_uncomp - old.length);
+    else if (!prv_extent)
+        delta += (new.length - bytes_uncomp);
+    return delta;
+}
+
+static void
+luci_extent_range(struct page *page,
+                  unsigned long *begin,
+                  unsigned long *end)
+{
+    unsigned nr_blocks;
+    struct inode *inode;
+
+    BUG_ON(page->mapping == NULL);
+
+    inode = page->mapping->host;
+    nr_blocks = EXTENT_NRBLOCKS(inode->i_sb);
+    *begin = luci_extent_no(page->index) * nr_blocks;
+    *end = *begin + nr_blocks - 1;
+}
+
+static void
+luci_bmap_lookup_extent_bp(struct page *page,
+                           struct inode *inode,
+                           blkptr bp_array [])
+{
+    blkptr bp;
+    unsigned long i, b_i, b_start, b_end;
+
+    luci_extent_range(page, &b_start, &b_end);
+
+    for (b_i = b_start, i = 0; b_i <= b_end; b_i++, i++) {
+        BUG_ON(i >= EXTENT_NRBLOCKS_MAX);
+        bp = luci_bmap_fetch_L0bp(inode, b_i);
+        bp_array[i] = bp;
+    }
+}
+
+int
+luci_bmap_update_extent_bp(struct page *page,
+                           struct inode *inode,
+                           blkptr bp_new [])
+{
+    int delta;
+    unsigned long extent;
+    unsigned long i, b_i, b_start, b_end, blockno;
+    blkptr bp_old[EXTENT_NRBLOCKS_MAX];
+
+    extent = luci_extent_no(page_index(page));
+    luci_dbg_inode(inode, "lookup bp for extent %lu(%lu)", extent,
+        page_index(page));
+
+    // save the old bp
+    luci_bmap_lookup_extent_bp(page, inode, bp_old);
+
+    luci_extent_range(page, &b_start, &b_end);
+
+    // update block pointer
+    for (i = 0, b_i = b_start; b_i <= b_end; b_i++, i++) {
+        if (luci_bmap_insert_L0bp(inode, b_i, &bp_new[i]) < 0)
+            BUG();
+
+        blockno = bp_old[i].blockno;
+        if (blockno)
+            luci_free_block(inode, blockno);
+
+        luci_info_inode(inode, "updated bp %u-%x-%u(%u)-0x%x for file block %lu"
+                               " extent %lu",
+                                bp_new[i].blockno,
+                                bp_new[i].flags,
+                                bp_new[i].length,
+                                bp_old[i].blockno,
+                                bp_new[i].checksum,
+                                b_i,
+                                extent);
+    }
+
+    delta = luci_account_delta(bp_old, bp_new, i);
+    luci_dbg_inode(inode, "delta bytes :%d", delta);
+    return delta;
+}
+
+#ifdef DEBUG_BLOCK2
+static void
+luci_check_bp(struct inode *inode, unsigned long file_block)
+{
+    blkptr bp = luci_bmap_fetch_L0bp(inode, file_block);
+    luci_dump_blkptr(inode, file_block, &bp);
+}
+#endif
+
+static struct luci_inode*
+luci_get_inode(struct super_block *sb,
+               ino_t ino,
+               struct buffer_head **p)
+{
+    struct buffer_head * bh;
+    unsigned long block_group;
+    unsigned long block;
+    unsigned long offset;
+    struct luci_group_desc * gdp;
+
+    *p = NULL;
+    if ((ino != LUCI_ROOT_INO && ino < LUCI_FIRST_INO(sb)) ||
+         ino > le32_to_cpu(LUCI_SB(sb)->s_lsb->s_inodes_count))
+        goto Einval;
+
+    block_group = (ino - 1) / LUCI_INODES_PER_GROUP(sb);
+    gdp = luci_get_group_desc(sb, block_group, NULL);
+    if (!gdp)
+        goto Egdp;
+
+    // calc offset within the block group inode table
+    offset = ((ino - 1) % LUCI_INODES_PER_GROUP(sb)) * LUCI_INODE_SIZE(sb);
+    block = le32_to_cpu(gdp->bg_inode_table) +
+                       (offset >> LUCI_BLOCK_SIZE_BITS(sb));
+    if (!(bh = sb_bread(sb, block)))
+        goto Eio;
+
+    *p = bh;
+    offset &= (LUCI_BLOCK_SIZE(sb) - 1);
+    return (struct luci_inode *) (bh->b_data + offset);
+
+Einval:
+    luci_err("bad inode number: %lu", (unsigned long) ino);
+    return ERR_PTR(-EINVAL);
+Eio:
+    luci_err("unable to read inode block - inode=%lu, block=%lu",
+       (unsigned long) ino, block);
+Egdp:
+    return ERR_PTR(-EIO);
+}
+
+/*
+ * This code path gets trigerred when the inode has already been created
+ * on disk and we are fetching inode. inode is loaded with raw inode
+ * details from disk.
+ */
 struct inode *
 luci_iget(struct super_block *sb, unsigned long ino) {
     int n;
@@ -850,11 +878,12 @@ luci_iget(struct super_block *sb, unsigned long ino) {
     if (S_ISREG(inode->i_mode)) {
         inode->i_size |= (((uint64_t)(le32_to_cpu(raw_inode->i_dir_acl))) << 32);
     }
+
     //luci_info_inode(inode, "inode size low :%u high :%u",
     //   raw_inode->i_size, raw_inode->i_dir_acl);
-    if (i_size_read(inode) < 0) {
+    if (i_size_read(inode) < 0)
         return ERR_PTR(-EFSCORRUPTED);
-    }
+
     inode->i_atime.tv_sec = (signed)le32_to_cpu(raw_inode->i_atime);
     inode->i_ctime.tv_sec = (signed)le32_to_cpu(raw_inode->i_ctime);
     inode->i_mtime.tv_sec = (signed)le32_to_cpu(raw_inode->i_mtime);
@@ -905,178 +934,6 @@ luci_iget(struct super_block *sb, unsigned long ino) {
     // clears the new state
     unlock_new_inode(inode);
     return inode;
-}
-
-static struct luci_inode*
-luci_get_inode(struct super_block *sb, ino_t ino,
-        struct buffer_head **p)
-{
-    struct buffer_head * bh;
-    unsigned long block_group;
-    unsigned long block;
-    unsigned long offset;
-    struct luci_group_desc * gdp;
-
-    *p = NULL;
-    if ((ino != LUCI_ROOT_INO && ino < LUCI_FIRST_INO(sb)) ||
-            ino > le32_to_cpu(LUCI_SB(sb)->s_lsb->s_inodes_count))
-        goto Einval;
-
-    block_group = (ino - 1) / LUCI_INODES_PER_GROUP(sb);
-    gdp = luci_get_group_desc(sb, block_group, NULL);
-    if (!gdp)
-        goto Egdp;
-    /*
-     * Figure out the offset within the block group inode table
-     */
-    offset = ((ino - 1) % LUCI_INODES_PER_GROUP(sb)) * LUCI_INODE_SIZE(sb);
-    block = le32_to_cpu(gdp->bg_inode_table) +
-        (offset >> LUCI_BLOCK_SIZE_BITS(sb));
-    if (!(bh = sb_bread(sb, block)))
-        goto Eio;
-
-    *p = bh;
-    offset &= (LUCI_BLOCK_SIZE(sb) - 1);
-    return (struct luci_inode *) (bh->b_data + offset);
-
-Einval:
-    luci_err("bad inode number: %lu", (unsigned long) ino);
-    return ERR_PTR(-EINVAL);
-Eio:
-    luci_err("unable to read inode block - inode=%lu, block=%lu",
-       (unsigned long) ino, block);
-Egdp:
-    return ERR_PTR(-EIO);
-}
-
-static int
-luci_add_link(struct dentry *dentry, struct inode *inode) {
-    int err;
-    loff_t pos;  // offset in page with empty dentry
-    int new_dentry_len;  // name length of the new entry
-    int rec_len  = 0;
-    struct page *page = NULL;
-    unsigned long n, npages;
-    struct luci_dir_entry_2 *de = NULL;  //dentry iterator
-    struct inode *dir;  // directory inode storing dentries
-    unsigned chunk_size = luci_chunk_size(inode);
-
-    // sanity check for new inode
-    BUG_ON(inode->i_ino == 0);
-    dir = DENTRY_INODE(dentry->d_parent);
-    // Note block size may not be the same as page size
-    npages = dir_pages(dir);
-    new_dentry_len = LUCI_DIR_REC_LEN(dentry->d_name.len);
-    luci_dbg("dir npages :%lu add dentry :%s len :%d", npages,
-       dentry->d_name.name, new_dentry_len);
-    for (n = 0; n < npages; n++) {
-        char *kaddr, *page_boundary;
-        page = luci_get_page(dir, n);
-        if (IS_ERR(page)) {
-            err = PTR_ERR(page);
-            luci_err_inode(inode, "error getting page %lu :%d", n, err);
-            return err;
-        }
-        lock_page(page);
-        kaddr = page_address(page);
-        // We do not want dentry to be across page boundary
-        page_boundary = kaddr + PAGE_SIZE - new_dentry_len;
-        luci_dbg("dentries lookup in dir inode:%lu", dir->i_ino);
-        de = (struct luci_dir_entry_2*)((char*)kaddr);
-	// Note : multiple dentry blocks can reside in a page
-        while ((char*)de <= page_boundary) {
-	    // dentry rolls over to next block
-            // terminal dentry in this block
-            if (de->rec_len == 0) {
-                de->inode = 0;
-                de->rec_len = luci_rec_len_to_disk(chunk_size);
-                goto gotit;
-            }
-            // entry already exists
-            if (luci_match(dentry->d_name.len, dentry->d_name.name, de)) {
-                err = -EEXIST;
-                luci_err("failed to add link, file exists %s",
-		   dentry->d_name.name);
-                goto outunlock;
-            }
-            // offset to next valid dentry from current de
-            rec_len = luci_rec_len_from_disk(de->rec_len);
-            luci_dbg("dname :%s inode :%u next_len :%u", de->name, de->inode,
-               rec_len);
-	    // if new dentry record can be acommodated in this block
-            if (!de->inode && rec_len >= new_dentry_len) {
-               goto gotit;
-            }
-            if (rec_len >= (LUCI_DIR_REC_LEN(de->name_len) +
-               LUCI_DIR_REC_LEN(dentry->d_name.len))) {
-               goto gotit;
-            }
-            de = (struct luci_dir_entry_2*)((char*)de + rec_len);
-        }
-        unlock_page(page);
-        luci_put_page(page);
-        luci_dbg("dentry page %ld nr_pages :%ld ", n, npages);
-    }
-
-    // extend the directory to accomodate new dentry
-    page = luci_get_page(dir, n);
-    if (IS_ERR(page)) {
-       err = -ENOSPC;
-       luci_err_inode(inode, "error getting page %lu :%ld", n, PTR_ERR(page));
-       luci_err("failed to adding new link entry, no space");
-       return err;
-    }
-
-    lock_page(page);
-    de = (struct luci_dir_entry_2*) page_address(page);
-    de->inode = 0;
-    de->rec_len = luci_rec_len_to_disk(chunk_size);
-    luci_info_inode(dir, "dir allocated page %lu(%p) for new dentry",
-        n, (char*)de);
-    goto gotit;
-
-outunlock:
-    BUG_ON(page == NULL);
-    unlock_page(page);
-    luci_put_page(page);
-    return err;
-
-gotit:
-    luci_dbg("luci: empty dentry found, adding new link entry");
-    // Previous entry have to be modified
-    if (de->inode) {
-        struct luci_dir_entry_2 * de_new = (struct luci_dir_entry_2*)
-	   ((char*) de + LUCI_DIR_REC_LEN(de->name_len));
-	de_new->inode = inode->i_ino;
-        de->rec_len = luci_rec_len_to_disk(LUCI_DIR_REC_LEN(de->name_len));
-        de_new->rec_len = luci_rec_len_to_disk(rec_len - de->rec_len);
-        de = de_new;
-    }
-
-    pos = page_offset(page) +
-        (char*)de - (char*)page_address(page);
-    err = luci_prepare_chunk(page, pos, new_dentry_len);
-    if (err) {
-        luci_err("error to prepare chunk during dentry insert");
-        goto outunlock;
-    }
-    de->name_len = dentry->d_name.len;
-    memcpy(de->name, dentry->d_name.name, de->name_len);
-    de->inode = cpu_to_le32(inode->i_ino);
-    luci_set_de_type(de, inode);
-    err = luci_commit_chunk(page, pos, new_dentry_len);
-    if (err) {
-        luci_err("error to commit chunk during dentry insert");
-        BUG();
-    }
-    dir->i_mtime = dir->i_ctime = LUCI_CURR_TIME;
-    mark_inode_dirty(dir);
-    luci_info_inode(dir, "sucessfully inserted dentry %s rec_len :%d "
-       "next_rec :%d page :%lu pos :%llu size :%llu va :%p",
-       dentry->d_name.name, LUCI_DIR_REC_LEN(de->name_len), de->rec_len,
-       n, pos, dir->i_size, page_address(page));
-    luci_put_page(page);
-    return err;
 }
 
 static int
@@ -1144,299 +1001,6 @@ luci_write_inode(struct inode *inode, struct writeback_control *wbc)
    return __luci_write_inode(inode, wbc->sync_mode == WB_SYNC_ALL);
 }
 
-const struct inode_operations luci_file_inode_operations =
-{
-    .setattr = luci_setattr,
-    .getattr = luci_getattr,
-};
-
-static struct dentry *
-luci_lookup(struct inode * dir, struct dentry *dentry,
-        unsigned int flags) {
-    ino_t ino;
-    struct inode * inode;
-    luci_dbg_inode(dir, "dir lookup");
-    if (dentry->d_name.len > LUCI_NAME_LEN) {
-        return ERR_PTR(-ENAMETOOLONG);
-    }
-    ino = luci_inode_by_name(dir, &dentry->d_name);
-    inode = NULL;
-    if (ino) {
-        inode = luci_iget(dir->i_sb,  ino);
-        if (inode == ERR_PTR(-ESTALE)) {
-            luci_err("deleted inode referenced %lu", (unsigned long) ino);
-            return ERR_PTR(-EIO);
-        }
-    } else {
-        luci_err("inode lookup failed for %s", dentry->d_name.name);
-    }
-    //splice a disconnected dentry into the tree if one exists
-    return d_splice_alias(inode, dentry);
-}
-
-static int
-luci_mknod(struct inode * dir, struct dentry *dentry, umode_t mode, dev_t rdev)
-{
-    luci_dbg("inode :%lu", dir->i_ino);
-    return 0;
-}
-
-static int
-luci_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
-{
-    luci_dbg("inode :%lu", dir->i_ino);
-    return 0;
-}
-
-static void
-luci_track_size(struct inode * inode) {
-   loff_t size = inode->i_blocks * 512;
-   luci_dbg_inode(inode, "size :%llu phy size :%llu blocks :%lu",
-      inode->i_size, size, inode->i_blocks);
-   // TBD : Check cases when this becomes true
-   BUG_ON(size < inode->i_size);
-}
-
-static int
-luci_create(struct inode *dir, struct dentry *dentry, umode_t mode,
-        bool excl)
-{
-    int err;
-    struct inode * inode;
-    // create inode
-    inode = luci_new_inode(dir, mode, &dentry->d_name);
-    if (IS_ERR(inode)) {
-        luci_err("Failed to create new inode");
-        return PTR_ERR(inode);
-    }
-    luci_dbg_inode(inode, "Created new inode name :%s", dentry->d_name.name);
-    inode->i_op = &luci_file_inode_operations;
-    inode->i_fop = &luci_file_operations;
-    inode->i_mapping ->a_ops = &luci_aops;
-    mark_inode_dirty(inode);
-    luci_track_size(dir);
-    err = luci_add_link(dentry, inode);
-    if (err) {
-       inode_dec_link_count(inode);
-       unlock_new_inode(inode);
-       iput(inode);
-       luci_err("inode add link failed, err :%d", err);
-       return err;
-    }
-    unlock_new_inode(inode);
-    d_instantiate(dentry, inode);
-    return 0;
-}
-
-static int
-luci_symlink(struct inode * dir, struct dentry *dentry,
-        const char * symname)
-{
-    luci_dbg("inode :%lu", dir->i_ino);
-    return 0;
-}
-
-static int
-luci_link(struct dentry * old_dentry, struct inode * dir,
-        struct dentry *dentry)
-{
-    luci_dbg("inode :%lu", dir->i_ino);
-    return 0;
-}
-
-int
-luci_make_empty(struct inode *inode, struct inode *parent) {
-    struct page * page = grab_cache_page(inode->i_mapping, 0);
-    unsigned chunk_size = luci_chunk_size(inode);
-    struct luci_dir_entry_2* de;
-    int err;
-    void *kaddr;
-
-    if (!page) {
-        return -ENOMEM;
-    }
-
-    err = luci_prepare_chunk(page, 0, chunk_size);
-    if (err) {
-        luci_err("failed to pepare chunk");
-        unlock_page(page);
-        goto fail;
-    }
-    kaddr = kmap_atomic(page);
-    memset(kaddr, 0, chunk_size);
-    de = (struct luci_dir_entry_2*)kaddr;
-    de->name_len = 1;
-    de->rec_len = luci_rec_len_to_disk(LUCI_DIR_REC_LEN(1));
-    memcpy(de->name, ".\0\0", 4);
-    de->inode = cpu_to_le32(inode->i_ino);
-    luci_set_de_type(de, inode);
-
-    de = (struct luci_dir_entry_2*)(kaddr + LUCI_DIR_REC_LEN(1));
-    de->name_len = 2;
-    de->rec_len = luci_rec_len_to_disk(chunk_size - LUCI_DIR_REC_LEN(1));
-    memcpy(de->name, "..\0", 4);
-    de->inode = cpu_to_le32(parent->i_ino);
-    luci_set_de_type(de, inode);
-    // Bug Fix : do atomic, otherwize segfault in user land
-    kunmap_atomic(kaddr);
-    err = luci_commit_chunk(page, 0, chunk_size);
-fail:
-    put_page(page);
-    return err;
-}
-
-static int
-luci_mkdir(struct inode * dir, struct dentry *dentry, umode_t mode)
-{
-    int err = 0;
-    struct inode *inode;
-
-    luci_dbg_inode(dir,"mkdir");
-
-    inode_inc_link_count(dir);
-    inode = luci_new_inode(dir, S_IFDIR | mode, &dentry->d_name);
-    if (IS_ERR(inode)) {
-        luci_err("failed to create new inode");
-        goto fail_dir;
-    }
-    inode->i_op = &luci_dir_inode_operations;
-    inode->i_fop = &luci_dir_operations;
-    inode->i_mapping->a_ops = &luci_aops;
-    inode_inc_link_count(inode);
-    err = luci_make_empty(inode, dir);
-    if (err) {
-        luci_err("failed to make empty directory");
-        goto out_fail;
-    }
-    err = luci_add_link(dentry, inode);
-    if (err) {
-        luci_err("failed to add dentry in parent directory");
-        goto out_fail;
-    }
-
-    unlock_new_inode(inode);
-    d_instantiate(dentry, inode);
-    return err;
-
-out_fail:
-    inode_dec_link_count(inode);
-    inode_dec_link_count(inode);
-    unlock_new_inode(inode);
-    iput(inode);
-    inode_dec_link_count(dir);
-    return err;
-
-fail_dir:
-    inode_dec_link_count(dir);
-    return PTR_ERR(inode);
-}
-
-static int
-luci_unlink(struct inode * dir, struct dentry *dentry)
-{
-    struct inode * inode = DENTRY_INODE(dentry);
-    struct luci_dir_entry_2 * de;
-    struct page * page;
-    int err;
-
-    luci_dbg("name :%s", dentry->d_name.name);
-
-    de = luci_find_entry(dir, &dentry->d_name, &page);
-    if (!de) {
-       err = -ENOENT;
-       luci_err("name :%s not found", dentry->d_name.name);
-       goto out;
-    }
-
-    err = luci_truncate(inode, 0);
-    if (err) {
-       err = -EIO;
-       luci_err("name :%s failed to free blocks", dentry->d_name.name);
-       goto out;
-    }
-
-    err = luci_delete_entry(de, page);
-    if (err) {
-       err = -EIO;
-       luci_err("name :%s failed to delete", dentry->d_name.name);
-       goto out;
-    }
-
-    inode->i_ctime = dir->i_ctime;
-    inode_dec_link_count(inode);
-out:
-    return err;
-}
-
-static int
-luci_rmdir(struct inode * dir, struct dentry *dentry)
-{
-    int err = -ENOTEMPTY;
-    struct inode * inode = DENTRY_INODE(dentry);
-
-    luci_dbg_inode(inode, "rmdir on inode");
-    if (luci_empty_dir(inode) == 0) {
-        err = luci_unlink(dir, dentry);
-	if (err) {
-            luci_err("rmdir failed for inode %lu", inode->i_ino);
-	    return err;
-	}
-        inode_dec_link_count(inode);
-        inode_dec_link_count(dir);
-	return 0;
-    }
-    return err;
-}
-
-#ifdef HAVE_NEW_RENAME
-static int
-luci_rename(struct inode * old_dir, struct dentry *old_dentry,
-        struct inode * new_dir, struct dentry *new_dentry, unsigned int flags)
-{
-    luci_dbg_inode(old_dir, "renaming");
-    return 0;
-}
-#else
-static int
-luci_rename(struct inode * old_dir, struct dentry *old_dentry,
-    struct inode * new_dir, struct dentry *new_dentry)
-{
-    luci_dbg_inode(old_dir, "renaming");
-    return 0;
-}
-#endif
-
-static inline bool
-areas_overlap(unsigned long src, unsigned long dst, unsigned long len)
-{
-    unsigned long distance = (src > dst) ? src - dst : dst - src;
-    return distance < len;
-}
-
-static void
-copy_pages(struct page *dst_page, struct page *src_page,
-    unsigned long dst_off, unsigned long src_off, unsigned long len)
-{
-    char *dst_kaddr = page_address(dst_page);
-    char *src_kaddr;
-    int must_memmove = 0;
-
-    if (dst_page != src_page) {
-        src_kaddr = page_address(src_page);
-    } else {
-        src_kaddr = dst_kaddr;
-        if (areas_overlap(src_off, dst_off, len)) {
-            must_memmove = 1;
-        }
-    }
-
-    if (must_memmove) {
-        memmove(dst_kaddr + dst_off, src_kaddr + src_off, len);
-    } else {
-        memcpy(dst_kaddr + dst_off, src_kaddr + src_off, len);
-    }
-}
-
 static int
 luci_writepage(struct page *page, struct writeback_control *wbc)
 {
@@ -1444,7 +1008,7 @@ luci_writepage(struct page *page, struct writeback_control *wbc)
 #ifdef LUCIFS_COMPRESSION
     struct inode * inode = page->mapping->host;
     if (S_ISREG(inode->i_mode)) {
-        ret = luci_writepage_compressed(page, wbc);
+        ret = luci_write_extent(page, wbc);
         goto done;
     }
 #endif
@@ -1463,7 +1027,7 @@ luci_writepages(struct address_space *mapping, struct writeback_control *wbc)
         struct blk_plug plug;
 
         blk_start_plug(&plug);
-        ret = luci_writepages_compressed(mapping, wbc);
+        ret = luci_write_extents(mapping, wbc);
         blk_finish_plug(&plug);
         goto done;
     }
@@ -1474,66 +1038,88 @@ done:
 }
 
 static int
-luci_write_begin(struct file *file, struct address_space *mapping,
-    loff_t pos, unsigned len, unsigned flags,
-    struct page **pagep, void **fsdata)
+luci_write_begin(struct file *file,
+                 struct address_space *mapping,
+                 loff_t pos,
+                 unsigned len,
+                 unsigned flags,
+                 struct page **pagep,
+                 void **fsdata)
 {
     int ret;
-    struct inode *inode = file->f_inode;
+    struct inode *inode = file_inode(file);
+
 #ifdef LUCIFS_COMPRESSION
     if (S_ISREG(inode->i_mode)) {
-        ret = luci_write_compressed_begin(mapping, pos, len, flags, pagep);
+        ret = luci_write_extent_begin(mapping,
+                                      pos,
+                                      len,
+                                      flags,
+                                      pagep);
         goto done;
     }
 #endif
-    ret = block_write_begin(mapping, pos, len, flags, pagep, luci_get_block);
+    ret = block_write_begin(mapping,
+                            pos,
+                            len,
+                            flags,
+                            pagep,
+                            luci_get_block);
 done:
-    if (ret < 0) {
-        luci_err_inode(inode, "failed with %d", ret);
-    }
+    if (ret < 0)
+        luci_err_inode(inode, "write_begin failed with %d", ret);
+
     return ret;
 }
 
 static int
-luci_write_end(struct file *file, struct address_space *mapping,
-    loff_t pos, unsigned len, unsigned copied,
-    struct page *page, void *fsdata)
+luci_write_end(struct file *file,
+               struct address_space *mapping,
+               loff_t pos,
+               unsigned len,
+               unsigned copied,
+               struct page *page,
+               void *fsdata)
 {
     int ret;
-    struct inode *inode = file->f_inode;
+    struct inode *inode = file_inode(file);
+
 #ifdef LUCIFS_COMPRESSION
     if (S_ISREG(inode->i_mode)) {
-        ret = luci_write_compressed_end(mapping, pos, len, 0, page);
+        ret = luci_write_extent_end(mapping,
+                                    pos,
+                                    len,
+                                    0,
+                                    page);
         goto done;
     }
 #endif
-    ret = generic_write_end(file, mapping, pos, len, copied, page, fsdata);
+    ret = generic_write_end(file,
+                            mapping,
+                            pos,
+                            len,
+                            copied,
+                            page,
+                            fsdata);
 done:
-    if (ret < 0) {
-        luci_err_inode(inode, "failed with %d", ret);
-    }
+    if (ret < 0)
+        luci_err_inode(inode, "write_end failed with %d", ret);
+
     return ret;
 }
 
-#ifdef DEBUG_BLOCK2
-static void
-luci_check_bp(struct inode *inode, unsigned long file_block)
-{
-    blkptr bp = luci_find_leaf_block(inode, file_block);
-    luci_dump_blkptr(inode, file_block, &bp);
-}
-#endif
-
-// file can be null in cases, when the API is in internally
-// invoked via luci_get_page(do_read_cache_page->filler)
+/*
+ * Note : file can be null in cases, when the API is in internally
+ * invoked via luci_get_page(do_read_cache_page->filler)
+ */
 static int
 luci_readpage(struct file *file, struct page *page)
 {
     int ret = 0;
-    bool do_verify = false;
 #ifdef LUCIFS_COMPRESSION
     blkptr bp;
     struct page *cachep;
+    bool do_verify = false;
     unsigned long file_block;
     struct inode *inode = page->mapping->host;
 
@@ -1541,10 +1127,12 @@ luci_readpage(struct file *file, struct page *page)
 
         if (page_offset(page) > inode->i_size) {
             zero_user(page, 0, PAGE_SIZE);
+
             SetPageUptodate(page);
             if (PageLocked(page))
                 unlock_page(page);
-            luci_err_inode(inode, "offset exceed inode size, offset (%llu) > "
+
+            luci_info_inode(inode, "offset exceed inode size, offset (%llu) > "
                 "file size (%llu)", page_offset(page), i_size_read(inode));
             goto done;
         }
@@ -1553,59 +1141,63 @@ luci_readpage(struct file *file, struct page *page)
         // and locked. Fixed : we need to pass page index
         cachep = find_get_page(inode->i_mapping, page_index(page));
         if (!cachep) {
-            luci_err("page (%lu) not found in cache, allocating", page_index(page));
-            cachep = find_or_create_page(page->mapping, page_index(page), GFP_KERNEL);
+            luci_info("page (%lu) not found in cache, allocating",
+                page_index(page));
+            cachep = find_or_create_page(page->mapping,
+                                         page_index(page),
+                                         GFP_KERNEL);
         }
+
         BUG_ON(!cachep);
 
         if (!PageUptodate(cachep)) {
-            file_block = page_offset(page)/luci_chunk_size(inode);
-            bp = luci_find_leaf_block(inode, file_block);
-            #ifdef DEBUG_BLOCK
-            luci_dump_blkptr(inode, file_block, &bp);
-            #endif
+            #ifdef LUCIFS_CHECKSUM
             do_verify = true;
+            #endif
+            file_block = page_offset(page)/luci_chunk_size(inode);
+
+            bp = luci_bmap_fetch_L0bp(inode, file_block);
             if (bp.flags & LUCI_COMPR_FLAG) {
                 luci_info_inode(inode, "reading compressed page :%lu",
                     page_index(page));
-                ret = luci_read_compressed(page, &bp);
-                if (ret != 0) {
+                ret = luci_read_extent(page, &bp);
+                if (ret)
                     panic("read failed :%d", ret);
-                }
             } else {
                 put_page(cachep);
                 luci_info_inode(inode, "reading uncompressed page :%lu",
                     page_index(page));
                 goto uncompressed_read;
             }
+            luci_dump_blkptr(inode, file_block, &bp);
         }
+
         copy_pages(page, cachep, 0, 0, PAGE_SIZE);
-        if (PageLocked(cachep)) {
+        if (PageLocked(cachep))
             unlock_page(cachep);
-        }
+
         put_page(cachep);
 
         // Needed otherwise will result in an EIO
         SetPageUptodate(page);
         BUG_ON(page_has_buffers(page));
 
-        luci_pgtrack(page, "read page completed for inode %lu", inode->i_ino);
-
-        // Ideally page should be locked, but seen cases where page is not locked. TBD.
+        // Ideally page should be locked, but seen cases where page not locked
         if (PageLocked(page))
             unlock_page(page);
 
-        luci_dbg_inode(inode, "compressed read completed for pg index :%lu",
-            page_index(page));
+        luci_info_inode(inode, "compressed read completed for pg index :%lu "
+            "status :%d\n", page_index(page), ret);
         goto done;
     }
 #endif
 uncompressed_read:
     // trace mpage_readpage with unlock issue
     ret = mpage_readpage(page, luci_get_block);
-    if (!ret && do_verify) {
+    if (!ret && bp.length && do_verify) {
+        wait_on_page_locked(page);
         BUG_ON(!PageUptodate(page));
-        if ((ret = luci_verify_cksum(page, &bp)) < 0)
+        if ((ret = luci_validate_page_cksum(page, &bp)) < 0)
             luci_err("checksum error detected on data block\n");
     }
 
@@ -1633,9 +1225,9 @@ static int luci_releasepage(struct page *page, gfp_t wait)
 int
 luci_dump_layout(struct inode * inode) {
     int err, depth;
+    unsigned blocksize;
     unsigned long i, nr_blocks, nr_holes;
     long ipaths[LUCI_MAX_DEPTH];
-    unsigned blocksize;
     Indirect ichain[LUCI_MAX_DEPTH];
 
     blocksize = luci_chunk_size(inode);
@@ -1644,48 +1236,47 @@ luci_dump_layout(struct inode * inode) {
     for (i = 0, nr_holes = 0; i < nr_blocks; i++) {
        memset((char*)ipaths, 0, sizeof(long) * LUCI_MAX_DEPTH);
 
-       depth = luci_block_to_path(inode, i, ipaths, NULL);
-       if (!depth) {
-          luci_err_inode(inode, "invalid block depth, iblock %ld", i);
-          return -EIO;
+       depth = luci_bmap_get_indices(inode,
+                                     i,
+                                     ipaths,
+                                     NULL);
+       if (depth < 0) {
+          err = -EIO;
+          goto exit;
        }
 
        // walk blocks in the path and store in ichain
        memset((char*)ichain, 0, sizeof(Indirect) * LUCI_MAX_DEPTH);
 
-       if (luci_get_branch(inode, depth, ipaths, ichain, &err) != NULL) {
+       if (luci_bmap_get_path(inode,
+                              depth,
+                              ipaths,
+                              ichain,
+                              &err) != NULL) {
           luci_info_inode(inode, "detected hole at iblock %ld", i);
           nr_holes++;
        }
 
-       if (err < 0) {
-          luci_err_inode(inode, "error reading path iblock : %ld", i);
-          return err;
-       }
+       if (err < 0)
+          goto exit;
 
-       luci_info_inode(inode, "block_path iblock %lu path %u %u %u %u", i,
-          ichain[0].key.blockno, ichain[1].key.blockno, ichain[2].key.blockno,
-          ichain[3].key.blockno);
+       luci_info_inode(inode, "block_path iblock %lu path %u %u %u %u",
+                               i,
+                               ichain[0].key.blockno,
+                               ichain[1].key.blockno,
+                               ichain[2].key.blockno,
+                               ichain[3].key.blockno);
     }
 
     luci_info_inode(inode, "total blocks :%lu holes :%lu size :%llu",
             nr_blocks, nr_holes, inode->i_size);
     return 0;
-}
 
-const struct inode_operations luci_dir_inode_operations = {
-    .create         = luci_create,
-    .lookup         = luci_lookup,
-    .link           = luci_link,
-    .unlink         = luci_unlink,
-    .symlink        = luci_symlink,
-    .mkdir          = luci_mkdir,
-    .rmdir          = luci_rmdir,
-    .mknod          = luci_mknod,
-    .rename         = luci_rename,
-    .getattr        = luci_getattr,
-    .tmpfile        = luci_tmpfile,
-};
+exit:
+    luci_err_inode(inode, "error reading path iblock :%lu", i);
+    return err;
+
+}
 
 const struct address_space_operations luci_aops = {
     .readpage       = luci_readpage,
