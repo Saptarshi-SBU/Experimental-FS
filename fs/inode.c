@@ -107,6 +107,90 @@ const struct inode_operations luci_file_inode_operations =
 };
 
 /* bmap functions */
+
+/*
+ * Use this function for updating metadata block checksum
+ * All access to metadata blocks are protected by mutex
+ */
+static int
+luci_bmap_update_metacsum(struct inode *inode,
+                          Indirect ichain[],
+                          int depth,
+                          unsigned long i_block)
+{
+    u32 crc32;
+    Indirect *p;
+    struct buffer_head *currbh;
+
+    depth -= 1; // ignore leaf block/extent, already csummed
+
+    while (depth-- > 0) {
+        p = &ichain[depth];
+        currbh = p->bh;
+        BUG_ON(currbh == NULL || currbh->b_page == NULL);
+        lock_buffer(currbh);
+        crc32 = luci_compute_page_cksum(currbh->b_page, PAGE_SIZE, ~0U);
+        p->key.checksum = crc32;
+        memcpy((char*)p->p, (char*)&p->key, sizeof(blkptr));
+        unlock_buffer(currbh);
+        luci_info("%s meta cksum, inode :%lu i_block :%lu depth :%u bp {%u/0x%x}",
+                  "updated",
+                  inode->i_ino,
+                  i_block,
+                  depth,
+                  p->key.blockno,
+                  p->key.checksum);
+    }
+    return 0;
+}
+
+/*
+ * Use this function for only metadata block verification
+ * All access to metadata blocks are protected by mutex
+ */
+static int
+luci_bmap_verify_metacsum(struct inode *inode,
+                          int curr_level,
+                          int max_depth,
+                          struct buffer_head *bh,
+                          struct blkptr *bp)
+{
+    u32 crc32;
+    int err = 0;
+
+    BUG_ON(bh == NULL || bh->b_page == NULL || bh->b_page->mapping == NULL);
+
+    lock_buffer(bh);
+
+    if (buffer_dirty(bh) || !bp->checksum) {
+        luci_info("bh is dirty or has zero csum, cannot verify csum");
+        goto exit;
+    }
+
+    crc32 = luci_compute_page_cksum(bh->b_page, PAGE_SIZE, ~0U);
+    if (bp->checksum != crc32) {
+        err = -EBADE;
+        luci_err("meta csum ERROR, inode :%lu depth :%u/%u "
+                 "bp {%u/ EXP :0x%x GOT :0x%x}",
+                 inode->i_ino,
+                 curr_level,
+                 max_depth,
+                 bp->blockno,
+                 bp->checksum,
+                 crc32);
+    } else
+        luci_info("meta csum OK, inode :%lu depth :%u/%u bp {%u/0x%x}",
+                 inode->i_ino,
+                 curr_level,
+                 max_depth,
+                 bp->blockno,
+                 bp->checksum);
+
+exit:
+    unlock_buffer(bh);
+    return err;
+}
+
 static inline void
 luci_bmap_add_chain(Indirect *p, struct buffer_head *bh, blkptr *v)
 {
@@ -214,6 +298,9 @@ luci_bmap_get_path(struct inode *inode,
         goto no_block;
     }
 
+    if (depth > 1)
+        *err = luci_bmap_verify_metacsum(inode, i + 1, depth, p->bh, &p->key);
+
     luci_info_inode(inode, "bmap get path, ipath[%d] %d-%u-%u-0x%x[%ld]",
                             i,
                             p->key.blockno,
@@ -222,7 +309,7 @@ luci_bmap_get_path(struct inode *inode,
                             p->key.checksum,
                             *ipaths);
 
-    while (++i < depth) {
+    while (!(*err) && ++i < depth) {
         parent_block = p->key.blockno;
 
         luci_bmap_add_chain(++p, NULL, (blkptr*)bh->b_data + *++ipaths);
@@ -243,7 +330,10 @@ luci_bmap_get_path(struct inode *inode,
                                 p->key.checksum,
                                 *ipaths,
                                 parent_block);
+        if (i + 1 < depth)
+            *err = luci_bmap_verify_metacsum(inode, i + 1, depth, p->bh, &p->key);
     }
+
     return NULL;
 
 no_block:
@@ -589,6 +679,10 @@ gotit:
     }
 
 done:
+
+    if (flags)
+        err = luci_bmap_update_metacsum(inode, ichain, depth, iblock);
+
     // FIXED : free bhs associated with lookup, meta pages are already in memory
     partial = ichain + depth - 1;
     while (partial >= ichain) {
@@ -599,6 +693,34 @@ done:
 
 exit:
     mutex_unlock(&(LUCI_I(inode)->truncate_mutex));
+    return err;
+}
+
+/*
+ * Scan inode bmap meta data. We scan till max depth for cases where file
+ * is sparse.
+ */
+static int
+luci_bmap_scan_metacsum(struct inode  *inode)
+{
+    int i = 0, err = 0;
+    long nr_direct = LUCI_NDIR_BLOCKS;
+    long nr_indirect = LUCI_ADDR_PER_BLOCK(inode->i_sb);
+    long nr_dindirect = (1 << (LUCI_ADDR_PER_BLOCK_BITS(inode->i_sb) * 2));
+    long i_blocks[] = {
+            0,
+            nr_direct,
+            nr_direct + nr_indirect,
+            nr_direct + nr_indirect + nr_dindirect
+    };
+    struct buffer_head bh;
+
+    luci_info_inode(inode, "scanning inode metadata");
+    do {
+        memset((char*)&bh, 0, sizeof(bh));
+        err = luci_get_block(inode, i_blocks[i++], &bh, 0);
+    } while (!err && i < LUCI_MAX_DEPTH);
+
     return err;
 }
 
@@ -828,7 +950,7 @@ Egdp:
  */
 struct inode *
 luci_iget(struct super_block *sb, unsigned long ino) {
-    int n;
+    int n, err = 0;
     struct inode *inode;
     struct luci_inode_info *li;
     struct luci_inode *raw_inode;
@@ -840,13 +962,11 @@ luci_iget(struct super_block *sb, unsigned long ino) {
 
     inode = iget_locked(sb, ino);
 
-    if (!inode) {
+    if (!inode)
         return ERR_PTR(-ENOMEM);
-    }
 
-    if (!(inode->i_state & I_NEW)) {
+    if (!(inode->i_state & I_NEW))
         return inode;
-    }
 
     if ((ino != LUCI_ROOT_INO && ino < LUCI_FIRST_INO(sb)) ||
             (ino > le32_to_cpu(LUCI_SB(sb)->s_lsb->s_inodes_count))) {
@@ -917,6 +1037,10 @@ luci_iget(struct super_block *sb, unsigned long ino) {
         li->i_data[n] = raw_inode->i_block[n];
         luci_dbg_inode(inode, "i_data[%d]:%u", n, li->i_data[n].blockno);
     }
+
+    err = luci_bmap_scan_metacsum(inode);
+    if(err < 0)
+        return ERR_PTR(err);
 
     if (S_ISREG(inode->i_mode)) {
         inode->i_op = &luci_file_inode_operations;

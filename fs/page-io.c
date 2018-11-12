@@ -318,8 +318,8 @@ __luci_compress_extent_and_write(struct work_struct *work)
                              total_in,
                              total_out);
         crc32_extent = luci_compute_pages_cksum(page_array,
-                                                 nr_pages_out,
-                                                 total_out);
+                                                nr_pages_out,
+                                                total_out);
     } else {
         compressed = false;
         total_out = EXTENT_SIZE;
@@ -821,7 +821,7 @@ int luci_read_extent(struct page *page, blkptr *bp)
     for (i = 0; i < EXTENT_NRPAGE; pg_index++, i++) {
         page_out = find_get_page(page->mapping, pg_index);
         if (!page_out) {
-            luci_info_inode(inode, "page %lu not in cache", pg_index);
+            luci_info_inode(inode, "page %lu not in cache, adding", pg_index);
             page_out = find_or_create_page(page->mapping, pg_index, GFP_KERNEL);
         }
         BUG_ON(!page_out);
