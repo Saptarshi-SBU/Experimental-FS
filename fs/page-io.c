@@ -332,7 +332,7 @@ __luci_compress_extent_and_write(struct work_struct *work)
         nr_pages_out = EXTENT_NRPAGE;
         for (i = 0; i < nr_pages_out; i++) {
             page_array[i] = ext_work->pvec->pages[i];
-            crc32[i] = luci_compute_page_cksum(page_array[i], PAGE_SIZE, ~0U);
+            crc32[i] = luci_compute_page_cksum(page_array[i], 0, PAGE_SIZE, ~0U);
         }
         luci_info_inode(inode, "cannot compress extent, do regular write");
     }

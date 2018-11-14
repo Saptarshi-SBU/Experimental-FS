@@ -567,6 +567,7 @@ luci_file_maxsize(struct super_block *sb) {
 static int
 luci_read_superblock(struct super_block *sb) {
     int ret = 0;
+    u32 crc32;
     long i;
     unsigned long block_no;
     unsigned long block_of;
@@ -632,6 +633,14 @@ restart:
         luci_dbg("default block size mismatch! re-reading...");
         goto restart;
     }
+
+    crc32 = luci_compute_page_cksum(bh->b_page, block_of, BLOCK_SIZE, ~0U);
+    if (lsb->s_checksum && le32_to_cpu(lsb->s_checksum) != crc32) {
+        luci_err("super block crc mismtach detected");
+        ret = -EBADE;
+        goto failed;
+    } else if (lsb->s_checksum)
+        luci_info("super block crc OK");
 
     sbi->s_sbh = bh;
     sb->s_maxbytes = luci_file_maxsize(sb);
@@ -741,6 +750,7 @@ restart:
 
     lsb->s_wtime = cpu_to_le32(get_seconds());
     lsb->s_free_blocks_count = luci_count_free_blocks(sb);
+
     mark_buffer_dirty(sbi->s_sbh);
     sync_dirty_buffer(sbi->s_sbh);
 
@@ -763,6 +773,22 @@ failed:
     // free super will take care of cleanup sb resources
     luci_err("luci super block read error");
     return ret;
+}
+
+static void
+luci_super_update_csum(struct super_block *sb)
+{
+    u32 crc32;    
+    off_t off = 0;
+    struct luci_super_block *lsb;
+    struct buffer_head *bh = LUCI_SB(sb)->s_sbh;
+
+    if (sb->s_blocksize != BLOCK_SIZE)
+        off = BLOCK_SIZE % sb->s_blocksize;
+
+    lsb = (struct luci_super_block *)((char*)bh->b_data + off);
+    crc32 = luci_compute_page_cksum(bh->b_page, off, BLOCK_SIZE, ~0U);
+    lsb->s_checksum = crc32;
 }
 
 void
@@ -788,6 +814,9 @@ luci_free_super(struct super_block * sb) {
        }
 
        if (sbi->s_sbh) {
+          luci_super_update_csum(sb);
+          mark_buffer_dirty(sbi->s_sbh);
+          sync_dirty_buffer(sbi->s_sbh);
           brelse(sbi->s_sbh);
           sbi->s_sbh = NULL;
        }

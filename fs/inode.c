@@ -129,7 +129,7 @@ luci_bmap_update_metacsum(struct inode *inode,
         currbh = p->bh;
         BUG_ON(currbh == NULL || currbh->b_page == NULL);
         lock_buffer(currbh);
-        crc32 = luci_compute_page_cksum(currbh->b_page, PAGE_SIZE, ~0U);
+        crc32 = luci_compute_page_cksum(currbh->b_page, 0, PAGE_SIZE, ~0U);
         p->key.checksum = crc32;
         memcpy((char*)p->p, (char*)&p->key, sizeof(blkptr));
         unlock_buffer(currbh);
@@ -167,7 +167,7 @@ luci_bmap_verify_metacsum(struct inode *inode,
         goto exit;
     }
 
-    crc32 = luci_compute_page_cksum(bh->b_page, PAGE_SIZE, ~0U);
+    crc32 = luci_compute_page_cksum(bh->b_page, 0, PAGE_SIZE, ~0U);
     if (bp->checksum != crc32) {
         err = -EBADE;
         luci_err("meta csum ERROR, inode :%lu depth :%u/%u "

@@ -135,7 +135,8 @@ struct luci_super_block {
     __u16   s_reserved_word_pad;
     __le32  s_default_mount_opts;
     __le32  s_first_meta_bg;    /* First metablock block group */
-    __u32   s_reserved[190];    /* Padding to the end of the block */
+    __u32   s_reserved[189];    /* Padding to the end of the block */
+    __u32   s_checksum;         /* Borrow reserved for adding csum */
 };
 
 /*
@@ -664,7 +665,7 @@ extern int luci_bmap_insert_L0bp(struct inode *inode, unsigned long i_block, blk
 extern int luci_dump_layout(struct inode * inode);
 
 /* crc32 */
-u32 luci_compute_page_cksum(struct page *page, size_t length, u32 crc_seed);
+u32 luci_compute_page_cksum(struct page *page, off_t off, size_t length, u32 crc_seed);
 int luci_compute_pages_cksum(struct page **pages, unsigned nr_pages, size_t length);
 int luci_validate_page_cksum(struct page *page, blkptr *bp);
 int luci_validate_pages_cksum(struct page **pages, unsigned nr_pages, blkptr *bp);

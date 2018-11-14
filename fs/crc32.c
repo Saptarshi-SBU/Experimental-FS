@@ -6,17 +6,18 @@
 #include "luci.h"
 
 /* compute checksum */
-u32 luci_compute_page_cksum(struct page *page, size_t length, u32 crc_seed)
+u32 luci_compute_page_cksum(struct page *page, off_t off, size_t length,
+                            u32 crc_seed)
 {
     #ifdef LUCIFS_CHECKSUM
     u32 crc;
     void *kaddr;
 
     BUG_ON(!length);
-    BUG_ON(length > PAGE_SIZE);
+    BUG_ON(off + length > PAGE_SIZE);
 
     kaddr = kmap(page);
-    crc = crc32_le(crc_seed, kaddr, length);
+    crc = crc32_le(crc_seed, kaddr + off, length);
     kunmap(kaddr);
     luci_dump_bytes("crc :", page, length);
     luci_info("crc for page, length :%lu crc:0x%x", length, crc);
@@ -37,7 +38,7 @@ int luci_compute_pages_cksum(struct page **pages, unsigned nr_pages,
     for (i = 0; i < nr_pages; i++) {
         BUG_ON(length == 0);
         bytes = min((size_t)length, (size_t)PAGE_SIZE);
-        crc = luci_compute_page_cksum(pages[i], bytes, crc);
+        crc = luci_compute_page_cksum(pages[i], 0, bytes, crc);
         length -= bytes;
     }
 
@@ -60,7 +61,7 @@ int luci_validate_page_cksum(struct page *page, blkptr *bp)
         goto exit;
     }
 
-    if (bp->checksum != luci_compute_page_cksum(page, bp->length, ~0U)) {
+    if (bp->checksum != luci_compute_page_cksum(page, 0, bp->length, ~0U)) {
         err = -EBADE;
         luci_err("checksum error detected: 0x%x", bp->checksum);
     }
@@ -83,15 +84,15 @@ int luci_validate_pages_cksum(struct page **pages, unsigned nr_pages, blkptr *bp
     size_t length = bp->length, bytes;
 
     for (i = 0; i < nr_pages; i++) {
-        BUG_ON(length == 0);
         page = pages[i];
         if (PageDirty(page) || PageWriteback(page) || !PageUptodate(page)) {
             err = -EAGAIN;
             goto exit;
         }
 
+        BUG_ON(length == 0);
         bytes = min((size_t)length, (size_t)PAGE_SIZE);
-        crc = luci_compute_page_cksum(page, bytes, crc);
+        crc = luci_compute_page_cksum(page, 0, bytes, crc);
         length -= bytes;
     }
 
