@@ -31,6 +31,7 @@
 #include <linux/pagemap.h>
 #include <linux/debugfs.h>
 #include <linux/workqueue.h>
+#include <linux/buffer_head.h>
 #include <linux/blockgroup_lock.h>
 #include <linux/percpu_counter.h>
 
@@ -343,9 +344,11 @@ struct luci_group_desc
     __le16  bg_free_blocks_count;   /* Free blocks count */
     __le16  bg_free_inodes_count;   /* Free inodes count */
     __le16  bg_used_dirs_count; /* Directories count */
-    __le16  bg_pad;
-    __le32  bg_reserved[3];
-};
+    __le32  bg_block_bitmap_checksum;
+    __le32  bg_inode_bitmap_checksum;
+    __le32  bg_inode_table_checksum;
+    __le16  bg_checksum;
+}__attribute__ ((aligned (8), packed));
 
 /*
  * Structure of a directory entry
@@ -583,6 +586,12 @@ static inline struct luci_sb_info *LUCI_SB(struct super_block *sb)
     return sb->s_fs_info;
 }
 
+static inline spinlock_t *luci_group_lock_ptr(struct super_block *sb,
+					      unsigned long group)
+{
+    return bgl_lock_ptr(LUCI_SB(sb)->s_blockgroup_lock, group);
+}
+
 static inline luci_fsblk_t
 luci_group_first_block_no(struct super_block *sb, unsigned long group_no)
 {
@@ -628,6 +637,8 @@ struct luci_group_desc *
 luci_get_group_desc(struct super_block *sb, unsigned int block_group, struct buffer_head **bh);
 int luci_write_inode(struct inode *inode, struct writeback_control *wbc);
 int luci_truncate(struct inode *inode, loff_t size);
+void luci_free_super(struct super_block * sb);
+void luci_super_update_csum(struct super_block *sb);
 
 /* dir.c */
 
@@ -665,6 +676,7 @@ extern int luci_bmap_insert_L0bp(struct inode *inode, unsigned long i_block, blk
 extern int luci_dump_layout(struct inode * inode);
 
 /* crc32 */
+u32 luci_compute_data_cksum(void *addr, size_t length, u32 crc_seed);
 u32 luci_compute_page_cksum(struct page *page, off_t off, size_t length, u32 crc_seed);
 int luci_compute_pages_cksum(struct page **pages, unsigned nr_pages, size_t length);
 int luci_validate_page_cksum(struct page *page, blkptr *bp);
@@ -814,5 +826,10 @@ extern debugfs_t dbgfsparam;
                             buffer_locked(bh) ? "locked" : "unlocked", \
                             atomic_read(&bh->b_count)); \
                     }
+
+static inline void
+luci_print_bh(struct buffer_head *bh) {
+    luci_dbg("bh dump : block :%lu size :%lu", bh->b_blocknr, bh->b_size);
+}
 
 #endif

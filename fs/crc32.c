@@ -6,6 +6,20 @@
 #include "luci.h"
 
 /* compute checksum */
+u32 luci_compute_data_cksum(void *addr, size_t length, u32 crc_seed)
+{
+    #ifdef LUCIFS_CHECKSUM
+    u32 crc;
+
+    BUG_ON(!length);
+    crc = crc32_le(crc_seed, addr, length);
+    luci_info("crc for addr, length :%lu crc:0x%x", length, crc);
+    return crc;
+    #else
+    return 0
+    #endif
+}
+
 u32 luci_compute_page_cksum(struct page *page, off_t off, size_t length,
                             u32 crc_seed)
 {
@@ -19,8 +33,8 @@ u32 luci_compute_page_cksum(struct page *page, off_t off, size_t length,
     kaddr = kmap(page);
     crc = crc32_le(crc_seed, kaddr + off, length);
     kunmap(kaddr);
-    luci_dump_bytes("crc :", page, length);
-    luci_info("crc for page, length :%lu crc:0x%x", length, crc);
+    luci_dump_bytes("crc :", page, PAGE_SIZE);
+    luci_info("crc for page, off :%lu length :%lu crc:0x%x", off, length, crc);
     return crc;
     #else
     return 0

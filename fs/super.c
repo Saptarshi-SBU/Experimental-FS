@@ -42,7 +42,7 @@ luci_alloc_inode(struct super_block *sb)
 }
 
 static void
-luci_i_callback(struct rcu_head *head)
+__luci_i_callback(struct rcu_head *head)
 {
     struct inode *inode = container_of(head, struct inode, i_rcu);
     kmem_cache_free(luci_inode_cachep, LUCI_I(inode));
@@ -51,23 +51,40 @@ luci_i_callback(struct rcu_head *head)
 static void
 luci_destroy_inode(struct inode *inode)
 {
-    call_rcu(&inode->i_rcu, luci_i_callback);
+    call_rcu(&inode->i_rcu, __luci_i_callback);
 }
 
 static void
-luci_put_super(struct super_block *sb) {
-    int i;
-    struct luci_sb_info *sbi = sb->s_fs_info;
-    for (i = 0; i < sbi->s_gdb_count; i++) {
-        brelse(sbi->s_group_desc[i]);
-    }
-    kfree(sbi->s_group_desc);
-    percpu_counter_destroy(&sbi->s_freeblocks_counter);
-    percpu_counter_destroy(&sbi->s_freeinodes_counter);
-    percpu_counter_destroy(&sbi->s_dirs_counter);
-    brelse(sbi->s_sbh);
-    sb->s_fs_info = NULL;
-    kfree(sbi);
+luci_print_sbinfo(struct super_block *sb) {
+    struct luci_sb_info *sbi;
+
+    if (!sb || !sb->s_fs_info)
+        return;
+
+    sbi = sb->s_fs_info;
+    luci_info("desc_per_block :%lu "
+              "gdb :%lu blocks_count :%u inodes_count :%u "
+              "block_size :%lu blocks_per_group :%lu "
+              "first_data_block :%u groups_count :%lu",
+              sbi->s_desc_per_block,
+              sbi->s_gdb_count, sbi->s_lsb->s_blocks_count,
+              sbi->s_lsb->s_inodes_count, sb->s_blocksize,
+              sbi->s_blocks_per_group, sbi->s_lsb->s_first_data_block,
+              sbi->s_groups_count);
+}
+
+// Calculate the leaves
+static size_t
+luci_file_maxsize(struct super_block *sb) {
+    size_t size, dir, indir, dindir, tindir;
+
+    dir = LUCI_NDIR_BLOCKS;
+    indir = 1 * LUCI_ADDR_PER_BLOCK(sb);
+    dindir = indir * LUCI_ADDR_PER_BLOCK(sb);
+    tindir = dindir * LUCI_ADDR_PER_BLOCK(sb);
+    size = (dir + indir + dindir + tindir) * sb->s_blocksize;
+    luci_dbg("max file size :%lu", size);
+    return size;
 }
 
 // Only leaf blocks affect inode size
@@ -79,20 +96,21 @@ luci_dec_size(struct inode *inode, unsigned nr_blocks)
    BUG_ON(!nr_blocks);
    BUG_ON(!inode->i_size);
 
-   if (inode->i_size >= size) {
+   if (inode->i_size >= size)
       inode->i_size -= size;
-   } else {
+   else {
       BUG_ON(nr_blocks > 1);
       inode->i_size = 0;
    }
    mark_inode_dirty(inode);
 }
 
+
 // For some reason, lsb->s_free_blocks_count on mkfs
 // does not reflect valid free blocks; even ext2
 // does not rely upon the on-disk counter
 static unsigned long
-luci_count_free_blocks(struct super_block *sb)
+__luci_count_free_blocks(struct super_block *sb)
 {
    int i;
    unsigned long count = 0;
@@ -107,7 +125,6 @@ luci_count_free_blocks(struct super_block *sb)
 
 /*
  *  Tree walk to free the leaf block
- *
  */
 static int
 luci_free_branch(struct inode *inode,
@@ -132,10 +149,11 @@ luci_free_branch(struct inode *inode,
     }
 
     bh = sb_bread(sb, bp);
-    if (bh == NULL) {
+    if (!bh) {
         luci_err("failed to read block :%ld during free branch", bp);
         return -EIO;
     }
+
     p = (blkptr*)bh->b_data;
     q = (blkptr*)((char*)bh->b_data + bh->b_size - sizeof(blkptr));
 
@@ -196,16 +214,19 @@ luci_free_direct(struct inode *inode, long *delta_blocks)
     int i; // loop through all direct blocks
     uint32_t cur_block;
     struct luci_inode_info *li = LUCI_I(inode);
+
     for (i = LUCI_NDIR_BLOCKS - 1; i >= 0 && *delta_blocks; i--) {
        cur_block = li->i_data[i].blockno;
-       if (cur_block == 0) {
+       if (cur_block == 0)
           continue;
-       }
+
        if (luci_free_block(inode, cur_block) < 0) {
            luci_err_inode(inode, "error freeing direct block %d", i);
            return -EIO;
        }
+
        luci_dec_size(inode, 1);
+
        // clear entry
        memset((char*)&li->i_data[i], 0, sizeof(blkptr));
        mark_inode_dirty(inode);
@@ -328,23 +349,25 @@ luci_evict_inode(struct inode * inode)
    }
 
    // invalidate the radix tree in page-cache
-#ifdef HAVE_TRUNCATEPAGES_FINAL
+   #ifdef HAVE_TRUNCATEPAGES_FINAL
    truncate_inode_pages_final(&inode->i_data);
-#else
+   #else
    truncate_inode_pages(&inode->i_data, 0);
-#endif
+   #endif
+
    // walk internal and leaf blocks, free, update block-bitmap
    if (!inode->i_nlink && inode->i_size) {
       inode->i_size = 0;
       luci_truncate(inode, 0);
    }
+
    invalidate_inode_buffers(inode);
    clear_inode(inode);
+
    // free inode bitmap, update inode-bitmap
    // clear the inode state and update inode-table
-   if (!inode->i_nlink) {
+   if (!inode->i_nlink)
       luci_free_inode(inode);
-   }
 }
 
 static int
@@ -400,47 +423,47 @@ destroy_inodecache(void)
     kmem_cache_destroy(luci_inode_cachep);
 }
 
+static void
+luci_put_super(struct super_block *sb)
+{
+    luci_free_super(sb);
+}
+
 static const struct super_operations luci_sops = {
     .alloc_inode    = luci_alloc_inode,
     .destroy_inode  = luci_destroy_inode,
-    .put_super = luci_put_super,
-    .write_inode = luci_write_inode,
-    .drop_inode = luci_drop_inode,
-    .evict_inode = luci_evict_inode,
-    .statfs = luci_statfs,
+    .put_super      = luci_put_super,
+    .write_inode    = luci_write_inode,
+    .drop_inode     = luci_drop_inode,
+    .evict_inode    = luci_evict_inode,
+    .statfs         = luci_statfs,
 };
 
-static void
-luci_print_sbinfo(struct super_block *sb) {
-    if (sb && sb->s_fs_info) {
-        struct luci_sb_info *sbi = sb->s_fs_info;
-        luci_info("desc_per_block :%lu "
-                "gdb :%lu blocks_count :%u inodes_count :%u "
-                "block_size :%lu blocks_per_group :%lu "
-                "first_data_block :%u groups_count :%lu", sbi->s_desc_per_block,
-                sbi->s_gdb_count, sbi->s_lsb->s_blocks_count,
-                sbi->s_lsb->s_inodes_count, sb->s_blocksize,
-                sbi->s_blocks_per_group, sbi->s_lsb->s_first_data_block,
-                sbi->s_groups_count);
-    }
-}
+
+/* fs metadata sanity */
 
 static void
-luci_print_bh(struct buffer_head *bh) {
-    luci_dbg("bh dump : block :%lu size :%lu", bh->b_blocknr, bh->b_size);
+luci_dump_blockbitmap(struct super_block *sb)
+{
+   int i;
+   struct luci_sb_info *sbi = sb->s_fs_info;
+   for (i = 0; i < sbi->s_groups_count; i++) {
+      read_block_bitmap(sb, i);
+      read_inode_bitmap(sb, i);
+   }
 }
 
 static int
-luci_check_descriptors(struct super_block *sb) {
+luci_check_descriptors(struct super_block *sb)
+{
     uint32_t block, entry;
     struct luci_sb_info *sbi = sb->s_fs_info;
 
     // blocks having group desc entries
     for (block = 0; block < sbi->s_gdb_count; block++) {
         struct buffer_head *bh = sbi->s_group_desc[block];
-        if (bh == NULL) {
+        if (bh == NULL)
             BUG();
-        }
 
         luci_print_bh(bh);
 
@@ -502,16 +525,6 @@ fail:
 }
 
 static void
-luci_dump_blockbitmap(struct super_block *sb) {
-   int i = 0;
-   struct luci_sb_info *sbi = sb->s_fs_info;
-   for (; i < sbi->s_groups_count; i++) {
-      read_block_bitmap(sb, i);
-      read_inode_bitmap(sb, i);
-   }
-}
-
-static void
 luci_check_superblock_backups(struct super_block *sb) {
     int i, j;
     uint32_t gp;
@@ -523,20 +536,20 @@ luci_check_superblock_backups(struct super_block *sb) {
     for (i = 0; i < sbi->s_gdb_count; i++) {
         for (j = 0; j < sbi->s_desc_per_block; j++) {
             gp = (i * sbi->s_desc_per_block) + j + 1;
-            if (gp > sbi->s_groups_count) {
-                return;
-            }
+            if (gp <= 1)
+                continue;
 
-            if (gp > 1) {
-                first_block = luci_group_first_block_no(sb, (i + 1)* j);
-                bh = sb_bread(sb, first_block);
-                lsb = (struct luci_super_block*)((char*) bh->b_data);
-                if (le16_to_cpu(lsb->s_magic) == LUCI_SUPER_MAGIC) {
-                    luci_dbg("superblock backup at block %lu group %u ",
-                       first_block, (i + 1) *j);
-                }
-                brelse(bh);
-            }
+            if (gp > sbi->s_groups_count)
+                return;
+
+            first_block = luci_group_first_block_no(sb, (i + 1)* j);
+            bh = sb_bread(sb, first_block);
+            BUG_ON(!bh);
+            lsb = (struct luci_super_block*)((char*) bh->b_data);
+            if (le16_to_cpu(lsb->s_magic) == LUCI_SUPER_MAGIC)
+               luci_dbg("superblock backup at block %lu group %u ",
+                        first_block, (i + 1) *j);
+            brelse(bh);
         }
     }
 }
@@ -544,24 +557,77 @@ luci_check_superblock_backups(struct super_block *sb) {
 static int
 luci_runlayoutchecks(struct super_block *sb) {
     luci_print_sbinfo(sb);
-    if ((luci_check_descriptors(sb))) {
+    if ((luci_check_descriptors(sb)) < 0)
         return -EINVAL;
-    }
     luci_check_superblock_backups(sb);
     return 0;
 }
 
-static size_t
-luci_file_maxsize(struct super_block *sb) {
-    size_t size, dir, indir, dindir, tindir;
-    // Calculate the leaves
-    dir = LUCI_NDIR_BLOCKS;
-    indir = 1 * LUCI_ADDR_PER_BLOCK(sb);
-    dindir = indir * LUCI_ADDR_PER_BLOCK(sb);
-    tindir = dindir * LUCI_ADDR_PER_BLOCK(sb);
-    size = (dir + indir + dindir + tindir) * sb->s_blocksize;
-    luci_dbg("maxsize :%lu", size);
-    return size;
+void
+luci_super_update_csum(struct super_block *sb)
+{
+    u32 crc32;
+    off_t off = 0;
+    struct luci_super_block *lsb;
+    struct buffer_head *bh = LUCI_SB(sb)->s_sbh;
+
+    if (sb->s_blocksize != BLOCK_SIZE)
+        off = BLOCK_SIZE % sb->s_blocksize;
+
+    // sb at offset of 1024 bytes from device start
+    lsb = (struct luci_super_block *)((char*)bh->b_data + off);
+    lsb->s_checksum = 0;
+    crc32 = luci_compute_page_cksum(bh->b_page, off, BLOCK_SIZE, ~0U);
+    lsb->s_checksum = crc32;
+    luci_info("super block new crc :0x%x\n", lsb->s_checksum);
+}
+
+void
+luci_free_super(struct super_block * sb) {
+    int i;
+    struct buffer_head *bh;
+    struct inode *root_inode;
+    struct luci_sb_info *sbi = sb->s_fs_info;
+
+    if (sb->s_root) {
+       root_inode = DENTRY_INODE(sb->s_root);
+       iput(root_inode);
+       sb->s_root = NULL;
+    }
+
+    if (!sbi)
+       return;
+
+    if (sbi->s_group_desc) {
+       for (i = 0; i < sbi->s_gdb_count; i++) {
+          bh = sbi->s_group_desc[i];
+          if (bh)
+             brelse(bh);
+       }
+       kfree(sbi->s_group_desc);
+       sbi->s_group_desc = NULL;
+    }
+
+    if (sbi->comp_write_wq) {
+       destroy_workqueue(sbi->comp_write_wq);
+       sbi->comp_write_wq = NULL;
+    }
+
+    if (sbi->s_sbh) {
+       luci_super_update_csum(sb);
+       mark_buffer_dirty(sbi->s_sbh);
+       sync_dirty_buffer(sbi->s_sbh);
+       brelse(sbi->s_sbh);
+       sbi->s_sbh = NULL;
+    }
+
+    percpu_counter_destroy(&sbi->s_freeblocks_counter);
+    percpu_counter_destroy(&sbi->s_freeinodes_counter);
+    percpu_counter_destroy(&sbi->s_dirs_counter);
+
+    kfree(sbi->s_blockgroup_lock);
+    kfree(sbi);
+    sb->s_fs_info = NULL;
 }
 
 static int
@@ -634,13 +700,24 @@ restart:
         goto restart;
     }
 
-    crc32 = luci_compute_page_cksum(bh->b_page, block_of, BLOCK_SIZE, ~0U);
-    if (lsb->s_checksum && le32_to_cpu(lsb->s_checksum) != crc32) {
-        luci_err("super block crc mismtach detected");
+    sbi->s_blockgroup_lock =
+        kzalloc(sizeof(struct blockgroup_lock), GFP_KERNEL);
+    if (!sbi->s_blockgroup_lock) {
+        ret = -ENOMEM;
+        goto failed;
+    }
+
+    crc32 = le32_to_cpu(lsb->s_checksum);
+    lsb->s_checksum = 0;
+    if (crc32 &&
+       (crc32 != luci_compute_page_cksum(bh->b_page, block_of, BLOCK_SIZE, ~0U))) {
+        luci_err("super block crc mismtach detected 0x%x", crc32);
         ret = -EBADE;
         goto failed;
-    } else if (lsb->s_checksum)
+    } else if (crc32) {
+        lsb->s_checksum = crc32;
         luci_info("super block crc OK");
+    }
 
     sbi->s_sbh = bh;
     sb->s_maxbytes = luci_file_maxsize(sb);
@@ -712,7 +789,7 @@ restart:
 
     // nr_groups
     sbi->s_groups_count = ((le32_to_cpu(lsb->s_blocks_count) -
-                le32_to_cpu(lsb->s_first_data_block) - 1)/ sbi->s_blocks_per_group) + 1;
+        le32_to_cpu(lsb->s_first_data_block) - 1)/ sbi->s_blocks_per_group) + 1;
     sbi->s_gdb_count =
         (sbi->s_groups_count + sbi->s_desc_per_block - 1)/sbi->s_desc_per_block;
     // bh array
@@ -749,7 +826,7 @@ restart:
     le16_add_cpu(&lsb->s_mnt_count, 1);
 
     lsb->s_wtime = cpu_to_le32(get_seconds());
-    lsb->s_free_blocks_count = luci_count_free_blocks(sb);
+    lsb->s_free_blocks_count = __luci_count_free_blocks(sb);
 
     mark_buffer_dirty(sbi->s_sbh);
     sync_dirty_buffer(sbi->s_sbh);
@@ -773,62 +850,6 @@ failed:
     // free super will take care of cleanup sb resources
     luci_err("luci super block read error");
     return ret;
-}
-
-static void
-luci_super_update_csum(struct super_block *sb)
-{
-    u32 crc32;    
-    off_t off = 0;
-    struct luci_super_block *lsb;
-    struct buffer_head *bh = LUCI_SB(sb)->s_sbh;
-
-    if (sb->s_blocksize != BLOCK_SIZE)
-        off = BLOCK_SIZE % sb->s_blocksize;
-
-    lsb = (struct luci_super_block *)((char*)bh->b_data + off);
-    crc32 = luci_compute_page_cksum(bh->b_page, off, BLOCK_SIZE, ~0U);
-    lsb->s_checksum = crc32;
-}
-
-void
-luci_free_super(struct super_block * sb) {
-    struct luci_sb_info *sbi;
-
-    if (sb->s_root) {
-       struct inode * root_inode = DENTRY_INODE(sb->s_root);
-       iput(root_inode);
-       sb->s_root = NULL;
-    }
-
-    sbi = sb->s_fs_info;
-    if (sbi) {
-       if (sbi->s_group_desc) {
-	  int i;
-          for (i = 0; i < sbi->s_gdb_count; i++) {
-             struct buffer_head *bh = sbi->s_group_desc[i];
-             brelse(bh);
-          }
-          kfree(sbi->s_group_desc);
-          sbi->s_group_desc = NULL;
-       }
-
-       if (sbi->s_sbh) {
-          luci_super_update_csum(sb);
-          mark_buffer_dirty(sbi->s_sbh);
-          sync_dirty_buffer(sbi->s_sbh);
-          brelse(sbi->s_sbh);
-          sbi->s_sbh = NULL;
-       }
-
-       if (sbi->comp_write_wq) {
-           destroy_workqueue(sbi->comp_write_wq);
-           sbi->comp_write_wq = NULL;
-       }
-
-       kfree(sbi);
-       sb->s_fs_info = NULL;
-    }
 }
 
 static struct dentry*
