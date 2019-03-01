@@ -201,12 +201,12 @@ static inline void extent_node_sort(struct btree_node *node)
         }
 }
 
-static int extent_index_node_lookup(struct btree_node *node,
+static int extent_index_node_search(struct btree_node *node,
                                     struct btree_key *key)
 {
-        int i, slot = -1;
+        int i, slot = 0;
 
-        btree_node_print("lookupnode entry", node);
+        btree_node_print("search node entry", node);
 
         for (i = 0; i < node->header.nr_items; i++) {
                 if (key->offset == node->keys[i].offset)
@@ -218,7 +218,23 @@ static int extent_index_node_lookup(struct btree_node *node,
         }
 
         btree_node_keys_print(node);
-        return (slot < 0) ? -ENOENT : slot;
+        return slot;
+}
+
+static int extent_index_node_lookup(struct btree_node *node,
+                                    struct btree_key *key)
+{
+        int i;
+
+        btree_node_print("lookupnode entry", node);
+
+        for (i = 0; i < node->header.nr_items; i++) {
+                if (key->offset == node->keys[i].offset)
+                        return i;
+        }
+
+        btree_node_keys_print(node);
+        return -ENOENT;
 }
 
 static int extent_index_node_insert(struct btree_node *pnode,
@@ -455,13 +471,15 @@ static int extent_node_steal_from_sibling(struct btree_node *parent,
 }
 
 static struct btree_node *extent_tree_get_left_sibling(struct btree_node *node,
-                                                       struct btree_node *parent)
+                                                       struct btree_node *parent,
+                                                       struct btree_path *path)
 {
         int i;
+        struct buffer_head *ebh;
+        struct btree_node *sib_node = NULL;
 
-        for(i = 0; i < parent->header.nr_items; i++) {
-                struct buffer_head *ebh;
-
+        // look if direct parent has node's sibling counterpart
+        for (i = 0; i < parent->header.nr_items; i++) {
                 if (parent->keys[i].blockptr != node->header.blockptr)
                                 continue;
                 if (i > 0) {
@@ -469,14 +487,47 @@ static struct btree_node *extent_tree_get_left_sibling(struct btree_node *node,
                         if (!ebh)
                                 BUG();
                         return (struct btree_node *)(ebh->b_data);
-                }
+                } else
+                        goto nosibling;
                 break;
         }
         return NULL;
+
+nosibling:
+
+        // must be on another sub-tree, go up
+        /*
+        if (parent->header.level + 1 == path->depth) {
+                pr_warn("root node do not have sibling!");
+                WARN_ON(1);
+                return NULL;
+        }*/
+
+        sib_node =  extent_tree_get_left_sibling(parent, 
+                                                 path->nodes[parent->header.level + 1],
+                                                 path);
+        if (!sib_node) {
+                parent = path->nodes[parent->header.level + 1];
+                goto nosibling;
+        }
+
+        for (i = sib_node->header.level;
+             i > node->header.level && sib_node->header.nr_items;
+             i--) {
+             ebh = get_buffer_head(sib_node->keys[sib_node->header.nr_items - 1].blockptr);
+             if (!ebh)
+                     BUG();
+             sib_node = (struct btree_node *)(ebh->b_data);
+        }
+
+        BUG_ON(i == node->header.level);
+        btree_node_print("sibling found", node);
+        return sib_node;
 }
 
 static struct btree_node *extent_tree_get_right_sibling(struct btree_node *node,
-                                                        struct btree_node *parent)
+                                                        struct btree_node *parent,
+                                                       struct btree_path *path)
 {
         int i;
 
@@ -506,10 +557,10 @@ static void extent_tree_rebalance(struct inode *inode,
                 struct btree_node *parent = path->nodes[level + 1];
 
                 struct btree_node *lsib =
-                        extent_tree_get_left_sibling(curr_node, parent);
+                        extent_tree_get_left_sibling(curr_node, parent, path);
 
                 struct btree_node *rsib =
-                        extent_tree_get_right_sibling(curr_node, parent);
+                        extent_tree_get_right_sibling(curr_node, parent, path);
 
                 if (lsib && extent_nodes_can_steal(curr_node, lsib)) {
                         extent_node_steal_from_sibling(parent, curr_node, lsib);
@@ -521,8 +572,10 @@ static void extent_tree_rebalance(struct inode *inode,
                         curr_node = extent_node_merge(inode, path, lsib, curr_node, level);
                 } else if (rsib && extent_nodes_can_merge(curr_node, rsib)) {
                         curr_node = extent_node_merge(inode, path, curr_node, rsib, level);
-                } else
+                } else {
+                        pr_info("rebalance not performed\n");
                         break;
+                }
                 level++;        
         }
 }
@@ -746,9 +799,7 @@ static struct btree_node* extent_tree_find_leaf(struct inode* inode,
 
         path->level--;
 
-        slot = extent_index_node_lookup(node, key);
-        if (slot < 0)
-                return ERR_PTR(-ENOENT);
+        slot = extent_index_node_search(node, key);
 
         ebh = get_buffer_head(node->keys[slot].blockptr);
         if (!ebh)
@@ -768,14 +819,15 @@ int extent_tree_insert_item(struct inode* inode,
         int i;
         unsigned long block;
         struct btree_node *leaf;
-        struct btree_key key = { value, block, size };
+        struct btree_key key = { value, 0xFFFFFFFF, size };
         struct btree_path *path = kzalloc(sizeof(struct btree_path), GFP_KERNEL);
 
         path->level = root->max_level;
         leaf = extent_tree_find_leaf(inode, &key, root->node, path);
-        if (!leaf || IS_ERR(leaf)) {
-                pr_err("failed to locate leaf block:%ld, status: %ld\n",
-                                block, PTR_ERR(leaf));
+        BUG_ON(!leaf);
+        if (IS_ERR(leaf)) {
+                pr_err("failed to locate key: %ld, status: %ld\n",
+                                value, PTR_ERR(leaf));
                 return -EIO;
         }
 
