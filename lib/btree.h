@@ -61,6 +61,10 @@ int extent_tree_insert_item(struct inode* inode,
                             unsigned long block,
                             unsigned int size);
 
+int extent_tree_delete_item(struct inode* inode,
+                            struct btree_root_node *root,
+                            unsigned long key);
+
 void extent_tree_dump(struct seq_file *m, struct btree_node *node, int count);
 
 struct dentry *btree_debugfs_init(struct btree_root_node *btree_root);
@@ -70,7 +74,7 @@ int btree_debugfs_destroy(struct dentry *dentry);
         ((node)->header.flags == LEAF_NODE)
 
 #define IS_KEY_EMPTY(key) \
-        ((key).blockptr == 0)
+        (((key).blockptr == 0) || ((key).blockptr == 0xFFFFFFFF))
 
 #define SET_KEY_EMPTY(key) \
         memset((char *)&(key), 0, sizeof(struct btree_key))
@@ -99,9 +103,11 @@ int btree_debugfs_destroy(struct dentry *dentry);
 #define btree_node_keys_print(node) \
         do { \
                 int i; \
-                pr_info("%s: bptr=%llu nr_keys=%u type=%s dumping keys: ", \
+                pr_info("%s: offset=%llu bptr=%llu level=%u nr_keys=%u type=%s dumping keys: ", \
                         __func__, \
+                        (node)->header.offset,    \
                         (node)->header.blockptr, \
+                        (node)->header.level,       \
                         (node)->header.nr_items, \
                         (node)->header.flags == INDEX_NODE ? "INDEX" : "LEAF"); \
                 for (i = 0; i < (node)->header.nr_items; i++) \

@@ -19,6 +19,8 @@ MODULE_AUTHOR("Saptarshi.S");
 MODULE_DESCRIPTION("Linux BTree Implementation");
 MODULE_LICENSE("GPL");
 
+#define MAX_KEYS 8
+
 static struct dentry *dbgfs_dir;
 
 static struct btree_root_node *btree_root;
@@ -27,7 +29,7 @@ static struct radix_tree_root pgtree; // track btree index pages
 
 #define META_BLOCK_START (1UL << 30)
 
-static unsigned long get_data_block(void)
+static unsigned long alloc_data_block(void)
 {
         static atomic_t data_block = ATOMIC_INIT(0);
 
@@ -35,12 +37,18 @@ static unsigned long get_data_block(void)
         return atomic_read(&data_block);
 }
 
-static unsigned long get_meta_block(void)
+static unsigned long alloc_meta_block(void)
 {
         static atomic_t meta_block = ATOMIC_INIT(META_BLOCK_START);
 
         atomic_inc(&meta_block);
         return atomic_read(&meta_block);
+}
+
+static inline int extent_node_is_root(struct btree_node *node,
+			              struct btree_path *path)
+{
+	return (node->header.level + 1 == path->depth);
 }
 
 static int extent_alloc_tree_pages(unsigned long block, size_t size)
@@ -86,6 +94,7 @@ static struct buffer_head* get_buffer_head(unsigned long block)
         page = radix_tree_lookup(&pgtree, block); 
         if (!page) {
                 pr_err("radix tree lookup failed for block :%lu\n", block);
+                dump_stack();
                 return NULL;
         }
 
@@ -117,28 +126,48 @@ static inline bool extent_node_full(struct btree_node *node)
                return capacity - node->header.nr_items == 1;
 }
 
-static inline bool extent_nodes_can_merge(struct btree_node *node,
-                                          struct btree_node *sib)
+static inline bool extent_node_attempt_merge(struct btree_node *node,
+                                             struct btree_node *sib)
 {
         int node_capacity = node->header.max_items - 1;
 
-        if ((node->header.nr_items < node_capacity / 2) &&
-           ((node->header.nr_items + sib->header.nr_items) < node_capacity))
+        if (node->header.nr_items &&
+           (node->header.nr_items < node_capacity / 2) &&
+           ((node->header.nr_items + sib->header.nr_items) < node_capacity)) {
+                btree_node_print("can attempt merge", node);
                 return true;
+        }
 
         return false;
 }
 
-static inline bool extent_nodes_can_steal(struct btree_node *node,
-                                          struct btree_node *sib)
+static inline bool extent_node_attempt_steal(struct btree_node *node,
+                                             struct btree_node *sib)
 {
         int node_capacity = node->header.max_items - 1;
 
-        if ((node->header.nr_items >= node_capacity) &&
-            (sib->header.nr_items < node_capacity))
+        if (node->header.nr_items &&
+           (node->header.nr_items >= node_capacity) &&
+           (sib->header.nr_items < node_capacity)) {
+                btree_node_print("can steal keys", node);
                 return true;
+        }
 
         return false;
+}
+
+static inline bool extent_node_attempt_rebalance(struct btree_node *node)
+{
+	if (IS_BTREE_LEAF(node) || !node->header.nr_items)
+		return false;
+
+        if ((node->header.nr_items <= node->header.max_items - 1) &&
+	    (node->header.nr_items > node->header.max_items/2)) {
+                btree_node_print("can attempt rebalance", node);
+		return false;
+        }
+
+	return true;
 }
 
 static inline void swap_keys(struct btree_key *keyp, struct btree_key *keyq)
@@ -178,6 +207,9 @@ static inline void extent_node_sort(struct btree_node *node)
         int top = 0;
         int stack[MAX_BTREE_LEVEL];
 
+        if (!node->header.nr_items)
+                return;
+
         stack[top++] = 0;
         stack[top++] = node->header.nr_items - 1;
 
@@ -199,10 +231,24 @@ static inline void extent_node_sort(struct btree_node *node)
                        stack[top++] = q;
                 }
         }
+
+        node->header.offset = node->keys[0].offset;
 }
 
-static int extent_index_node_search(struct btree_node *node,
-                                    struct btree_key *key)
+static struct btree_node *extent_tree_get_node(struct btree_node *node, int key_index)
+{
+        struct buffer_head *ebh;
+
+        if (node->keys[key_index].blockptr) {
+                ebh = get_buffer_head(node->keys[key_index].blockptr);
+                BUG_ON(!ebh);
+                return (struct btree_node *)(ebh->b_data);
+        }
+        return NULL;
+}
+
+static int extent_index_node_search_keys(struct btree_node *node,
+                                         struct btree_key *key)
 {
         int i, slot = 0;
 
@@ -226,19 +272,66 @@ static int extent_index_node_lookup(struct btree_node *node,
 {
         int i;
 
-        btree_node_print("lookupnode entry", node);
+        btree_node_print("lookup parent", node);
 
         for (i = 0; i < node->header.nr_items; i++) {
                 if (key->offset == node->keys[i].offset)
                         return i;
         }
-
-        btree_node_keys_print(node);
         return -ENOENT;
 }
 
+static int extent_index_node_lookup_bptr(struct btree_node *node,
+                                         struct btree_key *key)
+{
+        int i;
+
+        btree_node_print("lookup bptr in parent node", node);
+
+        BUG_ON(key->blockptr == 0);
+
+        for (i = 0; i < node->header.nr_items; i++) {
+                if (key->blockptr == node->keys[i].blockptr)
+                        return i;
+        }
+        return -ENOENT;
+}
+
+static void extent_node_update_backrefs(struct btree_node *curr_node,
+                                        struct btree_path *path)
+{
+        int slot, level;
+        struct btree_node *parent;
+        struct btree_key key = {0, 0, curr_node->header.blockptr};
+
+        if (extent_node_is_root(curr_node, path))
+                return;
+
+        level = curr_node->header.level;
+
+        btree_node_print("updating entries for backrefs of node", curr_node);
+        do {
+                parent = path->nodes[++level];
+                slot = extent_index_node_lookup_bptr(parent, &key);
+                if (slot < 0) {
+                        pr_info("blockptr key :%llu\n", key.blockptr);
+                        btree_node_print("child bptr not found in parent", parent);
+                        btree_node_keys_print(parent);
+                        break;
+                }
+                if (slot == 0)
+                        parent->header.offset = curr_node->header.offset;
+                if (parent->keys[slot].offset != curr_node->header.offset)
+                        parent->keys[slot].offset = curr_node->header.offset;
+                key.blockptr = parent->header.blockptr;
+                curr_node = parent;
+                btree_node_print("updated backref for parent node", parent);
+        } while (level < path->depth - 1);
+}
+
 static int extent_index_node_insert(struct btree_node *pnode,
-                                    struct btree_node *node)
+                                    struct btree_node *node,
+                                    struct btree_path *paths)
 {
         struct btree_key key;
 
@@ -249,56 +342,80 @@ static int extent_index_node_insert(struct btree_node *pnode,
                 return -ENOSPC;
         }
 
-        memcpy((char* )&pnode->keys[pnode->header.nr_items], (char*)&key,
-                sizeof(struct btree_key));
-
         pnode->header.nr_items++;
 
-        //btree_node_print("append index node entry", pnode);
+        memcpy((char* )&pnode->keys[pnode->header.nr_items - 1],
+               (char*)&key, sizeof(struct btree_key));
 
         extent_node_sort(pnode);
 
-        //btree_node_keys_print(pnode);
+        btree_node_print("append index node entry (child)", node);
+
+        btree_node_print("append index node entry (parent)", pnode);
+
+        btree_node_keys_print(pnode);
 
         return 0;
 }
 
 static int extent_index_node_remove(struct btree_node *pnode,
-                                    struct btree_node *node)
+                                    struct btree_node *node,
+                                    struct btree_path *path,
+                                    unsigned long hdroff,
+                                    bool collapse)
 {
         int slot, last;
         struct btree_key key;
 
-        SET_KEY_FROM_BTREE_HDR(key, node);
+        do {
 
-        btree_node_print("remove index node entry (before)", node);
+                SET_KEY_FROM_BTREE_HDR(key, node);
 
-        slot = extent_index_node_lookup(pnode, &key);
-        if (slot < 0) {
-                pr_err("entry not found");
-                return -ENOENT;
-        }
+                btree_node_print("remove index node entry (before)", node);
 
-        if (key.blockptr != pnode->keys[slot].blockptr) {
-                pr_err("entry blockptr mismatch");
-                return -EINVAL;
-        }
+                slot = extent_index_node_lookup_bptr(pnode, &key);
+                if (slot < 0) {
+                        pr_err("entry not found :%llu-%llu\n", key.offset, key.blockptr);
+                        btree_node_keys_print(pnode);
+                        WARN_ON(1);
+                        return -ENOENT;
+                }
 
-        btree_node_keys_print(pnode);
+                btree_node_keys_print(pnode);
 
-        last = pnode->header.nr_items - 1;
-        memcpy((char* )&pnode->keys[slot],
-               (char* )&pnode->keys[last], sizeof(struct btree_key));
+                last = pnode->header.nr_items - 1;
 
-        pnode->header.nr_items--;
+                if (last) {
+                        memcpy((char* )&pnode->keys[slot],
+                               (char* )&pnode->keys[last], sizeof(struct btree_key));
 
-        extent_node_sort(pnode);
+                        extent_release_tree_pages(node->header.blockptr, BLOCK_SIZE);
 
-        btree_node_print("remove index node entry (after)", pnode);
+                        pnode->header.nr_items--;
 
-        btree_node_keys_print(pnode);
+                        extent_node_sort(pnode);
 
-        return 0;
+                        extent_node_update_backrefs(pnode, path);
+                } else {
+                        pnode->header.nr_items--;
+                        BUG_ON(pnode->header.nr_items);
+                }
+
+                btree_node_print("parent node entry (after)", pnode);
+
+                btree_node_keys_print(pnode);
+
+                if (extent_node_is_root(pnode, path) || pnode->header.nr_items)
+                        break;
+
+                node = pnode;
+
+                pnode = path->nodes[pnode->header.level + 1];
+
+                btree_node_print("pparent node entry (after)", pnode);
+        } while (collapse);
+
+        return pnode->header.level;
 }
 
 static struct btree_node* extent_node_create(struct inode* inode,
@@ -312,7 +429,7 @@ static struct btree_node* extent_node_create(struct inode* inode,
     
         BUG_ON(level >= MAX_BTREE_LEVEL);
 
-        block = get_meta_block();
+        block = alloc_meta_block();
 
         if (extent_alloc_tree_pages(block, PAGE_SIZE) < 0)
                 return NULL;
@@ -325,9 +442,10 @@ static struct btree_node* extent_node_create(struct inode* inode,
         node->header.level = level;
         node->header.flags = flag;
         node->header.nr_items = 0;
+        node->header.offset = 0xFFFFFFFF;
         node->header.blockptr = block;
         node->header.max_items = max_items;
-        //btree_node_print("new node created", node);
+        btree_node_print("new node created", node);
         return node;
 }
 
@@ -336,7 +454,8 @@ static void extent_node_destroy(struct inode *inode,
 {
         int i, nr_keys = node->header.nr_items;
 
-        //btree_node_print("destroying node", node);
+        btree_node_print("destroying node", node);
+        btree_node_keys_print(node);
 
         if (IS_BTREE_LEAF(node)) {
                 for (i = 0; i < nr_keys; i++) {
@@ -346,15 +465,12 @@ static void extent_node_destroy(struct inode *inode,
                         node->header.nr_items--;
                 }
         } else {
-                //btree_node_keys_print(node);
-
                 for (i = 0; i < nr_keys; i++) {
                         struct buffer_head *ebh;
                         if (node->keys[i].blockptr) {
                                 ebh = get_buffer_head(node->keys[i].blockptr);
                                 if (!ebh) {
                                         pr_err("blockptr error :%llu\n", node->keys[i].blockptr);
-                                        return;
                                         BUG();
                                 }
                                 extent_node_destroy(inode, (struct btree_node *) (ebh->b_data));
@@ -365,49 +481,138 @@ static void extent_node_destroy(struct inode *inode,
                 }
         }
 
-        //BUG_ON(node->header.nr_items != 0);
-
+        BUG_ON(node->header.nr_items);
         extent_release_tree_pages(node->header.blockptr, PAGE_SIZE);
 }
 
-static struct btree_node* extent_node_merge(struct inode *inode,
-                                            struct btree_path *paths,
-                                            struct btree_node *pnode,
-                                            struct btree_node *qnode,
-                                            int curr_level)
+static inline bool extent_tree_can_shrink(struct btree_node *root)
+{
+        struct btree_node *pnode, *qnode;
+
+        if (IS_BTREE_LEAF(root) || (root->header.nr_items != 2))
+               goto noshrink;
+
+        pnode = extent_tree_get_node(root, 0);
+
+        qnode = extent_tree_get_node(root, 1);
+
+        if (pnode->header.nr_items + qnode->header.nr_items > root->header.max_items)
+                goto noshrink;
+
+        return true;
+
+noshrink:
+        return false;
+}
+
+static struct btree_node* extent_tree_shrink(struct inode *inode,
+                                             struct btree_node *root)
 {
         int i, j;
-        struct btree_node *merge;
-        struct btree_node *parent;
+        struct btree_node *pnode, *qnode, *merge;
 
-        parent = paths->nodes[curr_level + 1];
+        pnode = extent_tree_get_node(root, 0);
+
+        qnode = extent_tree_get_node(root, 1);
+
+	BUG_ON(pnode->header.level != qnode->header.level);
+
+        btree_node_print("root node", root);
+        btree_node_keys_print(root);
+
+        btree_node_print("merging node (l)", pnode);
+        btree_node_keys_print(pnode);
+
+        btree_node_print("merging node (r)", qnode);
+        btree_node_keys_print(qnode);
 
         merge = extent_node_create(inode,
-                                   curr_level,
+                                   pnode->header.level,
+                                   pnode->header.max_items,
+                                   pnode->header.flags);
+
+        for (i = 0; i < pnode->header.nr_items; i++)
+                merge->keys[merge->header.nr_items++] = pnode->keys[i];
+
+        for (j = 0; j < qnode->header.nr_items; j++)
+                merge->keys[merge->header.nr_items++] = qnode->keys[j];
+
+        // TBD: releases the nodes
+
+        merge->header.offset = merge->keys[0].offset;
+
+	btree_node_print("merged new root node", merge);
+
+        btree_node_keys_print(merge);
+
+        return merge;
+}
+
+static struct btree_node* extent_node_merge_siblings(struct inode *inode,
+                                                     struct btree_path *paths,
+                                                     struct btree_node *pnode,
+                                                     struct btree_node *qnode)
+{
+        int i, j, level;
+        bool collapse = false;
+        struct btree_node *parent, *merge;
+
+        level = pnode->header.level;
+
+	if (level != qnode->header.level) {
+		pr_err("merge node levels mismatch!");
+		return ERR_PTR(-EINVAL);
+	}
+
+	if (level >= paths->depth) {
+		pr_err("invalid merge attempt for bad node level!");
+		return ERR_PTR(-EINVAL);
+	}
+
+	if (level == paths->depth - 1) {
+		pr_err("invalid merge attempt for root node!");
+		return ERR_PTR(-EINVAL);
+        }
+
+        btree_node_print("merging node (l)", pnode);
+        btree_node_keys_print(pnode);
+
+        btree_node_print("merging node (r)", qnode);
+        btree_node_keys_print(qnode);
+
+        parent = paths->nodes[level + 1];
+
+        merge = extent_node_create(inode,
+                                   level,
                                    parent->header.max_items,
-                                   parent->header.flags);
+                                   pnode->header.flags);
 
-        for (i = 0; i < pnode->header.nr_items; i++) {
-                merge->keys[i] = pnode->keys[i];
-                merge->header.nr_items++;
-        }
+        for (i = 0; i < pnode->header.nr_items; i++)
+                merge->keys[merge->header.nr_items++] = pnode->keys[i];
 
-        extent_index_node_remove(parent, pnode);
+        for (j = 0; j < qnode->header.nr_items; j++)
+                merge->keys[merge->header.nr_items++] = qnode->keys[j];
 
-        extent_release_tree_pages(pnode->header.blockptr, BLOCK_SIZE);
+        merge->header.offset = merge->keys[0].offset;
 
-        for (j = 0; j < qnode->header.nr_items; j++) {
-                merge->keys[i] = qnode->keys[j];
-                merge->header.nr_items++;
-        }
+	btree_node_print("merged new node", merge);
+
+        btree_node_keys_print(merge);
+
+        (void) extent_index_node_remove(parent, pnode, paths, pnode->keys[0].offset, collapse);
 
         //TBD : remove root if single entry
-        extent_index_node_remove(parent, qnode);
+        (void) extent_index_node_remove(parent, qnode, paths, qnode->keys[0].offset, collapse);
 
-        extent_release_tree_pages(qnode->header.blockptr, BLOCK_SIZE);
+	paths->nodes[level] = merge;
 
-        extent_index_node_insert(parent, merge);
+        extent_index_node_insert(parent, merge, paths);
 
+        extent_node_update_backrefs(merge, paths);
+
+        btree_node_keys_print(merge);
+
+	// rebalance will attempt further merge on parent if possible
         return merge;
 }
 
@@ -428,7 +633,7 @@ static int extent_node_steal_from_sibling(struct btree_node *parent,
         if (sib_index < 0)
                 return -ENOENT;
 
-        //btree_node_print("attempting rebalance from sibling", cur_node);
+        btree_node_print("attempting rebalance from sibling", cur_node);
 
         // right sibling
         if (cur_node->header.offset < sib_node->header.offset) {
@@ -476,107 +681,162 @@ static struct btree_node *extent_tree_get_left_sibling(struct btree_node *node,
 {
         int i;
         struct buffer_head *ebh;
-        struct btree_node *sib_node = NULL;
+        struct btree_node *sibling = NULL;
 
-        // look if direct parent has node's sibling counterpart
+	btree_node_print("get sibling node(l)", node);
+
+        // scan parent keys
         for (i = 0; i < parent->header.nr_items; i++) {
                 if (parent->keys[i].blockptr != node->header.blockptr)
                                 continue;
-                if (i > 0) {
-                        ebh = get_buffer_head(parent->keys[i - 1].blockptr);
-                        if (!ebh)
-                                BUG();
-                        return (struct btree_node *)(ebh->b_data);
-                } else
+                if (i == 0)
                         goto nosibling;
-                break;
+                ebh = get_buffer_head(parent->keys[i - 1].blockptr);
+                BUG_ON(!ebh);
+                sibling = (struct btree_node *)(ebh->b_data);
+                goto found;
         }
         return NULL;
 
 nosibling:
 
-        // must be on another sub-tree, go up
-        /*
-        if (parent->header.level + 1 == path->depth) {
-                pr_warn("root node do not have sibling!");
-                WARN_ON(1);
+	// move up and scan
+	if (extent_node_is_root(parent, path)) {
+		btree_node_print("parent node", parent);
+                pr_info("node has no adjacent(l/r) node");
                 return NULL;
-        }*/
+        }
 
-        sib_node =  extent_tree_get_left_sibling(parent, 
-                                                 path->nodes[parent->header.level + 1],
-                                                 path);
-        if (!sib_node) {
+        sibling = extent_tree_get_left_sibling(parent, 
+                                               path->nodes[parent->header.level + 1],
+                                               path);
+        if (!sibling) {
                 parent = path->nodes[parent->header.level + 1];
                 goto nosibling;
         }
 
-        for (i = sib_node->header.level;
-             i > node->header.level && sib_node->header.nr_items;
-             i--) {
-             ebh = get_buffer_head(sib_node->keys[sib_node->header.nr_items - 1].blockptr);
-             if (!ebh)
-                     BUG();
-             sib_node = (struct btree_node *)(ebh->b_data);
+	// DFS 
+        for (i = sibling->header.level; i > node->header.level; i--) {
+	     BUG_ON(!sibling->header.nr_items);
+             ebh = get_buffer_head(sibling->keys[sibling->header.nr_items - 1].blockptr);
+             BUG_ON(!ebh);
+             sibling = (struct btree_node *)(ebh->b_data);
+	     BUG_ON(!sibling);
         }
-
-        BUG_ON(i == node->header.level);
-        btree_node_print("sibling found", node);
-        return sib_node;
+found:
+        btree_node_print("sibling found", sibling);
+        return sibling;
 }
 
 static struct btree_node *extent_tree_get_right_sibling(struct btree_node *node,
                                                         struct btree_node *parent,
-                                                       struct btree_path *path)
+                                                        struct btree_path *path)
 {
         int i;
+        struct buffer_head *ebh;
+        struct btree_node *sibling = NULL;
 
-        for(i = 0; i < parent->header.nr_items; i++) {
-                struct buffer_head *ebh;
+	btree_node_print("get sibling node(r)", node);
 
+        // scan parent keys
+        for (i = 0; i < parent->header.nr_items; i++) {
                 if (parent->keys[i].blockptr != node->header.blockptr)
-                                continue;
+                	continue;
 
-                if (i < parent->header.nr_items - 1) {
-                        ebh = get_buffer_head(parent->keys[i + 1].blockptr);
-                        if (!ebh)
-                                BUG();
-                        return (struct btree_node *)(ebh->b_data);
-                }
-                break;
+                if (i == parent->header.nr_items - 1)
+			goto nosibling;
+
+                ebh = get_buffer_head(parent->keys[i + 1].blockptr);
+                BUG_ON(!ebh);
+                sibling = (struct btree_node *)(ebh->b_data);
+                BUG_ON(!sibling);
+                goto found;
         }
         return NULL;
-} 
 
+nosibling:
+
+	// move up and scan
+	if (extent_node_is_root(parent, path)) {
+		btree_node_print("parent node", parent);
+                pr_info("node is a boundary node, no adjacent(l/r) node!");
+                return NULL;
+        } 
+
+        sibling =  extent_tree_get_right_sibling(parent, 
+                                                 path->nodes[parent->header.level + 1],
+                                                 path);
+        if (!sibling) {
+                parent = path->nodes[parent->header.level + 1];
+                goto nosibling;
+        }
+
+	// DFS 
+        for (i = sibling->header.level;
+             i > node->header.level;
+             i--) {
+	     BUG_ON(!sibling->header.nr_items);
+             ebh = get_buffer_head(sibling->keys[0].blockptr);
+             BUG_ON(!ebh);
+             sibling = (struct btree_node *)(ebh->b_data);
+             BUG_ON(!sibling);
+        }
+found:
+        btree_node_print("sibling found", sibling);
+        return sibling;
+}
+
+// TBD : merge a parent and a child
 static void extent_tree_rebalance(struct inode *inode,
                                   struct btree_node *curr_node,
-                                  struct btree_path *path,
-                                  int level)
+                                  struct btree_path *path)
 {
-        while (level + 1 < path->depth) {
-                struct btree_node *parent = path->nodes[level + 1];
+	int i, level = curr_node->header.level;
+        struct btree_node *parent, *lsib, *rsib;
 
-                struct btree_node *lsib =
-                        extent_tree_get_left_sibling(curr_node, parent, path);
+        for (i = level; i < path->depth - 1; i++) {
 
-                struct btree_node *rsib =
-                        extent_tree_get_right_sibling(curr_node, parent, path);
+                BUG_ON(extent_node_is_root(curr_node, path));
 
-                if (lsib && extent_nodes_can_steal(curr_node, lsib)) {
-                        extent_node_steal_from_sibling(parent, curr_node, lsib);
-                        curr_node = parent;
-                } else if (rsib && extent_nodes_can_steal(curr_node, rsib)) {
-                        extent_node_steal_from_sibling(parent, curr_node, rsib);
-                        curr_node = parent;
-                } else if (lsib && extent_nodes_can_merge(curr_node, lsib)) {
-                        curr_node = extent_node_merge(inode, path, lsib, curr_node, level);
-                } else if (rsib && extent_nodes_can_merge(curr_node, rsib)) {
-                        curr_node = extent_node_merge(inode, path, curr_node, rsib, level);
-                } else {
-                        pr_info("rebalance not performed\n");
-                        break;
-                }
-                level++;        
+		if (!extent_node_attempt_rebalance(curr_node))
+			break;
+
+		btree_node_print("rebalancing", curr_node);
+
+                parent = path->nodes[i + 1];
+
+		btree_node_print("parent", parent);
+                btree_node_keys_print(parent);
+
+                lsib = extent_tree_get_left_sibling(curr_node, parent, path);
+		if (lsib) {
+			if (extent_node_attempt_steal(curr_node, lsib)) {
+                        	extent_node_steal_from_sibling(parent, curr_node, lsib);
+                        	curr_node = parent;
+				continue;
+			} else if (extent_node_attempt_merge(curr_node, lsib)) {
+                        	if (IS_ERR(extent_node_merge_siblings(inode, path, lsib, curr_node)))
+					BUG();
+                        	curr_node = parent;
+				continue;
+			}
+		}
+
+                rsib = extent_tree_get_right_sibling(curr_node, parent, path);
+		if (rsib) {
+			if (extent_node_attempt_steal(curr_node, rsib)) {
+                        	extent_node_steal_from_sibling(parent, curr_node, rsib);
+                        	curr_node = parent;
+				continue;
+			} else if (extent_node_attempt_merge(curr_node, rsib)) {
+                        	if (IS_ERR(extent_node_merge_siblings(inode, path, curr_node, rsib)))
+					BUG();
+                        	curr_node = parent;
+				continue;
+			}
+		}
+                btree_info("no rebalance for node\n");
+                break;
         }
 }
 
@@ -585,12 +845,12 @@ static struct btree_node* extent_node_split(struct inode *inode,
                                             struct btree_path *paths,
                                             int curr_level)
 {
-        bool new_root = false;
+        bool new_root = false, collapse = false;
         struct btree_node *pnode;
 
         do {
                 int i, mid, ret;
-                struct buffer_head *ebh, *lbh, *rbh;
+                struct buffer_head *lbh, *rbh;
                 struct btree_node *node, *l_sib, *r_sib;
 
                 BUG_ON(curr_level >= MAX_BTREE_LEVEL);
@@ -600,10 +860,6 @@ static struct btree_node* extent_node_split(struct inode *inode,
                 BUG_ON(curr_level != node->header.level);
 
                 btree_node_print("splitting node", node);
-
-                ebh = get_buffer_head(node->header.blockptr);
-                if (!ebh)
-                        return NULL;
 
                 mid = node->header.nr_items >> 1;
                 l_sib = extent_node_create(inode,
@@ -663,7 +919,7 @@ static struct btree_node* extent_node_split(struct inode *inode,
 
                 if (node->header.level < paths->depth - 1) {
                         pnode = paths->nodes[node->header.level + 1];
-                        if (extent_index_node_remove(pnode, node) < 0)
+                        if (extent_index_node_remove(pnode, node, paths, node->keys[0].offset, collapse) < 0)
                                 WARN_ON(1);
                 } else {
                         pnode = extent_node_create(inode, 
@@ -684,31 +940,32 @@ static struct btree_node* extent_node_split(struct inode *inode,
                                 paths->nodes[node->header.level] = r_sib;
                 }
 
-                ret = extent_index_node_insert(pnode, l_sib);
+                ret = extent_index_node_insert(pnode, l_sib, paths);
                 BUG_ON(ret < 0);
+                extent_node_update_backrefs(l_sib, paths);
                 if (extent_node_full(pnode)) {
                         extent_node_split(inode, root_node, paths, pnode->header.level);
                         BUG_ON(pnode == paths->nodes[node->header.level + 1]);
                         pnode = paths->nodes[node->header.level + 1];
                 }
 
-                ret = extent_index_node_insert(pnode, r_sib);
+                ret = extent_index_node_insert(pnode, r_sib, paths);
                 BUG_ON(ret < 0);
+                extent_node_update_backrefs(r_sib, paths);
                 if (extent_node_full(pnode)) {
                         extent_node_split(inode, root_node, paths, pnode->header.level);
                         BUG_ON(pnode == paths->nodes[node->header.level + 1]);
                         pnode = paths->nodes[node->header.level + 1];
                 }
 
-                btree_node_print("created new parent node", pnode);
-
-                btree_node_keys_print(pnode);
+                if (new_root) {
+                        btree_node_print("created new parent node", pnode);
+                        btree_node_keys_print(pnode);
+                }
 
                 extent_release_tree_pages(node->header.blockptr, BLOCK_SIZE);
 
-                brelse(ebh);
-
-                extent_tree_rebalance(inode, pnode, paths, pnode->header.level);
+                extent_tree_rebalance(inode, pnode, paths);
 
                 curr_level++;
 
@@ -716,70 +973,10 @@ static struct btree_node* extent_node_split(struct inode *inode,
 
         if (new_root) {
                 root_node->node = pnode;
-                root_node->max_level++;
+                root_node->max_level = paths->depth - 1;
         }
 
         return pnode;
-}
-
-static int extent_tree_lookup_item(struct inode* inode,
-                                   struct btree_root_node *root_node,
-                                   struct btree_path *path,
-                                   struct btree_key *qkey)
-{
-        int i;
-        struct btree_node *node = root_node->node;
-
-        btree_info("%s :%llu\n", __func__, qkey->blockptr);
-
-next_index:
-        if (!IS_BTREE_LEAF(node)) {
-
-            int pslot = 0;
-            struct buffer_head *ebh;
-
-            //btree_node_print("searching index node", node);
-
-            BUG_ON(path->depth > MAX_BTREE_LEVEL);
-            BUG_ON(path->level < 1);
-
-            path->nodes[path->level] = node; 
-            path->level--;
-            path->depth++;
-
-            for (i = 0; i < node->header.nr_items; i++) {
-                if (qkey->blockptr > node->keys[i].offset) {
-                    pslot = i;
-                    continue;
-                }
-                break;
-            }
-
-            ebh = get_buffer_head(node->keys[pslot].blockptr);
-            BUG_ON(ebh == NULL);
-            node = (struct btree_node *)(ebh->b_data);
-            goto next_index;
-
-        } else {
-
-            //btree_node_print("searching leaf node", node);
-
-            BUG_ON(path->depth > MAX_BTREE_LEVEL);
-            BUG_ON(path->level < 0);
-
-            path->nodes[path->level] = node; 
-            path->depth++;
-
-            for (i = 0; i < node->header.nr_items; i++) {
-                if (node->keys[i].offset == qkey->offset) {
-                    btree_info("found leaf item[%d]:%llu-%llu/%d\n", i,
-                            node->keys[i].offset, node->keys[i].offset,
-                            path->depth);
-                    return path->depth;
-                }
-            }
-        }
-        return -ENOENT;
 }
 
 static struct btree_node* extent_tree_find_leaf(struct inode* inode,
@@ -799,7 +996,9 @@ static struct btree_node* extent_tree_find_leaf(struct inode* inode,
 
         path->level--;
 
-        slot = extent_index_node_search(node, key);
+        BUG_ON(path->level < 0);
+
+        slot = extent_index_node_search_keys(node, key);
 
         ebh = get_buffer_head(node->keys[slot].blockptr);
         if (!ebh)
@@ -812,29 +1011,35 @@ static struct btree_node* extent_tree_find_leaf(struct inode* inode,
 }
 
 int extent_tree_insert_item(struct inode* inode,
-                                   struct btree_root_node *root,
-                                   unsigned long value,
-                                   unsigned int size)
+                            struct btree_root_node *root,
+                            unsigned long value,
+                            unsigned int size)
 {
-        int i;
+        int i, ret = 0;
+        bool added = false;
         unsigned long block;
         struct btree_node *leaf;
-        struct btree_key key = { value, 0xFFFFFFFF, size };
+        struct btree_key key = { value, size, 0xFFFFFFFF};
         struct btree_path *path = kzalloc(sizeof(struct btree_path), GFP_KERNEL);
 
         path->level = root->max_level;
+
+        pr_info("root max level :%u\n", root->max_level);
+
         leaf = extent_tree_find_leaf(inode, &key, root->node, path);
         BUG_ON(!leaf);
+
         if (IS_ERR(leaf)) {
                 pr_err("failed to locate key: %ld, status: %ld\n",
                                 value, PTR_ERR(leaf));
                 return -EIO;
         }
 
-        block = get_data_block();
-        (void) extent_alloc_tree_pages(block, PAGE_SIZE);
+        btree_node_print("selected leaf to insert", leaf);
 
-        //btree_node_print("selected leaf to insert", leaf);
+        block = alloc_data_block();
+
+        (void) extent_alloc_tree_pages(block, PAGE_SIZE);
 
         for (i = 0; i < leaf->header.max_items; i++) {
                 if (IS_KEY_EMPTY(leaf->keys[i])) {
@@ -843,47 +1048,106 @@ int extent_tree_insert_item(struct inode* inode,
                     leaf->keys[i].size = size;
                     leaf->header.nr_items++;
                     btree_info("inserted item[%d/%d] :%lu %u-%u\n",
-                            i, leaf->header.nr_items, value, path->level, path->depth);
+                            i, leaf->header.nr_items, value,
+                            path->level, path->depth);
+                    added = true;
                     break;
                 }
         }
 
-        //btree_node_keys_print(leaf);
-
-        extent_tree_rebalance(inode, leaf, path, 0);
-        if (extent_node_full(leaf))
-                extent_node_split(inode, root, path, 0);
+        if (added) {
+                extent_node_sort(leaf);
+                //btree_node_keys_print(leaf);
+                extent_node_update_backrefs(leaf, path);
+                extent_tree_rebalance(inode, leaf, path);
+                if (extent_node_full(leaf))
+                        extent_node_split(inode, root, path, leaf->header.level);
+        } else {
+                extent_release_tree_pages(block, PAGE_SIZE);
+                pr_err("failed to insert key :%lu\n", value);
+                ret = -EAGAIN;
+        }
 
         kfree(path);
-
-        return 0;
+        return ret;
 }
 
-static int extent_tree_delete_item(struct inode *inode,
-                                   struct btree_root_node *root,
-                                   struct btree_path *path,
-                                   struct btree_key *key)
+int extent_tree_delete_item(struct inode* inode,
+                            struct btree_root_node *root,
+                            unsigned long offset)
 {
         int i;
-        struct btree_node *leaf;
+        bool collapse = true;
+        struct btree_node *leaf, *parent;
+        struct btree_key key = { offset, 0, 0 };
+        struct btree_path *path = kzalloc(sizeof(struct btree_path), GFP_KERNEL);
 
         path->level = root->max_level;
-        if (extent_tree_lookup_item(inode, root, path, key) < 0)
-                goto exit;
 
-        leaf = path->nodes[0];
+        leaf = extent_tree_find_leaf(inode, &key, root->node, path);
+        BUG_ON(!leaf);
+
+        if (IS_ERR(leaf)) {
+                pr_err("failed to locate key: %ld, status: %ld\n",
+                                offset, PTR_ERR(leaf));
+                return -EIO;
+        }
+
+        btree_node_print("selected leaf to delete", leaf);
+        btree_node_keys_print(leaf);
+
         for (i = 0; i < leaf->header.nr_items; i++) {
-                if (leaf->keys[i].offset != key->offset)
+                if (leaf->keys[i].offset != key.offset)
                         continue;
-                memcpy((char *)&leaf->keys[i], (char *)&leaf->keys[leaf->header.nr_items - 1],
+                memcpy((char *)&leaf->keys[i],
+	               (char *)&leaf->keys[leaf->header.nr_items - 1],
+                       sizeof(struct btree_key));
+                memset((char *)&leaf->keys[leaf->header.nr_items - 1],
+                        0,
                         sizeof(struct btree_key));
                 leaf->header.nr_items--;
-                extent_node_sort(leaf);
-                extent_tree_rebalance(inode, leaf, path, 0);
-                return 0;
+		BUG_ON(leaf->header.nr_items < 0);
+                btree_info("deleted item[%d/%d] :%lu %u-%u/%u\n",
+                            i, leaf->header.nr_items, offset,
+                            path->level, path->depth, leaf->header.max_items);
+                break;
         }
-exit:
-        return -ENOENT;
+
+        if (extent_node_is_root(leaf, path)) {
+                parent = NULL;
+                extent_node_sort(leaf);
+        } else {
+                parent = path->nodes[leaf->header.level + 1];
+                if (leaf->header.nr_items) {
+                        extent_node_sort(leaf);
+                        extent_node_update_backrefs(leaf, path);
+                        extent_tree_rebalance(inode, leaf, path);
+                } else {
+                        int ret;
+
+                        path->nodes[leaf->header.level] = NULL;
+                        ret = extent_index_node_remove(parent, leaf, path, offset, collapse);
+                        if (ret < 0)
+                                WARN_ON(1);
+                        else {
+                                parent = path->nodes[ret];
+                                extent_tree_rebalance(inode, parent, path);
+                        }
+                }
+        }
+
+        btree_node_keys_print(leaf);
+
+        if (path->depth < root->max_level)
+                root->max_level = path->depth;
+
+        if (extent_tree_can_shrink(root->node)) {
+                root->node = extent_tree_shrink(inode, root->node);
+                root->max_level--;
+        }
+
+        kfree(path);
+        return 0;
 }
 
 // DFS
@@ -894,11 +1158,12 @@ void extent_tree_dump(struct seq_file *m, struct btree_node *node, int count)
         for (i = 0; i <= count; i++)
                 seq_printf(m, "-");
 
-        seq_printf(m, "%s Level :%d Blockptr :%llu Offset :%llu\n",
+        seq_printf(m, "%s Level :%d Blockptr :%llu Offset :%llu NKeys :%d\n",
                        node->header.flags == INDEX_NODE ? "BRANCH BLOCK" : "LEAF BLOCK",
                        level,
                        node->header.blockptr,
-                       node->header.offset);
+                       node->header.offset,
+                       node->header.nr_items);
 
         for (i = 0; i < node->header.nr_items; i++) {
                 int j;
@@ -975,7 +1240,7 @@ static void extent_tree_destroy(struct inode* inode, struct btree_root_node *roo
 
 static int run_tests(void)
 {
-        btree_root = extent_tree_init(NULL, 8);
+        btree_root = extent_tree_init(NULL, MAX_KEYS);
         if (!btree_root) {
                 pr_err("failed to initialize tree");
                 return -ENODEV;
