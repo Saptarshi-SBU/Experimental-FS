@@ -13,8 +13,10 @@ import hashlib
 import subprocess
 
 #MAX_KEYS = 128
-MAX_KEYS = 10000
-REPLAY_FILE = 'btree.replay2'
+
+MAX_KEYS = 100000
+
+REPLAY_FILE = 'btree.replay'
 
 def RunCommand(cmd, strict = True):
     ''' Executes an OS command '''
@@ -34,15 +36,15 @@ class BTreeUnitTests(unittest.TestCase):
         """
             Initialize
         """
-        #cmd = 'insmod lib/linux-btree.ko'
-        #RunCommand(cmd)
+        cmd = 'insmod lib/linux-btree.ko'
+        RunCommand(cmd)
 
     def tearDown(self):
         """
             TearDown
         """
-        #cmd = 'rmmod linux-btree'
-        #RunCommand(cmd)
+        cmd = 'rmmod linux-btree'
+        RunCommand(cmd)
 
     @unittest.skip('skip test')
     def test_insert(self):
@@ -100,8 +102,40 @@ class BTreeUnitTests(unittest.TestCase):
                 #time.sleep(1)
         csvfile.close()
 
-    #@unittest.skip('skip test')
+    @unittest.skip('skip test')
     def test_randdelete(self):
+        csvfile = open(REPLAY_FILE, 'r')
+        reader = csv.reader(csvfile, delimiter=' ')
+        for row in reader:
+                key = row[1]
+                cmd = 'echo {} > {}'.format\
+                        (key, '/sys/kernel/debug/btree/delete')
+                rc = RunCommand(cmd)
+                self.assertEqual(rc, 0)
+                #RunCommand('cat /sys/kernel/debug/btree/delete >> /tmp/a')
+                #time.sleep(0.5)
+        csvfile.close()
+
+    #@unittest.skip('skip test')
+    def test_randinsertdelete(self):
+        """
+            insert/delete random btree key
+        """
+        keys = []
+        csvfile = open(REPLAY_FILE, 'w')
+        writer = csv.writer(csvfile, delimiter=' ')
+
+        for i in range(0, MAX_KEYS):
+            r = random.randint(0, 2000000)
+            if r not in keys: #keys must be unique
+                writer.writerow(['KEY', r])
+                cmd = 'echo {} > {}'.format\
+                        (r, '/sys/kernel/debug/btree/insert')
+                rc = RunCommand(cmd)
+                self.assertEqual(rc, 0)
+            #time.sleep(0.5)
+        csvfile.close()
+
         csvfile = open(REPLAY_FILE, 'r')
         reader = csv.reader(csvfile, delimiter=' ')
         for row in reader:
