@@ -36,14 +36,15 @@ struct btree_node {
 // in-memory
 struct btree_path {
         struct btree_node  *nodes[MAX_BTREE_LEVEL];
-        int                slots[MAX_BTREE_LEVEL];
-        int                depth;
-        int                level;
+        struct buffer_head *bh[MAX_BTREE_LEVEL];
+        int                 depth;
+        int                 level;
 };
 
 struct btree_root_node {
         struct inode* inode;
         struct btree_node* node;
+        struct buffer_head *bh;
         int    max_level;
 };
 
@@ -65,10 +66,12 @@ int extent_tree_delete_item(struct inode* inode,
                             struct btree_root_node *root,
                             unsigned long key);
 
-void extent_tree_dump(struct seq_file *m, struct btree_node *node, int count);
+unsigned long extent_tree_dump(struct seq_file *m, struct btree_node *node, long refcount, int count);
 
 struct dentry *btree_debugfs_init(struct btree_root_node *btree_root);
 int btree_debugfs_destroy(struct dentry *dentry);
+
+#define BH2BTNODE(bh) ((struct btree_node *)(bh->b_data))
 
 #define IS_BTREE_LEAF(node) \
         ((node)->header.flags == LEAF_NODE)
@@ -87,10 +90,10 @@ int btree_debugfs_destroy(struct dentry *dentry);
         } while (0)
 
 #define btree_info(FMT, ...) \
-        pr_info(FMT, ##__VA_ARGS__)
+        pr_debug(FMT, ##__VA_ARGS__)
 
 #define btree_node_print(msg, node) \
-            pr_info("%s: %s, offset=%llu bptr=%llu level=%u nr_keys=%u/%u type=%s\n", \
+            pr_debug("%s: %s, offset=%llu bptr=%llu level=%u nr_keys=%u/%u type=%s\n", \
                             __func__,   \
                             msg,        \
                             (node)->header.offset,    \
@@ -103,7 +106,7 @@ int btree_debugfs_destroy(struct dentry *dentry);
 #define btree_node_keys_print(node) \
         do { \
                 int i; \
-                pr_info("%s: offset=%llu bptr=%llu level=%u nr_keys=%u type=%s dumping keys: ", \
+                pr_debug("%s: offset=%llu bptr=%llu level=%u nr_keys=%u type=%s dumping keys: ", \
                         __func__, \
                         (node)->header.offset,    \
                         (node)->header.blockptr, \
@@ -111,7 +114,7 @@ int btree_debugfs_destroy(struct dentry *dentry);
                         (node)->header.nr_items, \
                         (node)->header.flags == INDEX_NODE ? "INDEX" : "LEAF"); \
                 for (i = 0; i < (node)->header.nr_items; i++) \
-                        pr_info("bptr=%llu [%u] offset=%llu keybptr=%llu\n", \
+                        pr_debug("bptr=%llu [%u] offset=%llu keybptr=%llu\n", \
                                 (node)->header.blockptr, i, \
                                 (node)->keys[i].offset, \
                                 (node)->keys[i].blockptr);\

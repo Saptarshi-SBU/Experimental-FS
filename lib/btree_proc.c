@@ -6,9 +6,15 @@
 
 static int btree_debugfs_show(struct seq_file *m, void *data)
 {
+        unsigned long nr_keys;
         struct btree_root_node *root_node = (struct btree_root_node *)m->private;
-        if (root_node)
-                extent_tree_dump(m, root_node->node, 0);
+        if (root_node) {
+                nr_keys = extent_tree_dump(m,
+                                           root_node->node,
+                                           atomic_read(&root_node->bh->b_count),
+                                           0);
+                seq_printf(m, "Total Keys Stored :%lu\n", nr_keys);
+        }
         return 0;
 }
 
