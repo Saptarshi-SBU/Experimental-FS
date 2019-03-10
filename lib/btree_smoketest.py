@@ -14,14 +14,14 @@ import subprocess
 
 #MAX_KEYS = 128
 
-MAX_KEYS = 100000
+MAX_KEYS = 1000000
 
 REPLAY_FILE = 'btree.replay'
 
 def RunCommand(cmd, strict = True):
     ''' Executes an OS command '''
 
-    print('Executing cmd :', cmd)
+    #print('Executing cmd :', cmd)
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, shell=True)
     out, err = process.communicate()
@@ -37,14 +37,14 @@ class BTreeUnitTests(unittest.TestCase):
             Initialize
         """
         cmd = 'insmod lib/linux-btree.ko'
-        RunCommand(cmd)
+        #RunCommand(cmd)
 
     def tearDown(self):
         """
             TearDown
         """
         cmd = 'rmmod linux-btree'
-        RunCommand(cmd)
+        #RunCommand(cmd)
 
     @unittest.skip('skip test')
     def test_insert(self):
@@ -68,7 +68,7 @@ class BTreeUnitTests(unittest.TestCase):
             rc = RunCommand(cmd)
             self.assertEqual(rc, 0)
 
-    @unittest.skip('skip test')
+    #@unittest.skip('skip test')
     def test_randinsert(self):
         """
             insert/delete random btree key
@@ -78,13 +78,14 @@ class BTreeUnitTests(unittest.TestCase):
         writer = csv.writer(csvfile, delimiter=' ')
 
         for i in range(0, MAX_KEYS):
-            r = random.randint(0, 2000000)
+            r = random.randint(0, 20000000)
             if r not in keys: #keys must be unique
                 writer.writerow(['KEY', r])
                 cmd = 'echo {} > {}'.format\
                         (r, '/sys/kernel/debug/btree/insert')
                 rc = RunCommand(cmd)
                 self.assertEqual(rc, 0)
+                print("Key inserted :{}".format(i))
             #time.sleep(0.5)
         csvfile.close()
         
@@ -100,6 +101,7 @@ class BTreeUnitTests(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 #RunCommand('cat /sys/kernel/debug/btree/insert >> /tmp/dump')
                 #time.sleep(1)
+                print("Key inserted :{}".format(i))
         csvfile.close()
 
     @unittest.skip('skip test')
@@ -114,9 +116,10 @@ class BTreeUnitTests(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 #RunCommand('cat /sys/kernel/debug/btree/delete >> /tmp/a')
                 #time.sleep(0.5)
+                print("Key deleted :{}".format(i))
         csvfile.close()
 
-    #@unittest.skip('skip test')
+    @unittest.skip('skip test')
     def test_randinsertdelete(self):
         """
             insert/delete random btree key
@@ -133,6 +136,7 @@ class BTreeUnitTests(unittest.TestCase):
                         (r, '/sys/kernel/debug/btree/insert')
                 rc = RunCommand(cmd)
                 self.assertEqual(rc, 0)
+                print("Key inserted :{}".format(i)) 
             #time.sleep(0.5)
         csvfile.close()
 
@@ -146,6 +150,7 @@ class BTreeUnitTests(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 #RunCommand('cat /sys/kernel/debug/btree/delete >> /tmp/a')
                 #time.sleep(0.5)
+                print("Key deleted :{}".format(i))
         csvfile.close()
 
 def TestDriver():
