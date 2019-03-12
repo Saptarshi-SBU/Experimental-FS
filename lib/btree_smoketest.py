@@ -101,7 +101,7 @@ class BTreeUnitTests(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 #RunCommand('cat /sys/kernel/debug/btree/insert >> /tmp/dump')
                 #time.sleep(1)
-                print("Key inserted :{}".format(i))
+                print("Key inserted :{}".format(key))
         csvfile.close()
 
     @unittest.skip('skip test')
@@ -116,7 +116,7 @@ class BTreeUnitTests(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 #RunCommand('cat /sys/kernel/debug/btree/delete >> /tmp/a')
                 #time.sleep(0.5)
-                print("Key deleted :{}".format(i))
+                print("Key deleted :{}".format(key))
         csvfile.close()
 
     @unittest.skip('skip test')
