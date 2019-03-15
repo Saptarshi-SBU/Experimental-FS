@@ -6,7 +6,7 @@ rmmod $MOD
 insmod lib/$MOD
 
 #for i in {1..1048576};
-for i in {0..1024};
+for i in {0..64};
         do 
                 key=$(($i * 2))
                 echo $key
@@ -16,8 +16,8 @@ for i in {0..1024};
                 sleep 0.001;
         done
 
-#for i in {1024..0};
-for i in {0..1024};
+#for i in {64..0};
+for i in {0..64};
         do 
                 key=$(($i * 2))
                 echo $key > /sys/kernel/debug/btree/delete;
@@ -27,7 +27,7 @@ for i in {0..1024};
         done
 
 #for i in {1..1048576};
-for i in {0..1024};
+for i in {0..64};
         do 
                 key=$(($i * 2))
                 echo $key
@@ -37,8 +37,8 @@ for i in {0..1024};
                 sleep 0.001;
         done
 
-#for i in {1024..0};
-for i in {0..1024};
+#for i in {64..0};
+for i in {0..64};
         do 
                 key=$(($i * 2))
                 echo $key > /sys/kernel/debug/btree/delete;
