@@ -14,9 +14,9 @@ import subprocess
 
 #MAX_KEYS = 128
 
-MAX_KEYS = 1000000
+#MAX_KEYS = 1000000
 
-#MAX_KEYS = 50000
+MAX_KEYS = 50000
 
 REPLAY_FILE = 'btree.replay'
 
