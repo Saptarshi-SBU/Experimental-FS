@@ -16,6 +16,8 @@ import subprocess
 
 MAX_KEYS = 1000000
 
+#MAX_KEYS = 50000
+
 REPLAY_FILE = 'btree.replay'
 
 def RunCommand(cmd, strict = True):
@@ -68,7 +70,7 @@ class BTreeUnitTests(unittest.TestCase):
             rc = RunCommand(cmd)
             self.assertEqual(rc, 0)
 
-    #@unittest.skip('skip test')
+    @unittest.skip('skip test')
     def test_randinsert(self):
         """
             insert/delete random btree key
@@ -85,12 +87,13 @@ class BTreeUnitTests(unittest.TestCase):
                         (r, '/sys/kernel/debug/btree/insert')
                 rc = RunCommand(cmd)
                 self.assertEqual(rc, 0)
-                print("Key inserted :{}".format(i))
+                print("[{}] Key inserted :{}".format(i, r))
             #time.sleep(0.5)
         csvfile.close()
         
     @unittest.skip('skip test')
     def test_replayinsert(self):
+        count = 0
         csvfile = open(REPLAY_FILE, 'r')
         reader = csv.reader(csvfile, delimiter=' ')
         for row in reader:
@@ -101,11 +104,15 @@ class BTreeUnitTests(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 #RunCommand('cat /sys/kernel/debug/btree/insert >> /tmp/dump')
                 #time.sleep(1)
-                print("Key inserted :{}".format(key))
+                count = count + 1
+                print("[{}] Key inserted :{}".format(count, key))
+                if count > MAX_KEYS:
+                        break
         csvfile.close()
 
-    @unittest.skip('skip test')
+    #@unittest.skip('skip test')
     def test_randdelete(self):
+        count = 0
         csvfile = open(REPLAY_FILE, 'r')
         reader = csv.reader(csvfile, delimiter=' ')
         for row in reader:
@@ -116,7 +123,10 @@ class BTreeUnitTests(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 #RunCommand('cat /sys/kernel/debug/btree/delete >> /tmp/a')
                 #time.sleep(0.5)
-                print("Key deleted :{}".format(key))
+                count = count + 1
+                print("[{}] Key deleted :{}".format(count, key))
+                if count > MAX_KEYS:
+                        break
         csvfile.close()
 
     @unittest.skip('skip test')
