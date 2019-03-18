@@ -11,10 +11,11 @@
 #include <linux/kernel.h>
 #include <linux/highmem.h>
 #include <linux/module.h>
-#include <linux/version.h>
 #include <linux/buffer_head.h>
 #include <linux/radix-tree.h>
 #include "btree.h"
+#include "btree_ioctl.h"
+#include "page_io.h"
 
 MODULE_AUTHOR("Saptarshi.S");
 MODULE_DESCRIPTION("Linux BTree Implementation");
@@ -22,147 +23,20 @@ MODULE_LICENSE("GPL");
 
 #define MAX_KEYS 32
 
-#define META_BLOCK_START (1UL << 30)
-
-static struct dentry *dbgfs_dir;
-
-static struct btree_root_node *btree_root;
-
-static struct radix_tree_root pgtree; // track btree index pages
-
 enum {
         LEFT_SIBLING,
         RIGHT_SIBLING,
 } dir_t;
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0))
-static inline int page_ref_count(struct page *page)
-{
-        return atomic_read(&page->_count);
-}
-#endif
+static struct dentry *dbgfs_dir;
 
-static unsigned long alloc_data_block(void)
-{
-        static atomic_t data_block = ATOMIC_INIT(0);
+static struct btree_root_node *btree_test_root;
 
-        atomic_inc(&data_block);
-        return atomic_read(&data_block);
-}
+extern int  btreedev_init(void);
 
-static unsigned long alloc_meta_block(void)
-{
-        static atomic_t meta_block = ATOMIC_INIT(META_BLOCK_START);
+extern void btreedev_exit(void);
 
-        atomic_inc(&meta_block);
-        return atomic_read(&meta_block);
-}
-
-static int extent_alloc_tree_pages(unsigned long block, size_t size)
-{
-        int i, nblocks = size >> PAGE_SHIFT;
-
-        for (i = 0; i < nblocks; i++) {
-                struct page *page;
-
-                page = alloc_page(GFP_KERNEL | __GFP_ZERO);
-                if (!page)
-                        return -ENOMEM;
-                if (radix_tree_insert(&pgtree, block + i, page))
-                        return -EIO;
-                btree_info("allocating backing page for block:%lu\n", block + i);
-                #ifdef DBG_BTREE_PAGE_REFCOUNT
-                pr_debug("%s : page 0x%p:%u\n", __func__, page, page_ref_count(page));
-                #endif
-        }
-        return 0;
-}
-
-static int extent_release_tree_pages(unsigned long block, size_t size)
-{
-        int i, nblocks = size >> PAGE_SHIFT;
-
-        for (i = 0; i < nblocks; i++) {
-                struct page *page;
-
-                btree_info("releasing backing page for block:%lu\n", block + i);
-                page = radix_tree_lookup(&pgtree, block + i); 
-                if (!page) {
-                        pr_err("radix tree lookup failed for block :%lu\n", block + i);
-                        dump_stack();
-                        continue;
-                }
-                radix_tree_delete(&pgtree, block + i);
-                #ifdef DBG_BTREE_PAGE_REFCOUNT
-                pr_debug("%s: radix tree entry deleted :%lu\n", __func__, block + i);
-                pr_debug("%s : page 0x%p:%u\n", __func__, page, page_ref_count(page));
-                #endif
-                ClearPagePrivate(page);
-                put_page(page);
-        }
-        return 0;
-}
-
-static struct buffer_head* get_buffer_head(unsigned long block)
-{
-        struct buffer_head *bh;
-        struct page *page;
-       
-        page = radix_tree_lookup(&pgtree, block); 
-        if (!page) {
-                pr_err("radix tree lookup failed for block :%lu\n", block);
-                dump_stack();
-                return NULL;
-        }
-
-        if (!page_has_buffers(page)) {
-                bh = alloc_page_buffers(page, PAGE_SIZE, 1);
-                BUG_ON(atomic_read(&bh->b_count));
-                set_page_private(page, (unsigned long)bh);
-                SetPagePrivate(page);
-        } else {
-                bh = page_buffers(page);
-                //btree_info("found buffer head :%lu\n", block);
-        }
-
-        get_bh(bh);
-        return bh;
-}
-
-static void extent_put_buffer_head(struct buffer_head *bh)
-{
-        unsigned int count;
-
-        BUG_ON(bh == NULL);
-        count = atomic_read(&bh->b_count);
-
-        #ifdef DBG_BTREE_PAGE_REFCOUNT
-        pr_debug("%s :bh 0x%p:%u\n", __func__, bh, count);
-        #endif
-
-        if (!count) {
-                pr_err("invalid bh release");
-                dump_stack();
-        } else
-                brelse(bh);
-}
-
-static void extent_tree_scan_pages(struct radix_tree_root *radix_root)
-{
-        unsigned long i = 0;
-        struct radix_tree_iter iter;
-        void __rcu **slot;
-
-        if (radix_root->height)
-                pr_warn("btree leaked pages!! :%d", radix_root->height);
-
-        radix_tree_for_each_slot(slot, radix_root, &iter, 0) {
-                struct page *page = (struct page *)radix_tree_deref_slot(slot);
-                BUG_ON(radix_tree_exception(page));
-                pr_warn("%s :[%lu] leaked block :%lu page :%p\n",
-                                __func__, i++, iter.index, page);
-        }
-}
+//long btreedev_ioctl(struct file *file, unsigned cmd, unsigned long arg);
 
 static inline void extent_reset_key(struct btree_key *key)
 {
@@ -304,7 +178,7 @@ static struct buffer_head *extent_tree_read_node(struct btree_node *node, int ke
         struct buffer_head *ebh = NULL;
 
         if (node->keys[key_index].blockptr) {
-                ebh = get_buffer_head(node->keys[key_index].blockptr);
+                ebh = bump_get_buffer_head(node->keys[key_index].blockptr);
                 BUG_ON(!ebh);
         }
         return ebh;
@@ -316,7 +190,7 @@ static void extent_drop_path_refs(struct btree_path *paths)
 
         for (i = 0; i < paths->depth; i++) {
                 BUG_ON (paths->bh[i] == NULL);
-                extent_put_buffer_head(paths->bh[i]);
+                bump_put_buffer_head(paths->bh[i]);
                 BUG_ON(paths->nodes[i] == NULL);
                 paths->nodes[i] = NULL;
         }
@@ -453,7 +327,9 @@ static int extent_index_node_remove_key(struct btree_node *pnode,
 
                 btree_node_print("remove index node entry (before)", node);
 
-                extent_release_tree_pages(node->header.blockptr, PAGE_SIZE);
+                bump_release_block(node->header.blockptr, PAGE_SIZE);
+
+                //path->bh[node->header.level] = NULL;
 
                 slot = extent_index_node_lookup_bptr(pnode, &key);
                 if (slot < 0) {
@@ -499,8 +375,7 @@ static int extent_index_node_remove_key(struct btree_node *pnode,
         return pnode->header.level;
 }
 
-static struct btree_node* extent_node_create(struct inode* inode,
-                                             int level,
+static struct btree_node* extent_node_create(int level,
                                              int max_items,
                                              int flag,
                                              struct buffer_head **bh)
@@ -511,12 +386,9 @@ static struct btree_node* extent_node_create(struct inode* inode,
     
         BUG_ON(level >= MAX_BTREE_LEVEL);
 
-        block = alloc_meta_block();
+        block = bump_alloc_meta_block();
 
-        if (extent_alloc_tree_pages(block, PAGE_SIZE) < 0)
-                return NULL;
-
-        ebh = get_buffer_head(block);
+        ebh = bump_get_buffer_head(block);
         if (!ebh)
                 return NULL;
 
@@ -533,8 +405,7 @@ static struct btree_node* extent_node_create(struct inode* inode,
         return node;
 }
 
-static void extent_node_destroy(struct inode *inode,
-                                struct btree_node *node)
+static void extent_node_destroy(struct btree_node *node)
 {
         int i, nr_keys = node->header.nr_items;
 
@@ -543,8 +414,7 @@ static void extent_node_destroy(struct inode *inode,
 
         if (IS_BTREE_LEAF(node)) {
                 for (i = 0; i < nr_keys; i++) {
-                        extent_release_tree_pages(node->keys[i].blockptr,
-                                                  node->keys[i].size);
+                        bump_release_block(node->keys[i].blockptr, node->keys[i].size);
                         extent_reset_key(&node->keys[i]);
                         node->header.nr_items--;
                 }
@@ -552,21 +422,21 @@ static void extent_node_destroy(struct inode *inode,
                 for (i = 0; i < nr_keys; i++) {
                         struct buffer_head *ebh;
                         if (node->keys[i].blockptr) {
-                                ebh = get_buffer_head(node->keys[i].blockptr);
+                                ebh = bump_get_buffer_head(node->keys[i].blockptr);
                                 if (!ebh) {
                                         pr_err("blockptr error :%llu\n", node->keys[i].blockptr);
                                         BUG();
                                 }
-                                extent_node_destroy(inode, (struct btree_node *) (ebh->b_data));
+                                extent_node_destroy((struct btree_node *) (ebh->b_data));
                                 extent_reset_key(&node->keys[i]);
-                                extent_put_buffer_head(ebh);
+                                bump_put_buffer_head(ebh);
                                 node->header.nr_items--;
                         }
                 }
         }
 
         BUG_ON(node->header.nr_items);
-        extent_release_tree_pages(node->header.blockptr, PAGE_SIZE);
+        bump_release_block(node->header.blockptr, PAGE_SIZE);
 }
 
 static inline bool extent_tree_can_shrink(struct btree_node *root)
@@ -589,15 +459,14 @@ static inline bool extent_tree_can_shrink(struct btree_node *root)
         if (pnode->header.nr_items + qnode->header.nr_items <= root->header.max_items)
                 shrink = true;
 
-        extent_put_buffer_head(pbh);
+        bump_put_buffer_head(pbh);
 
-        extent_put_buffer_head(qbh);
+        bump_put_buffer_head(qbh);
 
         return shrink;
 }
 
-static struct btree_node* extent_tree_shrink(struct inode *inode,
-                                             struct btree_root_node *root,
+static struct btree_node* extent_tree_shrink(struct btree_root_node *root,
                                              struct buffer_head **bh)
 {
         int i, j;
@@ -623,8 +492,7 @@ static struct btree_node* extent_tree_shrink(struct inode *inode,
         btree_node_print("merging node (r)", qnode);
         btree_node_keys_print(qnode);
 
-        merge = extent_node_create(inode,
-                                   pnode->header.level,
+        merge = extent_node_create(pnode->header.level,
                                    pnode->header.max_items,
                                    pnode->header.flags,
                                    bh);
@@ -641,23 +509,22 @@ static struct btree_node* extent_tree_shrink(struct inode *inode,
 
         btree_node_keys_print(merge);
 
-        extent_put_buffer_head(pbh);
+        bump_put_buffer_head(pbh);
 
-        extent_release_tree_pages(pnode->header.blockptr, PAGE_SIZE);
+        bump_release_block(pnode->header.blockptr, PAGE_SIZE);
 
-        extent_put_buffer_head(qbh);
+        bump_put_buffer_head(qbh);
 
-        extent_release_tree_pages(qnode->header.blockptr, PAGE_SIZE);
+        bump_release_block(qnode->header.blockptr, PAGE_SIZE);
 
-        extent_put_buffer_head(root->bh);
+        bump_put_buffer_head(root->bh);
 
-        extent_release_tree_pages(root->node->header.blockptr, PAGE_SIZE);
+        bump_release_block(root->node->header.blockptr, PAGE_SIZE);
 
         return merge;
 }
 
-static struct btree_node* extent_node_merge_siblings(struct inode *inode,
-                                                     struct btree_node *pnode,
+static struct btree_node* extent_node_merge_siblings(struct btree_node *pnode,
                                                      struct btree_node *qnode,
                                                      struct btree_path *paths)
 {
@@ -688,8 +555,7 @@ static struct btree_node* extent_node_merge_siblings(struct inode *inode,
 
         parent = paths->nodes[level + 1];
 
-        merge = extent_node_create(inode,
-                                   level,
+        merge = extent_node_create(level,
                                    parent->header.max_items,
                                    pnode->header.flags,
                                    &bh);
@@ -710,7 +576,7 @@ static struct btree_node* extent_node_merge_siblings(struct inode *inode,
 
         (void) extent_index_node_remove_key(parent, qnode, paths, collapse);
 
-        extent_put_buffer_head(paths->bh[level]);
+        bump_put_buffer_head(paths->bh[level]);
 
 	paths->nodes[level] = merge;
 
@@ -804,17 +670,17 @@ static struct buffer_head *extent_tree_get_adjacent_node(struct btree_node *node
 
         if (dir == LEFT_SIBLING)
                 return (slot == 0) ?
-                        NULL : get_buffer_head(parent->keys[slot - 1].blockptr);
+                        NULL : bump_get_buffer_head(parent->keys[slot - 1].blockptr);
         else
                 return (slot == parent->header.nr_items - 1) ? 
-                        NULL : get_buffer_head(parent->keys[slot + 1].blockptr);
+                        NULL : bump_get_buffer_head(parent->keys[slot + 1].blockptr);
 }
 
-static void extent_tree_rebalance(struct inode *inode,
-                                  struct btree_node *curr_node,
+static void extent_tree_rebalance(struct btree_node *curr_node,
                                   struct btree_path *path)
 {
         while (!extent_node_is_root(curr_node, path)) {
+                bool continue_balance = false;
                 struct btree_node  *parent, *lsib = NULL, *rsib = NULL;
                 struct buffer_head *lsib_bh = NULL, *rsib_bh = NULL;
 
@@ -832,6 +698,7 @@ static void extent_tree_rebalance(struct inode *inode,
                         lsib = BH2BTNODE(lsib_bh); 
                         if (extent_node_can_borrow(curr_node, lsib)) {
                                 extent_node_steal_from_sibling(curr_node, lsib, path);
+                                continue_balance = true;
                                 goto next_round;
                         }
                 }
@@ -841,24 +708,24 @@ static void extent_tree_rebalance(struct inode *inode,
                         rsib = BH2BTNODE(rsib_bh); 
                         if (extent_node_can_borrow(curr_node, rsib)) {
                                 extent_node_steal_from_sibling(curr_node, rsib, path);
+                                continue_balance = true;
                                 goto next_round;
                         }
                 }
 
                 if (lsib && extent_node_can_merge(curr_node, lsib)) {
-                        if (IS_ERR(extent_node_merge_siblings(inode, lsib, curr_node, path)))
+                        if (IS_ERR(extent_node_merge_siblings(lsib, curr_node, path)))
 					BUG();
+                        continue_balance = true;
                         goto next_round;
 		}
 
 		if (rsib && extent_node_can_merge(curr_node, rsib)) {
-                        if (IS_ERR(extent_node_merge_siblings(inode, curr_node, rsib, path)))
+                        if (IS_ERR(extent_node_merge_siblings(curr_node, rsib, path)))
 					BUG();
+                        continue_balance = true;
                         goto next_round;
 		}
-
-		btree_node_print("node is balanced", curr_node);
-                break;
 
 next_round:
                 if (lsib_bh)
@@ -867,12 +734,16 @@ next_round:
                 if (rsib_bh)
                         brelse(rsib_bh);
 
+                if (!continue_balance) {
+		        btree_node_print("node is balanced", curr_node);
+                        break;
+                }
+
                 curr_node = parent;
         }
 }
 
-static struct btree_node* extent_node_split(struct inode *inode,
-                                            struct btree_root_node *root_node,
+static struct btree_node* extent_node_split(struct btree_root_node *root_node,
                                             struct btree_path *paths,
                                             int curr_level)
 {
@@ -896,8 +767,7 @@ static struct btree_node* extent_node_split(struct inode *inode,
 
                 mid = node->header.nr_items >> 1;
 
-                l_sib = extent_node_create(inode,
-                                           curr_level,
+                l_sib = extent_node_create(curr_level,
                                            node->header.max_items,
                                            node->header.flags,
                                            &lbh);
@@ -915,8 +785,7 @@ static struct btree_node* extent_node_split(struct inode *inode,
 
                 btree_node_keys_print(l_sib);
 
-                r_sib = extent_node_create(inode,
-                                           curr_level,
+                r_sib = extent_node_create(curr_level,
                                            node->header.max_items,
                                            node->header.flags,
                                            &rbh);
@@ -940,9 +809,9 @@ static struct btree_node* extent_node_split(struct inode *inode,
                         if (extent_index_node_remove_key(pnode, node, paths, collapse) < 0)
                                 WARN_ON(1);
                 } else {
-                        extent_release_tree_pages(node->header.blockptr, PAGE_SIZE);
-                        pnode = extent_node_create(inode, 
-                                                   curr_level + 1,
+                        bump_release_block(node->header.blockptr, PAGE_SIZE);
+                        //paths->bh[curr_level] = NULL;
+                        pnode = extent_node_create(curr_level + 1,
                                                    node->header.max_items,
                                                    INDEX_NODE,
                                                    &bh);
@@ -962,9 +831,9 @@ static struct btree_node* extent_node_split(struct inode *inode,
                 BUG_ON(ret < 0);
                 extent_node_update_backrefs(r_sib, paths);
 
-                extent_put_buffer_head(rbh);
+                bump_put_buffer_head(rbh);
 
-                extent_put_buffer_head(lbh);
+                bump_put_buffer_head(lbh);
 
                 //extent_tree_rebalance(inode, pnode, paths);
 
@@ -983,8 +852,7 @@ static struct btree_node* extent_node_split(struct inode *inode,
         return pnode;
 }
 
-static struct btree_node* extent_tree_find_leaf(struct inode* inode,
-                                                struct btree_key* key,
+static struct btree_node* extent_tree_find_leaf(struct btree_key* key,
                                                 struct btree_node* node,
                                                 struct buffer_head* bh,
                                                 struct btree_path* path)
@@ -1009,61 +877,97 @@ static struct btree_node* extent_tree_find_leaf(struct inode* inode,
 
         slot = extent_index_node_search_keys(node, key);
 
-        ebh = get_buffer_head(node->keys[slot].blockptr);
+        ebh = bump_get_buffer_head(node->keys[slot].blockptr);
         if (!ebh)
                 return ERR_PTR(-EIO);
 
-        return extent_tree_find_leaf(inode,
-                                     key,
+        return extent_tree_find_leaf(key,
                                      (struct btree_node *)(ebh->b_data),
                                      ebh,
                                      path);
 }
 
-int extent_tree_insert_item(struct inode* inode,
-                            struct btree_root_node *root,
-                            unsigned long value,
+long extent_tree_lookup_item(struct btree_root_node *root,
+                             loff_t off,
+                             unsigned int size)
+{
+        int slot;
+        struct btree_node *leaf;
+        struct btree_key key = { off, size, 0xFFFFFFFF };
+        struct btree_path *path = kzalloc(sizeof(struct btree_path), GFP_KERNEL);
+
+        pr_debug("lookup request for key :%llu\n", off); 
+
+        path->level = root->max_level;
+
+        get_bh(root->bh);
+
+        leaf = extent_tree_find_leaf(&key, root->node, root->bh, path);
+        BUG_ON(!leaf);
+        if (IS_ERR(leaf)) {
+                pr_err("failed to locate key: %llu, status: %ld\n", off, PTR_ERR(leaf));
+                brelse(root->bh);
+                kfree(path);
+                return -EIO;
+        }
+
+        btree_node_print("selected leaf to lookup", leaf);
+
+        slot = extent_index_node_lookup(leaf, &key);
+        if (slot < 0) {
+                pr_err("offset key :%llu not found\n", key.offset);
+                extent_drop_path_refs(path);
+                return -ENOENT;
+        }
+
+        key.blockptr = leaf->keys[slot].blockptr;
+        extent_drop_path_refs(path);
+        return key.blockptr;
+}
+
+int extent_tree_insert_item(struct btree_root_node *root,
+                            loff_t off,
+                            unsigned long block,
                             unsigned int size)
 {
         int i, ret = 0;
         bool added = false;
-        unsigned long block;
         struct btree_node *leaf;
-        struct btree_key key = { value, size, 0xFFFFFFFF};
+        struct btree_key key = { off, size, block };
         struct btree_path *path = kzalloc(sizeof(struct btree_path), GFP_KERNEL);
 
         path->level = root->max_level;
 
-        pr_debug("insert request for key :%lu\n", value); 
+        pr_debug("insert request for key :%llu\n", off); 
 
         pr_debug("root max level :%u\n", root->max_level);
 
         get_bh(root->bh);
 
-        leaf = extent_tree_find_leaf(inode, &key, root->node, root->bh, path);
+        leaf = extent_tree_find_leaf(&key, root->node, root->bh, path);
         BUG_ON(!leaf);
 
         if (IS_ERR(leaf)) {
-                pr_err("failed to locate key: %ld, status: %ld\n",
-                                value, PTR_ERR(leaf));
+                pr_err("failed to locate key: %llu, status: %ld\n",
+                                off, PTR_ERR(leaf));
+                brelse(root->bh);
                 kfree(path);
                 return -EIO;
         }
 
         btree_node_print("selected leaf to insert", leaf);
 
-        block = alloc_data_block();
-
-        (void) extent_alloc_tree_pages(block, PAGE_SIZE);
+        if (!block)
+                block = bump_alloc_data_block();
 
         for (i = 0; i < leaf->header.max_items; i++) {
                 if (IS_KEY_EMPTY(leaf->keys[i])) {
                     leaf->keys[i].blockptr = block;
-                    leaf->keys[i].offset = value;
+                    leaf->keys[i].offset = off;
                     leaf->keys[i].size = size;
                     leaf->header.nr_items++;
-                    btree_info("inserted item[%d/%d] :%lu %u-%u\n",
-                            i, leaf->header.nr_items, value,
+                    btree_info("inserted item[%d/%d] :%llu %u-%u\n",
+                            i, leaf->header.nr_items, off,
                             path->level, path->depth);
                     added = true;
                     break;
@@ -1076,10 +980,10 @@ int extent_tree_insert_item(struct inode* inode,
                 extent_node_update_backrefs(leaf, path);
                 //extent_tree_rebalance(inode, leaf, path);
                 if (extent_node_has_overflowed(leaf))
-                        extent_node_split(inode, root, path, leaf->header.level);
+                        extent_node_split(root, path, leaf->header.level);
         } else {
-                extent_release_tree_pages(block, PAGE_SIZE);
-                pr_err("failed to insert key :%lu\n", value);
+                bump_release_block(block, PAGE_SIZE);
+                pr_err("failed to insert key :%llu\n", off);
                 ret = -EAGAIN;
         }
 
@@ -1087,8 +991,7 @@ int extent_tree_insert_item(struct inode* inode,
         return ret;
 }
 
-int extent_tree_delete_item(struct inode* inode,
-                            struct btree_root_node *root,
+int extent_tree_delete_item(struct btree_root_node *root,
                             unsigned long offset)
 {
         int i;
@@ -1104,12 +1007,13 @@ int extent_tree_delete_item(struct inode* inode,
 
         pr_debug("delete request for key :%lu\n", offset); 
 
-        leaf = extent_tree_find_leaf(inode, &key, root->node, root->bh, path);
+        leaf = extent_tree_find_leaf(&key, root->node, root->bh, path);
         BUG_ON(!leaf);
 
         if (IS_ERR(leaf)) {
                 pr_err("failed to locate key: %ld, status: %ld\n",
                                 offset, PTR_ERR(leaf));
+                brelse(root->bh);
                 kfree(path);
                 return -EIO;
         }
@@ -1120,7 +1024,7 @@ int extent_tree_delete_item(struct inode* inode,
         for (i = 0; i < leaf->header.nr_items; i++) {
                 if (leaf->keys[i].offset != key.offset)
                         continue;
-                extent_release_tree_pages(leaf->keys[i].blockptr, PAGE_SIZE);
+                bump_release_block(leaf->keys[i].blockptr, PAGE_SIZE);
                 memcpy((char *)&leaf->keys[i],
 	               (char *)&leaf->keys[leaf->header.nr_items - 1],
                        sizeof(struct btree_key));
@@ -1148,15 +1052,16 @@ int extent_tree_delete_item(struct inode* inode,
                 if (leaf->header.nr_items) {
                         extent_node_sort(leaf);
                         extent_node_update_backrefs(leaf, path);
-                        extent_tree_rebalance(inode, leaf, path);
+                        extent_tree_rebalance(leaf, path);
                 } else {
                         int plevel;
+
                         plevel = extent_index_node_remove_key(parent, leaf, path, collapse);
                         if (plevel < 0)
 				BUG();
                         else {
                                 parent = path->nodes[plevel];
-                                extent_tree_rebalance(inode, parent, path);
+                                extent_tree_rebalance(parent, path);
                         }
                 }
         }
@@ -1166,7 +1071,7 @@ int extent_tree_delete_item(struct inode* inode,
         if (extent_tree_can_shrink(root->node)) {
                 struct buffer_head *new_bh;
 
-                root->node = extent_tree_shrink(inode, root, &new_bh);
+                root->node = extent_tree_shrink(root, &new_bh);
                 root->bh = new_bh;
                 root->max_level--;
         }
@@ -1206,10 +1111,10 @@ unsigned long extent_tree_dump(struct seq_file *m, struct btree_node *node, long
                               node->keys[i].blockptr);
 
                 if (!IS_BTREE_LEAF(node)) {
-                        ebh = get_buffer_head(node->keys[i].blockptr);
+                        ebh = bump_get_buffer_head(node->keys[i].blockptr);
                         nr_keys += extent_tree_dump(m, (struct btree_node *)(ebh->b_data),
                                         atomic_read(&ebh->b_count), count + 1);
-                        extent_put_buffer_head(ebh);
+                        bump_put_buffer_head(ebh);
                 }
         }
 
@@ -1225,36 +1130,35 @@ static struct btree_root_node* extent_tree_load(struct inode* inode, struct btre
         if (!root)
                 goto exit;
 
-        ebh = get_buffer_head(key->blockptr);
+        ebh = bump_get_buffer_head(key->blockptr);
         if (!ebh)
                 goto exit;
 
         memcpy((char*)root->node, ebh->b_data, sizeof(struct btree_node));
-        extent_put_buffer_head(ebh);
+        bump_put_buffer_head(ebh);
         return root;
 exit:
         kfree(root);
         return NULL;
 }
 
-static struct btree_root_node* extent_tree_init(struct inode* inode, int max_keys)
+struct btree_root_node* extent_tree_init(int version, int max_keys)
 {
         struct btree_root_node *root = NULL;
         struct buffer_head *bh = NULL;
-
-        INIT_RADIX_TREE(&pgtree, GFP_KERNEL);
 
         root = kzalloc(sizeof(struct btree_root_node), GFP_KERNEL);
         if (!root)
                 goto exit;
 
-        root->node = extent_node_create(inode, 0, max_keys, LEAF_NODE, &bh);
+        root->node = extent_node_create(0, max_keys, LEAF_NODE, &bh);
         if (!root->node)
                 goto exit;
 
         root->bh = bh;
-        root->inode = inode;
+        root->inode = NULL;
         root->max_level = 0;
+        root->version = version;
         return root;
 
 exit:
@@ -1262,45 +1166,63 @@ exit:
         return NULL;
 }
 
-static void extent_tree_destroy(struct inode* inode, struct btree_root_node *root)
+void extent_tree_destroy(struct btree_root_node *root)
 {
-        extent_node_destroy(inode, root->node);
+        bump_leak_detector();
+        extent_node_destroy(root->node);
         BUG_ON(root->node->header.nr_items);
-        extent_put_buffer_head(root->bh);
+        bump_put_buffer_head(root->bh);
         root->node = NULL;
         kfree(root);
 }
 
-static int run_tests(void)
+#define TEST_ROOT_VERSION 0xFF
+
+static int init_test_root(void)
 {
-        btree_root = extent_tree_init(NULL, MAX_KEYS);
-        if (!btree_root) {
+        btree_test_root = extent_tree_init(TEST_ROOT_VERSION, MAX_KEYS);
+        if (!btree_test_root) {
                 pr_err("failed to initialize tree");
                 return -ENODEV;
         }
 
-        dbgfs_dir = btree_debugfs_init(btree_root);
+        dbgfs_dir = btree_debugfs_init(btree_test_root);
         if (!dbgfs_dir)
-                return -1;
+                return -ENODEV;
+
         return 0;
+}
+
+static void cleanup_test_root(void)
+{
+        if (btree_test_root) {
+                extent_tree_destroy(btree_test_root);
+                btree_test_root = NULL;
+        }
+
+        if (dbgfs_dir) {
+                btree_debugfs_destroy(dbgfs_dir);
+                dbgfs_dir = NULL;
+        }
 }
 
 static int
 __init init_btree_tests(void)
 {
-    run_tests();
-    btree_info("BTree module loaded");
-    return 0;
+        bump_allocator_init();
+        btreedev_init();
+        init_test_root();
+        btree_info("btree-store module loaded");
+        return 0;
 }
 
 static void
 __exit exit_btree_tests(void)
 {
-    //extent_tree_scan_pages(&pgtree); // enable only to test any leaks with deletes
-    extent_tree_destroy(NULL, btree_root);
-    extent_tree_scan_pages(&pgtree); // report any page leaks
-    btree_debugfs_destroy(dbgfs_dir);
-    btree_info("BTree module removed");
+        btreedev_exit();
+        cleanup_test_root();
+        bump_allocator_release();
+        btree_info("btree-store module removed");
 }
 
 module_init(init_btree_tests)

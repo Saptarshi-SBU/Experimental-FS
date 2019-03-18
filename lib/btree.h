@@ -2,6 +2,7 @@
 #define _LUCI_BTREE_H_
 
 #include <linux/fs.h>
+#include <linux/list.h>
 #include <linux/types.h>
 #include <linux/buffer_head.h>
 #include <linux/seq_file.h>
@@ -45,7 +46,9 @@ struct btree_root_node {
         struct inode* inode;
         struct btree_node* node;
         struct buffer_head *bh;
+        int    version;
         int    max_level;
+        struct list_head list;
 };
 
 struct btree_operations {
@@ -57,18 +60,36 @@ struct btree_operations {
         void (*btree_dump)    (struct btree_root_node *root);
 };
 
-int extent_tree_insert_item(struct inode* inode,
-                            struct btree_root_node *root,
+long extent_tree_lookup_item(struct btree_root_node *root,
+                             loff_t off,
+                             unsigned int size);
+
+int extent_tree_insert_item(struct btree_root_node *root,
+                            loff_t off,
                             unsigned long block,
                             unsigned int size);
 
-int extent_tree_delete_item(struct inode* inode,
-                            struct btree_root_node *root,
+int extent_tree_delete_item(struct btree_root_node *root,
                             unsigned long key);
 
-unsigned long extent_tree_dump(struct seq_file *m, struct btree_node *node, long refcount, int count);
+int extent_tree_range_query(struct btree_root_node *root,
+                            loff_t off,
+                            size_t range,
+                            struct list_head *range_list,
+                            int level);
+
+struct btree_root_node* extent_tree_init(int version,
+                                         int max_keys);
+
+void extent_tree_destroy(struct btree_root_node *root);
+
+unsigned long extent_tree_dump(struct seq_file *m,
+                               struct btree_node *node,
+                               long refcount,
+                               int count);
 
 struct dentry *btree_debugfs_init(struct btree_root_node *btree_root);
+
 int btree_debugfs_destroy(struct dentry *dentry);
 
 #define BH2BTNODE(bh) ((struct btree_node *)(bh->b_data))
