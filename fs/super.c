@@ -470,6 +470,8 @@ error:
         return -EBADE;
 }
 
+/* This must be called during file system startup. Meta-data integrity
+ * verifications performed here assumes no multi-threading issues. */
 static int
 luci_check_descriptors(struct super_block *sb)
 {
@@ -486,6 +488,7 @@ luci_check_descriptors(struct super_block *sb)
 
                 // entry per block
                 for (entry = 0; entry < sbi->s_desc_per_block; entry++) {
+                        u16 crc;
                         struct luci_group_desc *gdesc;
                         luci_fsblk_t block_map, inode_map, inode_tbl,
                                      first_block, last_block;
@@ -511,6 +514,26 @@ luci_check_descriptors(struct super_block *sb)
 
                         gdesc = (struct luci_group_desc*)
                                 (bh->b_data +  entry * sizeof(struct luci_group_desc));
+
+                        /* This is the first and only group descriptor integrity check.
+                         * Sinc gdesc are always in-memory, further checks during its lifetime
+                         * is redundant. We do not need any lock for bg crc check as we are in
+                         * early startup */
+                        crc = gdesc->bg_checksum;
+                        if (crc) {
+                                u16 crc16_chk;
+                                gdesc->bg_checksum = 0;
+                                crc16_chk = luci_compute_data_cksum((void*)gdesc,
+                                                                     sizeof(struct luci_group_desc),
+                                                                    ~0U) & 0xFFFF;
+                                gdesc->bg_checksum = crc;
+                                if (crc != crc16_chk) {
+                                        luci_err("group descriptor crc mismatch 0x%x/0x%x bg=%u",
+                                                  crc, crc16_chk, gp);
+                                        goto fail;
+                                }
+                                luci_info("bg descriptor %u crc OK", gp);
+                        }
 
                         block_map = le32_to_cpu(gdesc->bg_block_bitmap);
                         if ((block_map < first_block) || (block_map > last_block)) {
@@ -723,6 +746,8 @@ restart:
                 ret = -ENOMEM;
                 goto failed;
         }
+
+        mutex_init(&sbi->s_mutex);
 
         crc32 = le32_to_cpu(lsb->s_checksum);
         lsb->s_checksum = 0;

@@ -130,17 +130,14 @@ done:
 
 /*
  * block group desciptors are cached for metadata lookups
+ * Do NOT need checksum verification here.
  */
 struct luci_group_desc *
-luci_get_group_desc(struct super_block *sb,
-                unsigned int bg,
-                struct buffer_head **bh) {
-        u16 crc;
-        unsigned long bg_entry, off;
-        struct buffer_head *bh_desc;
-        struct luci_group_desc *gdesc;
+luci_get_group_desc(struct super_block *sb, unsigned int bg,
+                    struct buffer_head **bh) {
+        unsigned long bg_index;
+        struct buffer_head *bh_bgtbl;
         struct luci_sb_info *sbi =  LUCI_SB(sb);
-        spinlock_t *bg_lock = luci_group_lock_ptr(sb, bg);
 
         BUG_ON(!sbi);
 
@@ -149,83 +146,75 @@ luci_get_group_desc(struct super_block *sb,
                 goto badsuper;
         }
 
-        bg_entry = bg >> LUCI_DESC_PER_BLOCK_BITS(sb);
-        bh_desc = sbi->s_group_desc[bg_entry];
-        if (!bh_desc) {
+        bg_index = bg >> LUCI_DESC_PER_BLOCK_BITS(sb);
+
+        bh_bgtbl = sbi->s_group_desc[bg_index];
+        if (!bh_bgtbl) {
                 luci_err("Invalid bh entry for bg :%u", bg);
                 goto badsuper;
         }
 
-        off = bg & (LUCI_DESC_PER_BLOCK(sb) - 1);
-        gdesc = (struct luci_group_desc*) (bh_desc->b_data +
-                        off * sizeof(struct luci_group_desc));
-
-        spin_lock(bg_lock);
-
-        crc = gdesc->bg_checksum;
-        gdesc->bg_checksum = 0;
-        if (crc) {
-                u16 crc16_chk = luci_compute_data_cksum((void*)gdesc,
-                                sizeof(struct luci_group_desc), ~0U) & 0xFFFF;
-                if (crc != crc16_chk) {
-                        spin_unlock(bg_lock);
-                        luci_err("crc mismatch 0x%x/0x%x bg=%u",
-                                        crc, crc16_chk, bg);
-                        goto badsuper;
-                }
-                luci_info("bg descriptor %u crc OK", bg);
-        }
-
-        spin_unlock(bg_lock);
-
         if (bh != NULL)
-                *bh = bh_desc;
+                *bh = bh_bgtbl;
 
-        return gdesc;
-
+        bg_index = bg & (LUCI_DESC_PER_BLOCK(sb) - 1);
+        return (struct luci_group_desc*)
+                (bh_bgtbl->b_data + bg_index * sizeof(struct luci_group_desc));
 badsuper:
+
         return NULL;
 }
 
 /*
- * read inode bitmap of a block group
- *
+ * read inode bitmap of a block group.
+ * The following cases come up with respect to integrity checking here:
+ *     1. meta-data is not cached. Need check.
+ *     2. meta-data is cached. Do NOT need check.
+ *     3. meta-data is dirty. Do NOT need check.
  */
 struct buffer_head *
 read_inode_bitmap(struct super_block *sb, unsigned long bg) {
         u32 crc;
+        bool cached;
         uint32_t bmap_block;
         struct buffer_head *bmap_bh;
         struct luci_group_desc *gdesc;
-        spinlock_t *bg_lock = luci_group_lock_ptr(sb, bg);
 
         gdesc = luci_get_group_desc(sb, bg, NULL);
         if (!gdesc)
                 goto err;
 
         bmap_block = gdesc->bg_inode_bitmap;
-        bmap_bh = sb_bread(sb, bmap_block);
+
+        cached = true;
+        bmap_bh = sb_find_get_block(sb, bmap_block);
+        if (!bmap_bh) {
+                cached = false;
+                bmap_bh = sb_bread(sb, bmap_block);
+        }
+
         if (!bmap_bh) {
                 luci_err("read error inode bitmap :%u/%lu", bmap_block, bg);
                 goto err;
         }
 
-        spin_lock(bg_lock);
-        crc = gdesc->bg_inode_bitmap_checksum;
-        if (crc) {
-                u32 crc_chk;
+        if (!cached && buffer_uptodate(bmap_bh) && trylock_buffer(bmap_bh)) {
+                crc = gdesc->bg_inode_bitmap_checksum;
+                if (crc) {
+                        u32 crc_chk;
 
-                crc_chk = luci_compute_page_cksum(bmap_bh->b_page, 0, PAGE_SIZE, ~0U) & 0xFFFF;
-                if (crc != crc_chk) {
-                        spin_unlock(bg_lock);
-                        brelse(bmap_bh);
-                        luci_err("crc mismatch 0x%x/0x%x bg=%lu block=%u",
+                        crc_chk = luci_compute_page_cksum(bmap_bh->b_page, 0, PAGE_SIZE, ~0U) & 0xFFFF;
+                        if (crc != crc_chk) {
+                                unlock_buffer(bmap_bh);
+                                brelse(bmap_bh);
+                                luci_err("crc mismatch 0x%x/0x%x bg=%lu block=%u",
                                         crc, crc_chk, bg, bmap_block);
-                        goto err;
+                                goto err;
+                        }
                 }
+                unlock_buffer(bmap_bh);
                 luci_info("bg inode bitmap %lu crc OK", bg);
         }
-        spin_unlock(bg_lock);
         return bmap_bh;
 
 err:
@@ -234,15 +223,18 @@ err:
 
 /*
  * read block bitmap of a block group
+ *     1. meta-data is not cached. Need check.
+ *     2. meta-data is cached. Do NOT need check.
+ *     3. meta-data is dirty. Do NOT need check.
  *
  */
 struct buffer_head *
 read_block_bitmap(struct super_block *sb, unsigned long bg) {
         u32 crc;
+        bool cached;
         uint32_t bmap_block;
         struct luci_group_desc *gdesc;
         struct buffer_head *bmap_bh = NULL;
-        spinlock_t *bg_lock = luci_group_lock_ptr(sb, bg);
 #ifdef DEBUG_BMAP
         int i = 0;
 #endif
@@ -251,32 +243,39 @@ read_block_bitmap(struct super_block *sb, unsigned long bg) {
         if (!gdesc)
                 goto err;
 
-        luci_dbg("block group :%lu nr_free blocks : %u", bg,
-                        gdesc->bg_free_blocks_count);
+        luci_dbg("block group :%lu nr_free blocks : %u", bg, gdesc->bg_free_blocks_count);
 
         bmap_block = gdesc->bg_block_bitmap;
-        bmap_bh = sb_bread(sb, bmap_block);
+
+        cached = true;
+        bmap_bh = sb_find_get_block(sb, bmap_block);
+        if (!bmap_bh) {
+                cached = false;
+                bmap_bh = sb_bread(sb, bmap_block);
+        }
+
         if (!bmap_bh) {
                 luci_err("read error block bitmap :%u/%lu", bmap_block, bg);
                 goto err;
         }
 
-        spin_lock(bg_lock);
-        crc = gdesc->bg_block_bitmap_checksum;
-        if (crc) {
-                u32 crc_chk;
+        if (!cached && buffer_uptodate(bmap_bh) && trylock_buffer(bmap_bh)) {
+                crc = gdesc->bg_block_bitmap_checksum;
+                if (crc) {
+                        u32 crc_chk;
 
-                crc_chk = luci_compute_page_cksum(bmap_bh->b_page, 0, PAGE_SIZE, ~0U) & 0xFFFF;
-                if (crc != crc_chk) {
-                        spin_unlock(bg_lock);
-                        brelse(bmap_bh);
-                        luci_err("crc mismatch 0x%x/0x%x bg=%lu block=%u",
+                        crc_chk = luci_compute_page_cksum(bmap_bh->b_page, 0, PAGE_SIZE, ~0U) & 0xFFFF;
+                        if (crc != crc_chk) {
+                                unlock_buffer(bmap_bh);
+                                brelse(bmap_bh);
+                                luci_err("crc mismatch 0x%x/0x%x bg=%lu block=%u",
                                         crc, crc_chk, bg, bmap_block);
-                        goto err;
+                                goto err;
+                        }
                 }
+                unlock_buffer(bmap_bh);
                 luci_info("bg block bitmap %lu crc OK", bg);
         }
-        spin_unlock(bg_lock);
 
 #ifdef DEBUG_BMAP
         for (i = 0; i < bmap_bh->b_size/sizeof(uint32_t); i++)
@@ -294,17 +293,16 @@ err:
  */
 void
 luci_free_inode (struct inode *inode) {
-        ino_t ino = inode->i_ino;
-        struct super_block *sb = inode->i_sb;
-        struct luci_sb_info *sbi = LUCI_SB(sb);
-        struct luci_group_desc *gdesc;
-        struct buffer_head *bmap_bh, *bg_bh;
-        unsigned long bg, bit;
-        spinlock_t *bg_lock = NULL;
 #ifdef DEBUG_BMAP
         int i;
         char *p;
 #endif
+        unsigned long bg, bit;
+        ino_t ino = inode->i_ino;
+        struct luci_group_desc *gdesc;
+        struct super_block *sb = inode->i_sb;
+        struct luci_sb_info *sbi = LUCI_SB(sb);
+        struct buffer_head *bmap_bh, *bg_bh;
 
         BUG_ON(!ino);
 
@@ -314,8 +312,6 @@ luci_free_inode (struct inode *inode) {
         }
 
         bg = ino/(sbi->s_lsb->s_inodes_per_group);
-
-        bg_lock = luci_group_lock_ptr(sb, bg);
 
         gdesc = luci_get_group_desc(sb, bg, &bg_bh);
         if (!gdesc) {
@@ -337,22 +333,35 @@ luci_free_inode (struct inode *inode) {
                 luci_dbg("bitmap :0x%02x", *((unsigned char*)p + i));
 #endif
 
-        spin_lock(bg_lock);
+        // lock 1 for bg descriptor
+        lock_buffer(bg_bh);
+
+        // lock 2 for inode-bitmap block
+        lock_buffer(bmap_bh);
 
         // Note -1 takes care of one-based index for inodes. Fix : use modulo
         bit = (ino - 1) % (sbi->s_lsb->s_inodes_per_group);
         if (!(__test_and_clear_bit_le(bit, bmap_bh->b_data))) {
-                spin_unlock(bg_lock);
+                unlock_buffer(bmap_bh);
+                unlock_buffer(bg_bh);
                 luci_err("free inode error, bit already cleared :%lu!", ino);
                 goto out;
         }
 
         luci_bg_inode_bitmap_update_csum(gdesc, bmap_bh);
+
+        //release lock 2
+        unlock_buffer(bmap_bh);
+
         le16_add_cpu(&gdesc->bg_free_inodes_count, 1);
+
         if (S_ISDIR(inode->i_mode))
                 le16_add_cpu(&gdesc->bg_used_dirs_count, -1);
+
         luci_bg_update_csum(gdesc);
-        spin_unlock(bg_lock);
+
+        //release lock 1
+        unlock_buffer(bg_bh);
 
         mark_buffer_dirty(bmap_bh);
         if (sb->s_flags & MS_SYNCHRONOUS)
@@ -379,7 +388,6 @@ luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
         struct super_block *sb = dir->i_sb;
         struct luci_sb_info *sbi =  LUCI_SB(sb);
         struct luci_inode_info *li;
-        spinlock_t *bg_lock = NULL;
 
         inode = new_inode(sb);
         if (!inode) {
@@ -388,8 +396,6 @@ luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
         }
 
         for (i = 0; i < sbi->s_groups_count; i++) {
-
-                bg_lock = luci_group_lock_ptr(sb, i);
 
                 gdesc = luci_get_group_desc(sb, i, &bg_bh);
                 if (!gdesc) {
@@ -405,20 +411,32 @@ luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
                         goto fail;
                 }
 
-                spin_lock(bg_lock);
-
                 ino = find_next_zero_bit((unsigned long*)bmap_bh->b_data,
                                 LUCI_INODES_PER_GROUP(sb),
                                 0);
 
+                // lock 1.
+                lock_buffer(bg_bh);
+
+                // lock 2.
+                lock_buffer(bmap_bh);
+
                 if (ino < LUCI_INODES_PER_GROUP(sb)) {
                         if (!(__test_and_set_bit_le(ino, bmap_bh->b_data))) {
                                 group = i;
+                                mark_buffer_dirty(bmap_bh);
+                                // unlock 2
+                                unlock_buffer(bmap_bh);
                                 goto gotit;
                         }
                 }
 
-                spin_unlock(bg_lock);
+                // unlock 2
+                unlock_buffer(bmap_bh);
+
+                // unlock 1
+                unlock_buffer(bg_bh);
+
                 brelse(bmap_bh);
         }
 
@@ -429,11 +447,18 @@ luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
 gotit:
 
         luci_bg_inode_bitmap_update_csum(gdesc, bmap_bh);
+
         le16_add_cpu(&gdesc->bg_free_inodes_count, -1);
+
         if (S_ISDIR(mode))
                 le16_add_cpu(&gdesc->bg_used_dirs_count, 1);
+
         luci_bg_update_csum(gdesc);
-        spin_unlock(bg_lock);
+
+        mark_buffer_dirty(bg_bh);
+
+        // unlock 1
+        unlock_buffer(bg_bh);
 
         // Fix : note added 1 to ino, dentry maps treat 0 inode as empty
         ino += (group * LUCI_INODES_PER_GROUP(sb)) + 1;
@@ -472,16 +497,16 @@ gotit:
         mark_inode_dirty(inode);
 
         // inode bitmap
-        mark_buffer_dirty(bmap_bh);
         if (sb->s_flags & MS_SYNCHRONOUS)
                 sync_dirty_buffer(bmap_bh);
+
         brelse(bmap_bh);
-        // block group descriptor
-        mark_buffer_dirty(bg_bh);
 
         percpu_counter_add(&sbi->s_freeinodes_counter, -1);
+
         if (S_ISDIR(mode))
                 percpu_counter_inc(&sbi->s_dirs_counter);
+
         return inode;
 
 fail:
@@ -506,7 +531,6 @@ luci_new_block(struct inode *inode,
         struct luci_group_desc *gdesc = NULL;
         struct luci_super_block *lsb = NULL;
         struct buffer_head *bg_bh = NULL, *bmap_bh = NULL;
-        spinlock_t *bg_lock = NULL;
 
         read_lock(&li->i_meta_lock);
 
@@ -517,8 +541,6 @@ luci_new_block(struct inode *inode,
                         li->i_block_group);
 
         for (; gp < sbi->s_groups_count; bg = (bg + 1) % sbi->s_groups_count, gp++) {
-
-                bg_lock = luci_group_lock_ptr(sb, bg);
 
                 gdesc = luci_get_group_desc(sb, bg, &bg_bh);
                 if (!gdesc) {
@@ -537,11 +559,16 @@ luci_new_block(struct inode *inode,
                         goto fail;
                 }
 
-                spin_lock(bg_lock);
+                // lock 1.
+                lock_buffer(bg_bh);
+
+                // lock 2.
+                lock_buffer(bmap_bh);
 
                 // returns size if no bits are zero
-                block = luci_alloc_bitmap((unsigned long*)bmap_bh->b_data, nr_blocks,
-                                LUCI_BLOCKS_PER_GROUP(sb));
+                block = luci_alloc_bitmap((unsigned long*)bmap_bh->b_data,
+                                           nr_blocks,
+                                           LUCI_BLOCKS_PER_GROUP(sb));
 
 #ifdef DEBUG_BMAP
                 luci_dbg("finding zero bit in bg %u(%lu) :0x%lx", block, bg,
@@ -557,7 +584,9 @@ luci_new_block(struct inode *inode,
                                         bg, gdesc->bg_free_blocks_count);
                 }
 
-                spin_unlock(bg_lock);
+                unlock_buffer(bmap_bh);
+
+                unlock_buffer(bg_bh);
         }
 
         luci_err("create block failed, space is full");
@@ -569,15 +598,26 @@ gotit:
 
         // block bitmap
         got_blocks = nr_blocks;
+
         luci_bg_block_bitmap_update_csum(gdesc, bmap_bh);
+
+        // unlock 2
+        unlock_buffer(bmap_bh);
+
         le16_add_cpu(&gdesc->bg_free_blocks_count, -got_blocks);
+
         luci_bg_update_csum(gdesc);
-        spin_unlock(bg_lock);
+
+        // unlock 1
+        unlock_buffer(bg_bh);
 
         mark_buffer_dirty(bmap_bh);
+
         if (sb->s_flags & MS_SYNCHRONOUS)
                 sync_dirty_buffer(bmap_bh);
+
         brelse(bmap_bh);
+
         mark_buffer_dirty(bg_bh);
 
         //writer lock for inode active bg
@@ -586,15 +626,25 @@ gotit:
         write_unlock(&li->i_meta_lock);
 
         //TBD : We are not updating the super-block across all backups
+        lock_buffer(sbi->s_sbh);
+
         percpu_counter_add(&sbi->s_freeblocks_counter, -got_blocks);
+
         lsb = sbi->s_lsb;
+
         lsb->s_free_blocks_count -= got_blocks;
+
         luci_super_update_csum(sb);
+
+        // unlock
+        unlock_buffer(sbi->s_sbh);
+
         mark_buffer_dirty(sbi->s_sbh);
 
         inode->i_mtime = inode->i_atime = inode->i_ctime = LUCI_CURR_TIME;
         // sector based (TBD : add a macro for block to sector)
         inode->i_blocks += (got_blocks * luci_sectors_per_block(inode));
+
         mark_inode_dirty(inode);
 
 fail:
@@ -609,20 +659,17 @@ int
 luci_free_block(struct inode *inode, unsigned long block)
 {
         unsigned int bg, bitpos;
+        struct luci_group_desc *gdesc;
         struct super_block *sb = inode->i_sb;
         struct luci_sb_info *sbi = sb->s_fs_info;
         struct luci_super_block *lsb = sbi->s_lsb;
-        struct luci_group_desc *gdesc;
         struct buffer_head *bmap_bh = NULL, *bh_desc = NULL;
-        spinlock_t *bg_lock = NULL;
 
         BUG_ON(block <= le32_to_cpu(lsb->s_first_data_block));
 
         bg = (block - le32_to_cpu(lsb->s_first_data_block))/sbi->s_blocks_per_group;
         if (bg > sbi->s_groups_count)
                 panic("bogus block group %u(%lu)", bg, sbi->s_groups_count);
-
-        bg_lock = luci_group_lock_ptr(sb, bg);
 
         gdesc = luci_get_group_desc(sb, bg, &bh_desc);
         if (!gdesc) {
@@ -637,13 +684,19 @@ luci_free_block(struct inode *inode, unsigned long block)
         }
 
         bitpos = (block - le32_to_cpu(lsb->s_first_data_block)) %
-                sbi->s_blocks_per_group;
+                  sbi->s_blocks_per_group;
+
         luci_dbg("freeing block %lu, bg :%u bitpos :%u", block, bg, bitpos);
 
-        spin_lock(bg_lock);
+        // lock 1
+        lock_buffer(bh_desc);
+
+        // lock 2
+        lock_buffer(bmap_bh);
 
         if (!(__test_and_clear_bit_le(bitpos, bmap_bh->b_data))) {
-                spin_unlock(bg_lock);
+                unlock_buffer(bmap_bh);
+                unlock_buffer(bh_desc);
                 brelse(bmap_bh);
                 luci_err("free block error, block already freed!, %lu/%u/%u",
                                 block, bg, bitpos);
@@ -652,27 +705,46 @@ luci_free_block(struct inode *inode, unsigned long block)
 
         // bg block bitmap
         luci_bg_block_bitmap_update_csum(gdesc, bmap_bh);
+
+        // unlock 2
+        unlock_buffer(bmap_bh);
+
         le16_add_cpu(&gdesc->bg_free_blocks_count, 1);
+
         lsb->s_free_blocks_count++;
+
         if (S_ISDIR(inode->i_mode))
                 le16_add_cpu(&gdesc->bg_used_dirs_count, -1);
+
         luci_bg_update_csum(gdesc);
 
-        spin_unlock(bg_lock);
+        // unlock 1
+        unlock_buffer(bh_desc);
 
         // bg descriptor
         mark_buffer_dirty(bmap_bh);
+
         brelse(bmap_bh);
+
         mark_buffer_dirty(bh_desc); // cannot release group descriptor bh
 
         // super block update
+        lock_buffer(sbi->s_sbh);
+
         percpu_counter_add(&sbi->s_freeblocks_counter, 1);
+
         if (S_ISDIR(inode->i_mode))
                 percpu_counter_dec(&sbi->s_dirs_counter);
+
         luci_super_update_csum(sb);
+
+        unlock_buffer(sbi->s_sbh);
+
         mark_buffer_dirty(sbi->s_sbh);
 
         inode->i_blocks -= luci_sectors_per_block(inode);
+
         mark_inode_dirty(inode);
+
         return 0;
 }

@@ -177,6 +177,7 @@ struct luci_sb_info {
     struct percpu_counter s_freeinodes_counter;
     struct percpu_counter s_dirs_counter;
     struct blockgroup_lock *s_blockgroup_lock;
+    struct mutex s_mutex;
     /*
      * s_lock protects against concurrent modifications of s_mount_state,
      * s_blocks_last, s_overhead_last and the content of superblock's
