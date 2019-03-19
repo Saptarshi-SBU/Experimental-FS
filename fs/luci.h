@@ -344,10 +344,12 @@ struct luci_group_desc
     __le16  bg_free_blocks_count;   /* Free blocks count */
     __le16  bg_free_inodes_count;   /* Free inodes count */
     __le16  bg_used_dirs_count; /* Directories count */
-    __le32  bg_block_bitmap_checksum;
-    __le32  bg_inode_bitmap_checksum;
-    __le32  bg_inode_table_checksum;
+    __le16  bg_pag;
+    __le16  bg_block_bitmap_checksum;
+    __le16  bg_inode_bitmap_checksum;
+    __le16  bg_inode_table_checksum;
     __le16  bg_checksum;
+    __le32  bg_reserved;
 }__attribute__ ((aligned (8), packed));
 
 /*
