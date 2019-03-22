@@ -113,10 +113,10 @@ const struct inode_operations luci_file_inode_operations =
  * All access to metadata blocks are protected by mutex
  */
 static int
-luci_bmap_update_metacsum(struct inode *inode,
-                          Indirect ichain[],
-                          int depth,
-                          unsigned long i_block)
+luci_update_blkptr_chain_csum(struct inode *inode,
+                              Indirect ichain[],
+                              int depth,
+                              unsigned long i_block)
 {
     u32 crc32;
     Indirect *p;
@@ -149,11 +149,11 @@ luci_bmap_update_metacsum(struct inode *inode,
  * All access to metadata blocks are protected by mutex
  */
 static int
-luci_bmap_verify_metacsum(struct inode *inode,
-                          int curr_level,
-                          int max_depth,
-                          struct buffer_head *bh,
-                          struct blkptr *bp)
+luci_validate_blkptr_chain_csum(struct inode *inode,
+                                   int curr_level,
+                                   int max_depth,
+                                   struct buffer_head *bh,
+                                   struct blkptr *bp)
 {
     u32 crc32;
     int err = 0;
@@ -299,7 +299,7 @@ luci_bmap_get_path(struct inode *inode,
     }
 
     if (depth > 1)
-        *err = luci_bmap_verify_metacsum(inode, i + 1, depth, p->bh, &p->key);
+        *err = luci_validate_blkptr_chain_csum(inode, i + 1, depth, p->bh, &p->key);
 
     luci_info_inode(inode, "bmap get path, ipath[%d] %d-%u-%u-0x%x[%ld]",
                             i,
@@ -331,7 +331,7 @@ luci_bmap_get_path(struct inode *inode,
                                 *ipaths,
                                 parent_block);
         if (i + 1 < depth)
-            *err = luci_bmap_verify_metacsum(inode, i + 1, depth, p->bh, &p->key);
+            *err = luci_validate_blkptr_chain_csum(inode, i + 1, depth, p->bh, &p->key);
     }
 
     return NULL;
@@ -376,14 +376,16 @@ luci_bmap_allocate_entry(struct inode *inode,
     if ((currbh = sb_getblk(inode->i_sb, curr_block)) == NULL)
         panic("block read failed for %lu/%lu\n", curr_block, i_block);
 
-    ichain[curr_level].key.blockno = curr_block;
-    ichain[curr_level].bh = currbh;
-
     lock_buffer(currbh);
 
     // b_data comes mapped
     memset(currbh->b_data, 0, currbh->b_size);
     set_buffer_uptodate(currbh);
+
+    ichain[curr_level].key.blockno = curr_block;
+    ichain[curr_level].key.checksum =
+            luci_compute_page_cksum(currbh->b_page, 0, PAGE_SIZE, ~0U);
+    ichain[curr_level].bh = currbh;
 
     unlock_buffer(currbh);
 
@@ -588,7 +590,7 @@ luci_get_block(struct inode *inode,
                                  ichain,
                                  &err);
     if (err < 0) {
-        luci_err_inode(inode, "bmap error, err :%u", err);
+        luci_err_inode(inode, "bmap path error %d", err);
         goto exit;
     }
 
@@ -675,13 +677,13 @@ gotit:
         } else
             // We have a hole. mpage API identifies a hole if bh is not mapped.
             // So we are fine even if we do not have an block created for a hole.
-            luci_dbg_inode(inode, "found hole at i_block :%lu", iblock);
+            luci_info_inode(inode, "found hole at i_block :%lu", iblock);
     }
 
 done:
 
     if (flags)
-        err = luci_bmap_update_metacsum(inode, ichain, depth, iblock);
+        err = luci_update_blkptr_chain_csum(inode, ichain, depth, iblock);
 
     // FIXED : free bhs associated with lookup, meta pages are already in memory
     partial = ichain + depth - 1;
@@ -1318,11 +1320,15 @@ luci_readpage(struct file *file, struct page *page)
 uncompressed_read:
     // trace mpage_readpage with unlock issue
     ret = mpage_readpage(page, luci_get_block);
+
     if (!ret && bp.length && do_verify) {
         wait_on_page_locked(page);
         BUG_ON(!PageUptodate(page));
-        if ((ret = luci_validate_page_cksum(page, &bp)) < 0)
-            luci_err("checksum error detected on data block\n");
+        ret = luci_validate_data_page_cksum(page, &bp);
+        if (ret < 0)
+            luci_err_inode(inode,
+                "L0 blkptr checksum mismatch on read page, block=%u-%u",
+                bp.blockno, bp.length);
     }
 
 done:

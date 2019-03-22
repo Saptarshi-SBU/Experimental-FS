@@ -13,10 +13,10 @@ from shutil import copyfile
 
 from setup import RunCommand
 
-TESTDIR='/mnt'
+TESTDIR='/mnt/pics_bakup.bak'
 #HOMEDIR="/run/media/ssen/NIKON D3200/DCIM/100D3200"
 #HOMEDIR="/run/media/root/Shilpita/sen_santa_cruz_dec2016/DCIM/100D3200"
-HOMEDIR="/home/ssen/Downloads/pics_bakup"
+HOMEDIR="/home/ssen/Downloads/pics_bakup.bak"
 #HOMEDIR="/home"
 NRFILES=100
 LARGEFILE='/dev/sda'

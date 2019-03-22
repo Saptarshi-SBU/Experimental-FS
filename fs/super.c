@@ -1112,7 +1112,7 @@ exit_debugfs(void) {
         }
 }
 
-        static int
+static int
 __init init_luci_fs(void)
 {
         int err;
@@ -1142,7 +1142,7 @@ failed_compr:
         return err;
 }
 
-        static void
+static void
 __exit exit_luci_fs(void)
 {
         exit_debugfs();
@@ -1151,5 +1151,5 @@ __exit exit_luci_fs(void)
         destroy_inodecache();
 }
 
-        module_init(init_luci_fs)
+module_init(init_luci_fs)
 module_exit(exit_luci_fs)

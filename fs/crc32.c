@@ -63,9 +63,10 @@ int luci_compute_pages_cksum(struct page **pages, unsigned nr_pages,
     #endif
 }
 
-int luci_validate_page_cksum(struct page *page, blkptr *bp)
+int luci_validate_data_page_cksum(struct page *page, blkptr *bp)
 {
     #ifdef LUCIFS_CHECKSUM
+    u32 crc32;
     int err = 0;
 
     BUG_ON(PageError(page));    
@@ -75,9 +76,10 @@ int luci_validate_page_cksum(struct page *page, blkptr *bp)
         goto exit;
     }
 
-    if (bp->checksum != luci_compute_page_cksum(page, 0, bp->length, ~0U)) {
+    crc32 = luci_compute_page_cksum(page, 0, bp->length, ~0U);
+    if (bp->checksum != crc32) {
         err = -EBADE;
-        luci_err("checksum error detected: 0x%x", bp->checksum);
+        luci_err("blkptr crc mismatch: 0x%x/0x%x", bp->checksum, crc32);
     }
 
     return err;
@@ -89,7 +91,7 @@ exit:
     #endif
 }
 
-int luci_validate_pages_cksum(struct page **pages, unsigned nr_pages, blkptr *bp)
+int luci_validate_data_pages_cksum(struct page **pages, unsigned nr_pages, blkptr *bp)
 {
     #ifdef LUCIFS_CHECKSUM
     u32 crc = ~0U;
@@ -114,7 +116,8 @@ int luci_validate_pages_cksum(struct page **pages, unsigned nr_pages, blkptr *bp
 
     if (bp->checksum != crc) {
         err = -EBADE;
-        luci_err("checksum error, EXP :0x%x GOT :0x%x", bp->checksum, crc);
+        luci_err("blkptr crc mismatch, nr_pages :%u EXP :0x%x GOT :0x%x",
+                  nr_pages, bp->checksum, crc);
     }
 
     return err;

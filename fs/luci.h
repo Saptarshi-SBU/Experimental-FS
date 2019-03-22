@@ -659,7 +659,7 @@ int luci_commit_chunk(struct page *page, loff_t pos, unsigned len);
 unsigned luci_last_byte(struct inode *inode, unsigned long page_nr);
 
 /* inode.c */
-#define TEST_INODE 13
+#define TEST_INODE 12
 
 #define LUCI_COMPR_FLAG  0x1
 
@@ -682,8 +682,8 @@ extern int luci_dump_layout(struct inode * inode);
 u32 luci_compute_data_cksum(void *addr, size_t length, u32 crc_seed);
 u32 luci_compute_page_cksum(struct page *page, off_t off, size_t length, u32 crc_seed);
 int luci_compute_pages_cksum(struct page **pages, unsigned nr_pages, size_t length);
-int luci_validate_page_cksum(struct page *page, blkptr *bp);
-int luci_validate_pages_cksum(struct page **pages, unsigned nr_pages, blkptr *bp);
+int luci_validate_data_page_cksum(struct page *page, blkptr *bp);
+int luci_validate_data_pages_cksum(struct page **pages, unsigned nr_pages, blkptr *bp);
 
 /* ialloc.c */
 extern struct buffer_head *read_inode_bitmap(struct super_block *sb, unsigned long block_group);

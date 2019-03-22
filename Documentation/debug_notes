@@ -5984,3 +5984,41 @@ used_pages :4096 prev_out :4096, skip_bytes :0
 used_pages :4096 prev_out :8117, skip_bytes :0
 [128094.012918] bio page :ffffea0006686780
 [128094.012919] inflate completed
+=======================================================================
+
+[19256.995722] exit_luci_compress : 61
+[19257.042863]
+=============================================================================
+[19257.042869] BUG luci_inode_cache (Tainted: GF          O): Objects remaining
+in luci_inode_cache on kmem_cache_close()
+[19257.042870]
+-----------------------------------------------------------------------------
+
+[19257.042872] Disabling lock debugging due to kernel taint
+[19257.042874] INFO: Slab 0xffffea000657ee00 objects=42 used=1
+fp=0xffff880195fbfb00 flags=0x5ff00000004080
+[19257.042877] CPU: 9 PID: 12796 Comm: rmmod Tainted: GF   B      O 3.11.10 #1
+[19257.042879] Hardware name: Dell Inc. PowerEdge T320/07C9XP, BIOS 2.1.2
+01/20/2014
+[19257.042881]  ffff880153b42000 ffff8801239d1d68 ffffffff8163ce45
+ffffea000657ee00
+[19257.042902]  ffff8801239d1e40 ffffffff81189804 0000000000000020
+ffff8801239d1e50
+[19257.042905]  ffff8801239d1e00 656a624f05d58e00 616d657220737463
+6e6920676e696e69
+[19257.042908] Call Trace:
+[19257.042916]  [<ffffffff8163ce45>] dump_stack+0x45/0x56
+[19257.042920]  [<ffffffff81189804>] slab_err+0xb4/0xe0
+[19257.042925]  [<ffffffff81143892>] ? __free_memcg_kmem_pages+0x22/0x50
+[19257.042928]  [<ffffffff8118a293>] ? __free_slab+0xe3/0x1d0
+[19257.042931]  [<ffffffff8118c151>] ? __kmalloc+0x221/0x230
+[19257.042933]  [<ffffffff8118d14b>] ? kmem_cache_close+0x12b/0x2f0
+[19257.042935]  [<ffffffff8118d16c>] kmem_cache_close+0x14c/0x2f0
+[19257.042937]  [<ffffffff8118ddc4>] __kmem_cache_shutdown+0x14/0x80
+[19257.042941]  [<ffffffff8115b90f>] kmem_cache_destroy+0x3f/0xe0
+[19257.042947]  [<ffffffffa0562b17>] exit_luci_fs+0x37/0x39 [luci]
+[19257.042951]  [<ffffffff810ca09b>] SyS_delete_module+0x16b/0x2d0
+[19257.042956]  [<ffffffff8164791e>] ? do_page_fault+0xe/0x10
+[19257.042959]  [<ffffffff8164c059>] system_call_fastpath+0x16/0x1b
+[19257.042962] INFO: Object 0xffff880195fb9500 @offset=5376
+

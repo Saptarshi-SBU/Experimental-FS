@@ -814,8 +814,11 @@ int luci_read_extent(struct page *page, blkptr *bp)
     bio_for_each_segment_all(bvec, comp_bio, i)
         SetPageUptodate(bvec->bv_page);
 
-    if (luci_validate_pages_cksum(compressed_pages, nr_pages, bp) < 0)
+    if (luci_validate_data_pages_cksum(compressed_pages, nr_pages, bp) < 0) {
+            luci_err("L0 checksum mismatch on read extent, block=%u-%u\n",
+                      bp->blockno, bp->length);
             goto free_compbio;
+    }
 
     // gather page tree pages
     for (i = 0; i < EXTENT_NRPAGE; pg_index++, i++) {

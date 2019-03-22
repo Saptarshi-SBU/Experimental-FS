@@ -32,6 +32,7 @@ repeat:
         return ctx;
     }
 
+    /*
     if (atomic_read(&ctxpool.count) >= num_online_cpus()) {
         spin_unlock(&ctxpool.lock);
         prepare_to_wait(&ctxpool.waitq,
@@ -42,6 +43,7 @@ repeat:
         finish_wait(&ctxpool.waitq, &wait);
         goto repeat;
     }
+    */
 
     atomic_inc(&ctxpool.count);
     spin_unlock(&ctxpool.lock);
@@ -60,7 +62,7 @@ repeat:
 void put_compression_context(struct list_head *ctx)
 {
     spin_lock(&ctxpool.lock);
-    BUG_ON(atomic_read(&ctxpool.count) > num_online_cpus());
+    //BUG_ON(atomic_read(&ctxpool.count) > num_online_cpus());
     list_add(ctx, &ctxpool.idle_list);
     spin_unlock(&ctxpool.lock);
 
@@ -74,6 +76,8 @@ void put_compression_context(struct list_head *ctx)
  */
 void exit_luci_compress(void)
 {
+    pr_info("%s : %u\n", __func__, atomic_read(&ctxpool.count));
+
     while (!list_empty(&ctxpool.idle_list)) {
         struct list_head *ctx = ctxpool.idle_list.next;
 	list_del(ctx);
