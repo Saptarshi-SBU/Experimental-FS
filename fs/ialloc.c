@@ -143,14 +143,12 @@ luci_get_group_desc(struct super_block *sb, unsigned int bg,
 
         if (bg > sbi->s_groups_count) {
                 luci_err("Invalid block group :%u", bg);
-                goto badsuper;
+                BUG();
         }
 
-        bg_index = bg >> LUCI_DESC_PER_BLOCK_BITS(sb);
-
-        bh_bgtbl = sbi->s_group_desc[bg_index];
+        bh_bgtbl = sbi->s_group_desc[(bg >> LUCI_DESC_PER_BLOCK_BITS(sb))];
         if (!bh_bgtbl) {
-                luci_err("Invalid bh entry for bg :%u", bg);
+                luci_err("null bh for bg :%u", bg);
                 goto badsuper;
         }
 
@@ -345,6 +343,7 @@ luci_free_inode (struct inode *inode) {
                 unlock_buffer(bmap_bh);
                 unlock_buffer(bg_bh);
                 luci_err("free inode error, bit already cleared :%lu!", ino);
+                BUG();
                 goto out;
         }
 
@@ -411,15 +410,15 @@ luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
                         goto fail;
                 }
 
-                ino = find_next_zero_bit((unsigned long*)bmap_bh->b_data,
-                                LUCI_INODES_PER_GROUP(sb),
-                                0);
-
                 // lock 1.
                 lock_buffer(bg_bh);
 
                 // lock 2.
                 lock_buffer(bmap_bh);
+
+                ino = find_next_zero_bit((unsigned long*)bmap_bh->b_data,
+                                LUCI_INODES_PER_GROUP(sb),
+                                0);
 
                 if (ino < LUCI_INODES_PER_GROUP(sb)) {
                         if (!(__test_and_set_bit_le(ino, bmap_bh->b_data))) {
@@ -601,6 +600,8 @@ gotit:
 
         luci_bg_block_bitmap_update_csum(gdesc, bmap_bh);
 
+        mark_buffer_dirty(bmap_bh);
+
         // unlock 2
         unlock_buffer(bmap_bh);
 
@@ -608,17 +609,15 @@ gotit:
 
         luci_bg_update_csum(gdesc);
 
+        mark_buffer_dirty(bg_bh);
+
         // unlock 1
         unlock_buffer(bg_bh);
-
-        mark_buffer_dirty(bmap_bh);
 
         if (sb->s_flags & MS_SYNCHRONOUS)
                 sync_dirty_buffer(bmap_bh);
 
         brelse(bmap_bh);
-
-        mark_buffer_dirty(bg_bh);
 
         //writer lock for inode active bg
         write_lock(&li->i_meta_lock);
@@ -636,10 +635,10 @@ gotit:
 
         luci_super_update_csum(sb);
 
+        mark_buffer_dirty(sbi->s_sbh);
+
         // unlock
         unlock_buffer(sbi->s_sbh);
-
-        mark_buffer_dirty(sbi->s_sbh);
 
         inode->i_mtime = inode->i_atime = inode->i_ctime = LUCI_CURR_TIME;
         // sector based (TBD : add a macro for block to sector)
@@ -706,6 +705,9 @@ luci_free_block(struct inode *inode, unsigned long block)
         // bg block bitmap
         luci_bg_block_bitmap_update_csum(gdesc, bmap_bh);
 
+        // bg descriptor
+        mark_buffer_dirty(bmap_bh);
+
         // unlock 2
         unlock_buffer(bmap_bh);
 
@@ -718,15 +720,12 @@ luci_free_block(struct inode *inode, unsigned long block)
 
         luci_bg_update_csum(gdesc);
 
+        mark_buffer_dirty(bh_desc); // cannot release group descriptor bh
+
         // unlock 1
         unlock_buffer(bh_desc);
 
-        // bg descriptor
-        mark_buffer_dirty(bmap_bh);
-
         brelse(bmap_bh);
-
-        mark_buffer_dirty(bh_desc); // cannot release group descriptor bh
 
         // super block update
         lock_buffer(sbi->s_sbh);

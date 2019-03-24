@@ -17,6 +17,12 @@
 #include "kern_feature.h"
 #include "luci.h"
 
+#define CREATE_TRACE_POINTS
+#include "trace.h"
+
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_get_block);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_write_inode_raw);
+
 static int
 __luci_setsize(struct inode *inode, loff_t newsize)
 {
@@ -119,6 +125,7 @@ luci_update_blkptr_chain_csum(struct inode *inode,
                               unsigned long i_block)
 {
     u32 crc32;
+    int i = depth;
     Indirect *p;
     struct buffer_head *currbh;
 
@@ -141,6 +148,19 @@ luci_update_blkptr_chain_csum(struct inode *inode,
                   p->key.blockno,
                   p->key.checksum);
     }
+
+    while (i >= 0) {
+        p = &ichain[i];
+        if (p->bh) {
+                mark_buffer_dirty_inode(p->bh, inode);
+                sync_dirty_buffer(p->bh);
+        }
+        i--;
+    }
+
+    mark_inode_dirty(inode);
+    //luci_write_inode_raw(inode, 1);
+
     return 0;
 }
 
@@ -149,11 +169,11 @@ luci_update_blkptr_chain_csum(struct inode *inode,
  * All access to metadata blocks are protected by mutex
  */
 static int
-luci_validate_blkptr_chain_csum(struct inode *inode,
-                                   int curr_level,
-                                   int max_depth,
-                                   struct buffer_head *bh,
-                                   struct blkptr *bp)
+luci_validate_bmap_blkptr_csum(struct inode *inode,
+                               int curr_level,
+                               int max_depth,
+                               struct buffer_head *bh,
+                               struct blkptr *bp)
 {
     u32 crc32;
     int err = 0;
@@ -166,6 +186,8 @@ luci_validate_blkptr_chain_csum(struct inode *inode,
         luci_info("bh is dirty or has zero csum, cannot verify csum");
         goto exit;
     }
+
+    BUG_ON(bp->flags);
 
     crc32 = luci_compute_page_cksum(bh->b_page, 0, PAGE_SIZE, ~0U);
     if (bp->checksum != crc32) {
@@ -266,6 +288,7 @@ done:
     return n;
 }
 
+/* In case of error lets continue scanning the entire path */
 static Indirect *
 luci_bmap_get_path(struct inode *inode,
                    int depth,
@@ -273,7 +296,7 @@ luci_bmap_get_path(struct inode *inode,
                    Indirect ichain[LUCI_MAX_DEPTH],
                    int *err)
 {
-    int i = 0;
+    int i = 0, ret = 0;
     Indirect *p = ichain;
     struct buffer_head *bh = NULL;
     struct super_block *sb = inode->i_sb;
@@ -299,7 +322,7 @@ luci_bmap_get_path(struct inode *inode,
     }
 
     if (depth > 1)
-        *err = luci_validate_blkptr_chain_csum(inode, i + 1, depth, p->bh, &p->key);
+        *err = luci_validate_bmap_blkptr_csum(inode, i, depth, p->bh, &p->key);
 
     luci_info_inode(inode, "bmap get path, ipath[%d] %d-%u-%u-0x%x[%ld]",
                             i,
@@ -309,7 +332,7 @@ luci_bmap_get_path(struct inode *inode,
                             p->key.checksum,
                             *ipaths);
 
-    while (!(*err) && ++i < depth) {
+    while (++i < depth) {
         parent_block = p->key.blockno;
 
         luci_bmap_add_chain(++p, NULL, (blkptr*)bh->b_data + *++ipaths);
@@ -331,7 +354,10 @@ luci_bmap_get_path(struct inode *inode,
                                 *ipaths,
                                 parent_block);
         if (i + 1 < depth)
-            *err = luci_validate_blkptr_chain_csum(inode, i + 1, depth, p->bh, &p->key);
+            ret = luci_validate_bmap_blkptr_csum(inode, i, depth, p->bh, &p->key);
+
+        if (!*err)
+               *err = ret;
     }
 
     return NULL;
@@ -389,6 +415,8 @@ luci_bmap_allocate_entry(struct inode *inode,
 
     unlock_buffer(currbh);
 
+    mark_buffer_dirty(currbh);
+
     // lookup bmap memory index to update block entry
     bmap_index = index[curr_level];
     if (IS_INLINE(curr_level)) {
@@ -421,8 +449,9 @@ luci_bmap_allocate_entry(struct inode *inode,
         }
         #endif
         unlock_buffer(parent_bh);
-        mark_buffer_dirty_inode(parent_bh, inode);
-    }
+        mark_buffer_dirty(parent_bh);
+    } else
+        mark_inode_dirty(inode);
 
     luci_info_inode(inode, "created bmap entry, iblock %lu level %d-%u(%d) "
         "block %u index %u\n", i_block, curr_level, bmap_index, depth,
@@ -473,6 +502,8 @@ luci_bmap_insert_entry(struct inode *inode,
 
         unlock_buffer(currbh);
 
+        mark_buffer_dirty(currbh);
+
     } else {
         // update L1 block with L0 block ptr
         ichain[curr_level].bh = NULL;
@@ -486,17 +517,17 @@ luci_bmap_insert_entry(struct inode *inode,
     }
 
     bmap_index = index[curr_level];
-    if (IS_INLINE(curr_level)) {
+    if (curr_level == 0) {
         parent_bh = NULL;
         ichain[curr_level].p = (blkptr*) LUCI_I(inode)->i_data + bmap_index;
     } else {
         parent_bh = ichain[curr_level - 1].bh;
-        if (parent_bh) {
-            ichain[curr_level].p = (blkptr*) parent_bh->b_data + bmap_index;
-            lock_buffer(parent_bh);
-        } else
-            panic("parent bh null %lu (%d-%d-%lu)", inode->i_ino,
-                curr_level, depth, i_block);
+        if (!parent_bh)
+            panic("parent bh null %lu (%d-%d-%lu)",
+                inode->i_ino, curr_level, depth, i_block);
+
+        ichain[curr_level].p = (blkptr*) parent_bh->b_data + bmap_index;
+        lock_buffer(parent_bh);
     }
 
     // imp : update memory index (i_data array)
@@ -521,8 +552,10 @@ luci_bmap_insert_entry(struct inode *inode,
         }
         #endif
         unlock_buffer(parent_bh);
-        mark_buffer_dirty_inode(parent_bh, inode);
-    }
+        //mark_buffer_dirty_inode(parent_bh, inode);
+        mark_buffer_dirty(parent_bh);
+    } else
+        mark_inode_dirty(inode);
 
     luci_info_inode(inode, "inserted bmap entry, iblock %lu level :%d(%d) "
         "block %u(%x-%u-0x%x) index %u",
@@ -694,9 +727,14 @@ done:
     }
 
 exit:
+
+//    if (trace_luci_get_block_enabled())
+        trace_luci_get_block(inode, iblock, ichain, flags);
+
     mutex_unlock(&(LUCI_I(inode)->truncate_mutex));
     return err;
 }
+EXPORT_SYMBOL_GPL(luci_get_block);
 
 /*
  * Scan inode bmap meta data. We scan till max depth for cases where file
@@ -1062,8 +1100,8 @@ luci_iget(struct super_block *sb, unsigned long ino) {
     return inode;
 }
 
-static int
-__luci_write_inode(struct inode *inode, int do_sync)
+int
+luci_write_inode_raw(struct inode *inode, int do_sync)
 {
     int n, err = 0;
     struct super_block *sb = inode->i_sb;
@@ -1117,14 +1155,19 @@ __luci_write_inode(struct inode *inode, int do_sync)
     }
 
     ei->i_state &= ~LUCI_STATE_NEW;
+
+//    if (trace_luci_write_inode_raw_enabled())
+           trace_luci_write_inode_raw(raw_inode, inode->i_ino, do_sync);
+
     brelse (bh);
     return err;
 }
+EXPORT_SYMBOL_GPL(luci_write_inode_raw);
 
 int
 luci_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
-   return __luci_write_inode(inode, wbc->sync_mode == WB_SYNC_ALL);
+   return luci_write_inode_raw(inode, wbc->sync_mode == WB_SYNC_ALL);
 }
 
 static int

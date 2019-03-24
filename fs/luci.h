@@ -676,6 +676,7 @@ extern struct inode *luci_iget(struct super_block *sb, unsigned long ino);
 extern int luci_get_block(struct inode *, sector_t, struct buffer_head *, int);
 extern blkptr luci_bmap_fetch_L0bp(struct inode *inode, unsigned long i_block);
 extern int luci_bmap_insert_L0bp(struct inode *inode, unsigned long i_block, blkptr *bp);
+int luci_write_inode_raw(struct inode *inode, int do_sync);
 extern int luci_dump_layout(struct inode * inode);
 
 /* crc32 */

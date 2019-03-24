@@ -1,0 +1,6 @@
+dd if=/dev/zero of=sample.img bs=4k count=100
+truncate -s 10G sample.img 
+losetup -f sample.img 
+mkfs.ext2 -b 4096 /dev/loop0
+umount -t ext2 -a
+mount -t luci -o loop sample.img /mnt/

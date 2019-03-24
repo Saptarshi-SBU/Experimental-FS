@@ -6022,3 +6022,39 @@ ffff8801239d1e50
 [19257.042959]  [<ffffffff8164c059>] system_call_fastpath+0x16/0x1b
 [19257.042962] INFO: Object 0xffff880195fb9500 @offset=5376
 
+=============================================================================
+Mar 23 15:50:28 localhost kernel: [ 2039.526109] LUCI-FS luci_validate_bmap_blkptr_csum : error meta csum ERROR, inode :67 depth :0/3 bp {262759/ EXP :0xfc1b8e91 GOT :0x38afaa61}
+
+<...>-4586  [006]  1703.624770: luci_get_block:       inum=67 off=2591, 0-lba=262759-0-0x38afaa61, 1-lba=262777-0-0xd87c16b 2-lba=288847-0-0x6bf52bfa flags=0x6
+<...>-4522  [006]  1703.625439: luci_get_block:       inum=67 off=1721, 0-lba=262759-0-0x38afaa61, 1-lba=262769-0-0x20cd64e7 2-lba=0-0-0x0 flags=0x0
+<...>-4522  [006]  1703.625449: luci_get_block:       inum=67 off=1722, 0-lba=262759-0-0x38afaa61, 1-lba=262769-0-0x20cd64e7 2-lba=0-0-0x0 flags=0x0
+<...>-4522  [006]  1703.625457: luci_get_block:       inum=67 off=1723, 0-lba=262759-0-0x38afaa61, 1-lba=262769-0-0x20cd64e7 2-lba=0-0-0x0 flags=0x0
+
+ <...>-4674  [002]  1703.670604: luci_get_block:       inum=67 off=3431, 0-lba=262759-0-0xfc1b8e91, 1-lba=262784-0-0x5934235f 2-lba=289998-0-0x82231e3f flags=0x6
+
+=============================================================================
+[root@localhost Linux-LFS]# grep 39168 /tmp/log | grep 'aa923c9a\|d4836512'
+ kworker/u96:128-7558  [008]  6633.611869: luci_get_block:       inum=68 off=1479, 0-lba=39168-0-0xaa923c9a, 1-lba=262798-0-0x144cd4b3 2-lba=292892-0-0xfc178c99 flags=0x6
+ kworker/u96:125-7555  [001]  6633.612187: luci_get_block:       inum=68 off=1480, 0-lba=39168-0-0xaa923c9a, 1-lba=262798-0-0x144cd4b3 2-lba=0-0-0x0 flags=0x0
+ kworker/u96:125-7555  [001]  6633.612213: luci_get_block:       inum=68 off=1481, 0-lba=39168-0-0xaa923c9a, 1-lba=262798-0-0x144cd4b3 2-lba=0-0-0x0 flags=0x0
+ kworker/u96:125-7555  [001]  6633.612231: luci_get_block:       inum=68 off=1482, 0-lba=39168-0-0xaa923c9a, 1-lba=262798-0-0x144cd4b3 2-lba=0-0-0x0 flags=0x0
+ kworker/u96:258-7688  [010]  6633.612246: luci_write_inode_raw: inum=68 sync=0
+0-lba=51589-1-0x30340ce2, 1-lba=51589-1-0x30340ce2 2-lba=51591-0-0x35138a4c
+3-lba=39168-0-0xaa923c9a 4-lba=0-0-0x0
+ kworker/u96:125-7555  [001]  6633.612248: luci_get_block:       inum=68
+off=1483, 0-lba=39168-0-0xaa923c9a, 1-lba=262798-0-0x144cd4b3 2-lba=0-0-0x0
+flags=0x0
+           <...>-7624  [010]  6633.665777: luci_get_block:       inum=68
+off=1995, 0-lba=39168-0-0xd4836512, 1-lba=39175-0-0x3d7c325f
+2-lba=293924-0-0xbf2fa937 flags=0x6
+
+
+=================================================================================
+
+[28625.287051] zlib: DEFLATE (1/5) strm.total in :16384 avail in :0 total out :4096 avail out :0 start :0x220000
+[28625.287060] zlib: DEFLATE (2/5) strm.total in :16384 avail in :0 total out :4096 avail out :4096 start :0x220000
+[28625.287064] compress result : cluster 135 index 540 in 16384 out 4096
+[28625.287073] 1.invalid compressed o/p, nr_pages=2 length=4096 remainb :0
+
+[28625.287134] kernel BUG at /home/ssen/Downloads/Linux-LFS/fs/crc32.c:56!
+
