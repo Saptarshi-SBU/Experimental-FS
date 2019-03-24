@@ -728,6 +728,10 @@ int luci_write_extents(struct address_space *mapping,
 int luci_read_extent(struct page * page, blkptr *bp);
 
 int luci_bmap_update_extent_bp(struct page *page, struct inode *inode, blkptr bp[]);
+struct pagevec *luci_scan_pgtree_dirty_pages(struct address_space *mapping,
+                                             struct page *pageout,
+                                             pgoff_t *index,
+                                             struct writeback_control *wbc);
 
 extern const struct inode_operations luci_file_inode_operations;
 extern const struct file_operations luci_file_operations;

@@ -50,22 +50,13 @@ int luci_compute_pages_cksum(struct page **pages, unsigned nr_pages,
     ssize_t totalb = length, minb;
 
     for (i = 0; i < nr_pages; i++) {
-        if (totalb <= 0) {
-                pr_err("1.invalid compressed o/p, nr_pages=%u length=%u "
-                         "remainb :%d\n", nr_pages, length, totalb);
-                BUG_ON(1);
-                panic("bug!!!");
-        }
+        BUG_ON(totalb <= 0);
         minb = min((ssize_t)totalb, (ssize_t)PAGE_SIZE);
         crc = luci_compute_page_cksum(pages[i], 0, minb, crc);
         totalb -= minb;
     }
 
-    if (totalb) {
-        pr_err("2.invalid compressed o/p, nr_pages=%u length=%u"
-               "remainb :%d\n", nr_pages, length, totalb);
-        BUG_ON(totalb);
-    }
+    BUG_ON(totalb);
     return crc;
     #else
     return 0

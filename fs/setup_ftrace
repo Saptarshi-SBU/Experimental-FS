@@ -1,7 +1,11 @@
 trace-cmd reset
 echo function > /sys/kernel/debug/tracing/current_tracer
-echo 'luci_write_inode' > /sys/kernel/debug/tracing/set_ftrace_filter
-echo 'luci_write_inode_raw' > /sys/kernel/debug/tracing/set_event
+#echo 'luci_get_block' > /sys/kernel/debug/tracing/set_ftrace_filter
+#echo 'luci_get_block' > /sys/kernel/debug/tracing/set_event
+#echo 'luci_write_inode_raw' > /sys/kernel/debug/tracing/set_ftrace_filter
+#echo 'luci_write_inode_raw' > /sys/kernel/debug/tracing/set_event
+echo 'luci_scan_pgtree_dirty_pages' > /sys/kernel/debug/tracing/set_ftrace_filter
+echo 'luci_scan_pgtree_dirty_pages' > /sys/kernel/debug/tracing/set_event
 echo 1 > /sys/kernel/debug/tracing/events/luci/luci_get_block/enable
 echo 1 > /sys/kernel/debug/tracing/events/luci/luci_write_inode_raw/enable
 echo 1 > /sys/kernel/debug/tracing/tracing_on

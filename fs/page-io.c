@@ -30,6 +30,9 @@
 
 #include "luci.h"
 #include "compress.h"
+#include "trace.h"
+
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_scan_pgtree_dirty_pages);
 
 #define WBC_FMT  "wbc: (%llu-%llu) dirty :%lu"
 
@@ -456,7 +459,7 @@ luci_init_work(struct pagevec *pvec, struct page *pageout)
  * @pageout param can be NULL if invoked via writepages
  */
 
-static struct pagevec *
+struct pagevec *
 luci_scan_pgtree_dirty_pages(struct address_space *mapping,
                              struct page *pageout,
                              pgoff_t *index,
@@ -555,6 +558,7 @@ repeat:
 
         pagevec_add(pvec, page); // does not take a refcount
         luci_pgtrack(page, "locked page for write");
+        trace_luci_scan_pgtree_dirty_pages(inode, next_index, page);
     }
 
     luci_dbg_inode(inode, "dirty pages:%u in extent %u(%lu)", nr_dirty,
@@ -565,6 +569,7 @@ repeat:
     dbgfsparam.nrwrites += nr_dirty;
     return pvec;
 }
+EXPORT_SYMBOL_GPL(luci_scan_pgtree_dirty_pages);
 
 /*
  * This is invoked by shrink_page_list. See : shrink_page_list and pageout

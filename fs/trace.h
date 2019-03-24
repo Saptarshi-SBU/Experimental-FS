@@ -99,6 +99,28 @@ TRACE_EVENT(luci_write_inode_raw,
                       __entry->bptr_4, __entry->bptr_4_flags, __entry->bptr_4_checksum)
 );
 
+TRACE_EVENT(luci_scan_pgtree_dirty_pages,
+            TP_PROTO(struct inode *inode, pgoff_t next_index, struct page *page),
+            TP_ARGS(inode, next_index, page),
+            TP_STRUCT__entry(
+                __field(int, inum)
+                __field(unsigned long, next_index)
+                __field(unsigned long, offset)
+                __field(unsigned long, index)
+            ),
+            TP_fast_assign(
+                __entry->inum = inode->i_ino;
+                __entry->next_index = next_index;
+                __entry->offset = page_offset(page);
+                __entry->index = page_index(page);
+            ),
+            TP_printk("inum=%u next_index=%lu page_off=%lu page_index=%lu",
+                __entry->inum,
+                __entry->next_index,
+                __entry->offset,
+                __entry->index)
+);
+
 #endif /* _TRACE_LUCI_H */
 
 #undef TRACE_INCLUDE_PATH
