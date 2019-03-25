@@ -139,6 +139,7 @@ luci_update_blkptr_chain_csum(struct inode *inode,
         crc32 = luci_compute_page_cksum(currbh->b_page, 0, PAGE_SIZE, ~0U);
         p->key.checksum = crc32;
         memcpy((char*)p->p, (char*)&p->key, sizeof(blkptr));
+        mark_buffer_dirty(currbh);
         unlock_buffer(currbh);
         luci_info("%s meta cksum, inode :%lu i_block :%lu depth :%u bp {%u/0x%x}",
                   "updated",
@@ -149,14 +150,17 @@ luci_update_blkptr_chain_csum(struct inode *inode,
                   p->key.checksum);
     }
 
+#if 0
     while (i >= 0) {
         p = &ichain[i];
         if (p->bh) {
-                mark_buffer_dirty_inode(p->bh, inode);
+                //mark_buffer_dirty_inode(p->bh, inode);
+                mark_buffer_dirty(p->bh);
                 sync_dirty_buffer(p->bh);
         }
         i--;
     }
+#endif
 
     mark_inode_dirty(inode);
     //luci_write_inode_raw(inode, 1);

@@ -6058,3 +6058,59 @@ off=1995, 0-lba=39168-0-0xd4836512, 1-lba=39175-0-0x3d7c325f
 
 [28625.287134] kernel BUG at /home/ssen/Downloads/Linux-LFS/fs/crc32.c:56!
 
+=================================================================================
+dev ptp pps_core shpchp dcdbas sb_edac edac_core mfd_core ipmi_si tpm_tis tpm
+ipmi_msghandler acpi_pad wmi acpi_power_meter nfsd auth_rpcgss nfs_acl lockd
+sunrpc uas usb_storage
+[ 2592.329993]  mgag200 i2c_algo_bit drm_kms_helper ttm drm
+[ 2592.329999] CPU: 2 PID: 4732 Comm: md5sum Tainted: G    B      OE
+3.17.7-200.fc20.x86_64 #1
+[ 2592.330000] Hardware name: Dell Inc. PowerEdge T320/07C9XP, BIOS 2.1.2
+01/20/2014
+[ 2592.330002] task: ffff88003746e220 ti: ffff8800b55cc000 task.ti:
+ffff8800b55cc000
+[ 2592.330004] RIP: 0010:[<ffffffff813750fe>]  [<ffffffff813750fe>]
+__radix_tree_lookup+0x7e/0xb0
+[ 2592.330010] RSP: 0018:ffff8800b55cfca0  EFLAGS: 00000216
+[ 2592.330012] RAX: ffff8802088abb50 RBX: 000000000000005f RCX: 0000000000000006
+[ 2592.330013] RDX: 0000000000000000 RSI: 00000000000dbbc0 RDI: 0000000000000033
+[ 2592.330014] RBP: ffff8800b55cfca0 R08: 0000000000000002 R09: ffff8801a636d918
+[ 2592.330015] R10: ffff8800b55cfcb0 R11: 0000000000000246 R12: ffff880200fa8a28
+[ 2592.330017] R13: 0000000000000000 R14: ffffffffa05dc97e R15: ffff8800b55cfcb0
+[ 2592.330018] FS:  00007fcc811ab740(0000) GS:ffff880227040000(0000)
+knlGS:0000000000000000
+[ 2592.330020] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 2592.330021] CR2: 00007f9381cd3000 CR3: 000000006a842000 CR4: 00000000000407e0
+[ 2592.330022] Stack:
+[ 2592.330024]  ffff8800b55cfcc0 ffffffff81375152 ffff8802088abb78
+0000000016338fdc
+[ 2592.330026]  ffff8800b55cfce0 ffffffff81188dde 0000000000000000
+0000000000000000
+[ 2592.330028]  ffff8800b55cfd20 ffffffff8118963f ffffffff8121ae31
+ffff880200fa8b38
+[ 2592.330030] Call Trace:
+[ 2592.330034]  [<ffffffff81375152>] radix_tree_lookup_slot+0x22/0x50
+[ 2592.330038]  [<ffffffff81188dde>] find_get_entry+0x1e/0xc0
+[ 2592.330040]  [<ffffffff8118963f>] pagecache_get_page+0x2f/0x220
+[ 2592.330043]  [<ffffffff8121ae31>] ? touch_atime+0x91/0x160
+[ 2592.330046]  [<ffffffff8118ab01>] generic_file_read_iter+0x261/0x610
+[ 2592.330052]  [<ffffffffa05d9ac9>] luci_read_iter+0x19/0x60 [luci]
+[ 2592.330055]  [<ffffffff811ffa5b>] new_sync_read+0x8b/0xd0
+[ 2592.330059]  [<ffffffffa05d9a57>] luci_read+0x47/0xa0 [luci]
+[ 2592.330061]  [<ffffffff81200198>] vfs_read+0x98/0x170
+[ 2592.330064]  [<ffffffff81200e75>] SyS_read+0x55/0xd0
+[ 2592.330068]  [<ffffffff8172ec69>] system_call_fastpath+0x16/0x1b
+[ 2592.330069] Code: 81 77 2d 43 8d 04 40 8d 4c 00 fa eb 0c 83 e9 06 41 83 e8 01
+74 27 49 89 c1 48 89 f7 48 d3 ef 83 e7 3f 48 83 c7 04 49 8b 44 f9 08 <48> 85 c0
+75 dd 31 c0 5d c3 66 0f 1f 84 00 00 00 00 00 48 85 d2 
+[ 2599.161366] RTL871X: rtw_set_ps_mode(wlp0s29u1u1) Leave 802.11 power save -
+WIFI-TRAFFIC_BUSY
+[ 2599.161372] RTL871X: rtl8188e_set_FwPwrMode_cmd: Mode=0 SmartPS=2 UAPSD=0
+[ 2603.169785] RTL871X: rtw_set_ps_mode(wlp0s29u1u1) Enter 802.11 power save -
+WIFI-TRAFFIC_IDLE
+[ 2603.169792] RTL871X: rtl8188e_set_FwPwrMode_cmd: Mode=1 SmartPS=2 UAPSD=0
+[root@localhost Linux-LFS]# 
+Message from syslogd@localhost at Mar 24 21:09:12 ...
+ kernel:[ 2620.330314] NMI watchdog: BUG: soft lockup - CPU#2 stuck for 22s!
+[md5sum:4732]
+

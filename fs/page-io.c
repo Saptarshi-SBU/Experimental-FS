@@ -584,7 +584,25 @@ luci_write_extent(struct page *page, struct writeback_control *wbc)
     pgoff_t next_index = page_index(page);
     struct inode *inode = page->mapping->host;
 
-    BUG_ON(!PageDirty(page));
+        /*
+         * Disbaling PageDirty Check. pageout->clear_page_dirty_for_io.
+         *
+         * Notes from mm/writeback:
+         *
+         * Clear a page's dirty flag, while caring for dirty memory accounting.
+         * Returns true if the page was previously dirty.
+         *
+         * This is for preparing to put the page under writeout.  We leave the page
+         * tagged as dirty in the radix tree so that a concurrent write-for-sync
+         * can discover it via a PAGECACHE_TAG_DIRTY walk.  The ->writepage
+         * implementation will run either set_page_writeback() or set_page_dirty(),
+         * at which stage we bring the page's dirty flag and radix-tree dirty tag
+         * back into sync.
+         *
+         * This incoherency between the page's dirty flag and radix-tree tag is
+         * unfortunate, but it only exists while the page is locked.
+         */
+    //BUG_ON(!PageDirty(page));
     BUG_ON(PagePrivate(page));
     pvec = luci_scan_pgtree_dirty_pages(page->mapping,
                                         page,
