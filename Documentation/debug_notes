@@ -5984,3 +5984,151 @@ used_pages :4096 prev_out :4096, skip_bytes :0
 used_pages :4096 prev_out :8117, skip_bytes :0
 [128094.012918] bio page :ffffea0006686780
 [128094.012919] inflate completed
+=======================================================================
+
+[19256.995722] exit_luci_compress : 61
+[19257.042863]
+=============================================================================
+[19257.042869] BUG luci_inode_cache (Tainted: GF          O): Objects remaining
+in luci_inode_cache on kmem_cache_close()
+[19257.042870]
+-----------------------------------------------------------------------------
+
+[19257.042872] Disabling lock debugging due to kernel taint
+[19257.042874] INFO: Slab 0xffffea000657ee00 objects=42 used=1
+fp=0xffff880195fbfb00 flags=0x5ff00000004080
+[19257.042877] CPU: 9 PID: 12796 Comm: rmmod Tainted: GF   B      O 3.11.10 #1
+[19257.042879] Hardware name: Dell Inc. PowerEdge T320/07C9XP, BIOS 2.1.2
+01/20/2014
+[19257.042881]  ffff880153b42000 ffff8801239d1d68 ffffffff8163ce45
+ffffea000657ee00
+[19257.042902]  ffff8801239d1e40 ffffffff81189804 0000000000000020
+ffff8801239d1e50
+[19257.042905]  ffff8801239d1e00 656a624f05d58e00 616d657220737463
+6e6920676e696e69
+[19257.042908] Call Trace:
+[19257.042916]  [<ffffffff8163ce45>] dump_stack+0x45/0x56
+[19257.042920]  [<ffffffff81189804>] slab_err+0xb4/0xe0
+[19257.042925]  [<ffffffff81143892>] ? __free_memcg_kmem_pages+0x22/0x50
+[19257.042928]  [<ffffffff8118a293>] ? __free_slab+0xe3/0x1d0
+[19257.042931]  [<ffffffff8118c151>] ? __kmalloc+0x221/0x230
+[19257.042933]  [<ffffffff8118d14b>] ? kmem_cache_close+0x12b/0x2f0
+[19257.042935]  [<ffffffff8118d16c>] kmem_cache_close+0x14c/0x2f0
+[19257.042937]  [<ffffffff8118ddc4>] __kmem_cache_shutdown+0x14/0x80
+[19257.042941]  [<ffffffff8115b90f>] kmem_cache_destroy+0x3f/0xe0
+[19257.042947]  [<ffffffffa0562b17>] exit_luci_fs+0x37/0x39 [luci]
+[19257.042951]  [<ffffffff810ca09b>] SyS_delete_module+0x16b/0x2d0
+[19257.042956]  [<ffffffff8164791e>] ? do_page_fault+0xe/0x10
+[19257.042959]  [<ffffffff8164c059>] system_call_fastpath+0x16/0x1b
+[19257.042962] INFO: Object 0xffff880195fb9500 @offset=5376
+
+=============================================================================
+Mar 23 15:50:28 localhost kernel: [ 2039.526109] LUCI-FS luci_validate_bmap_blkptr_csum : error meta csum ERROR, inode :67 depth :0/3 bp {262759/ EXP :0xfc1b8e91 GOT :0x38afaa61}
+
+<...>-4586  [006]  1703.624770: luci_get_block:       inum=67 off=2591, 0-lba=262759-0-0x38afaa61, 1-lba=262777-0-0xd87c16b 2-lba=288847-0-0x6bf52bfa flags=0x6
+<...>-4522  [006]  1703.625439: luci_get_block:       inum=67 off=1721, 0-lba=262759-0-0x38afaa61, 1-lba=262769-0-0x20cd64e7 2-lba=0-0-0x0 flags=0x0
+<...>-4522  [006]  1703.625449: luci_get_block:       inum=67 off=1722, 0-lba=262759-0-0x38afaa61, 1-lba=262769-0-0x20cd64e7 2-lba=0-0-0x0 flags=0x0
+<...>-4522  [006]  1703.625457: luci_get_block:       inum=67 off=1723, 0-lba=262759-0-0x38afaa61, 1-lba=262769-0-0x20cd64e7 2-lba=0-0-0x0 flags=0x0
+
+ <...>-4674  [002]  1703.670604: luci_get_block:       inum=67 off=3431, 0-lba=262759-0-0xfc1b8e91, 1-lba=262784-0-0x5934235f 2-lba=289998-0-0x82231e3f flags=0x6
+
+=============================================================================
+[root@localhost Linux-LFS]# grep 39168 /tmp/log | grep 'aa923c9a\|d4836512'
+ kworker/u96:128-7558  [008]  6633.611869: luci_get_block:       inum=68 off=1479, 0-lba=39168-0-0xaa923c9a, 1-lba=262798-0-0x144cd4b3 2-lba=292892-0-0xfc178c99 flags=0x6
+ kworker/u96:125-7555  [001]  6633.612187: luci_get_block:       inum=68 off=1480, 0-lba=39168-0-0xaa923c9a, 1-lba=262798-0-0x144cd4b3 2-lba=0-0-0x0 flags=0x0
+ kworker/u96:125-7555  [001]  6633.612213: luci_get_block:       inum=68 off=1481, 0-lba=39168-0-0xaa923c9a, 1-lba=262798-0-0x144cd4b3 2-lba=0-0-0x0 flags=0x0
+ kworker/u96:125-7555  [001]  6633.612231: luci_get_block:       inum=68 off=1482, 0-lba=39168-0-0xaa923c9a, 1-lba=262798-0-0x144cd4b3 2-lba=0-0-0x0 flags=0x0
+ kworker/u96:258-7688  [010]  6633.612246: luci_write_inode_raw: inum=68 sync=0
+0-lba=51589-1-0x30340ce2, 1-lba=51589-1-0x30340ce2 2-lba=51591-0-0x35138a4c
+3-lba=39168-0-0xaa923c9a 4-lba=0-0-0x0
+ kworker/u96:125-7555  [001]  6633.612248: luci_get_block:       inum=68
+off=1483, 0-lba=39168-0-0xaa923c9a, 1-lba=262798-0-0x144cd4b3 2-lba=0-0-0x0
+flags=0x0
+           <...>-7624  [010]  6633.665777: luci_get_block:       inum=68
+off=1995, 0-lba=39168-0-0xd4836512, 1-lba=39175-0-0x3d7c325f
+2-lba=293924-0-0xbf2fa937 flags=0x6
+
+
+=================================================================================
+
+[28625.287051] zlib: DEFLATE (1/5) strm.total in :16384 avail in :0 total out :4096 avail out :0 start :0x220000
+[28625.287060] zlib: DEFLATE (2/5) strm.total in :16384 avail in :0 total out :4096 avail out :4096 start :0x220000
+[28625.287064] compress result : cluster 135 index 540 in 16384 out 4096
+[28625.287073] 1.invalid compressed o/p, nr_pages=2 length=4096 remainb :0
+
+[28625.287134] kernel BUG at /home/ssen/Downloads/Linux-LFS/fs/crc32.c:56!
+
+=================================================================================
+dev ptp pps_core shpchp dcdbas sb_edac edac_core mfd_core ipmi_si tpm_tis tpm
+ipmi_msghandler acpi_pad wmi acpi_power_meter nfsd auth_rpcgss nfs_acl lockd
+sunrpc uas usb_storage
+[ 2592.329993]  mgag200 i2c_algo_bit drm_kms_helper ttm drm
+[ 2592.329999] CPU: 2 PID: 4732 Comm: md5sum Tainted: G    B      OE
+3.17.7-200.fc20.x86_64 #1
+[ 2592.330000] Hardware name: Dell Inc. PowerEdge T320/07C9XP, BIOS 2.1.2
+01/20/2014
+[ 2592.330002] task: ffff88003746e220 ti: ffff8800b55cc000 task.ti:
+ffff8800b55cc000
+[ 2592.330004] RIP: 0010:[<ffffffff813750fe>]  [<ffffffff813750fe>]
+__radix_tree_lookup+0x7e/0xb0
+[ 2592.330010] RSP: 0018:ffff8800b55cfca0  EFLAGS: 00000216
+[ 2592.330012] RAX: ffff8802088abb50 RBX: 000000000000005f RCX: 0000000000000006
+[ 2592.330013] RDX: 0000000000000000 RSI: 00000000000dbbc0 RDI: 0000000000000033
+[ 2592.330014] RBP: ffff8800b55cfca0 R08: 0000000000000002 R09: ffff8801a636d918
+[ 2592.330015] R10: ffff8800b55cfcb0 R11: 0000000000000246 R12: ffff880200fa8a28
+[ 2592.330017] R13: 0000000000000000 R14: ffffffffa05dc97e R15: ffff8800b55cfcb0
+[ 2592.330018] FS:  00007fcc811ab740(0000) GS:ffff880227040000(0000)
+knlGS:0000000000000000
+[ 2592.330020] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 2592.330021] CR2: 00007f9381cd3000 CR3: 000000006a842000 CR4: 00000000000407e0
+[ 2592.330022] Stack:
+[ 2592.330024]  ffff8800b55cfcc0 ffffffff81375152 ffff8802088abb78
+0000000016338fdc
+[ 2592.330026]  ffff8800b55cfce0 ffffffff81188dde 0000000000000000
+0000000000000000
+[ 2592.330028]  ffff8800b55cfd20 ffffffff8118963f ffffffff8121ae31
+ffff880200fa8b38
+[ 2592.330030] Call Trace:
+[ 2592.330034]  [<ffffffff81375152>] radix_tree_lookup_slot+0x22/0x50
+[ 2592.330038]  [<ffffffff81188dde>] find_get_entry+0x1e/0xc0
+[ 2592.330040]  [<ffffffff8118963f>] pagecache_get_page+0x2f/0x220
+[ 2592.330043]  [<ffffffff8121ae31>] ? touch_atime+0x91/0x160
+[ 2592.330046]  [<ffffffff8118ab01>] generic_file_read_iter+0x261/0x610
+[ 2592.330052]  [<ffffffffa05d9ac9>] luci_read_iter+0x19/0x60 [luci]
+[ 2592.330055]  [<ffffffff811ffa5b>] new_sync_read+0x8b/0xd0
+[ 2592.330059]  [<ffffffffa05d9a57>] luci_read+0x47/0xa0 [luci]
+[ 2592.330061]  [<ffffffff81200198>] vfs_read+0x98/0x170
+[ 2592.330064]  [<ffffffff81200e75>] SyS_read+0x55/0xd0
+[ 2592.330068]  [<ffffffff8172ec69>] system_call_fastpath+0x16/0x1b
+[ 2592.330069] Code: 81 77 2d 43 8d 04 40 8d 4c 00 fa eb 0c 83 e9 06 41 83 e8 01
+74 27 49 89 c1 48 89 f7 48 d3 ef 83 e7 3f 48 83 c7 04 49 8b 44 f9 08 <48> 85 c0
+75 dd 31 c0 5d c3 66 0f 1f 84 00 00 00 00 00 48 85 d2 
+[ 2599.161366] RTL871X: rtw_set_ps_mode(wlp0s29u1u1) Leave 802.11 power save -
+WIFI-TRAFFIC_BUSY
+[ 2599.161372] RTL871X: rtl8188e_set_FwPwrMode_cmd: Mode=0 SmartPS=2 UAPSD=0
+[ 2603.169785] RTL871X: rtw_set_ps_mode(wlp0s29u1u1) Enter 802.11 power save -
+WIFI-TRAFFIC_IDLE
+[ 2603.169792] RTL871X: rtl8188e_set_FwPwrMode_cmd: Mode=1 SmartPS=2 UAPSD=0
+[root@localhost Linux-LFS]# 
+Message from syslogd@localhost at Mar 24 21:09:12 ...
+ kernel:[ 2620.330314] NMI watchdog: BUG: soft lockup - CPU#2 stuck for 22s!
+[md5sum:4732]
+
+=========================================================================================
+mount -t luci /dev/sdb /mnt .. took a long time
+
+root@localhost Linux-LFS]# cat /proc/3934/stack 
+[<ffffffff811d34ae>] sleep_on_buffer+0xe/0x20
+[<ffffffff811d54e3>] __bread+0x83/0xc0
+[<ffffffffa057ac24>] luci_fill_super+0x94/0xdf0 [luci]
+[<ffffffff811a87b8>] mount_bdev+0x1b8/0x1f0
+[<ffffffffa057a1c5>] luci_mount+0x15/0x20 [luci]
+[<ffffffff811a90b9>] mount_fs+0x39/0x1b0
+[<ffffffff811c1fdf>] vfs_kern_mount+0x5f/0xf0
+[<ffffffff811c43ae>] do_mount+0x23e/0xa20
+[<ffffffff811c4c13>] SyS_mount+0x83/0xc0
+[<ffffffff8164c059>] system_call_fastpath+0x16/0x1b
+[<ffffffffffffffff>] 0xffffffffffffffff
+
+=================================================================================
+

@@ -888,7 +888,7 @@ luci_bmap_update_extent_bp(struct page *page,
 {
     int delta;
     unsigned long extent;
-    unsigned long i, b_i, b_start, b_end, blockno;
+    unsigned long i, b_i, b_start, b_end, blockno = 0;
     blkptr bp_old[EXTENT_NRBLOCKS_MAX];
 
     extent = luci_extent_no(page_index(page));
@@ -905,10 +905,6 @@ luci_bmap_update_extent_bp(struct page *page,
         if (luci_bmap_insert_L0bp(inode, b_i, &bp_new[i]) < 0)
             BUG();
 
-        blockno = bp_old[i].blockno;
-        if (blockno)
-            luci_free_block(inode, blockno);
-
         luci_info_inode(inode, "updated bp %u-%x-%u(%u)-0x%x for file block %lu"
                                " extent %lu",
                                 bp_new[i].blockno,
@@ -918,6 +914,15 @@ luci_bmap_update_extent_bp(struct page *page,
                                 bp_new[i].checksum,
                                 b_i,
                                 extent);
+
+        // for compressed extent, start blkptr spans across file offsets entries
+        if (blockno && blockno == bp_old[i].blockno)
+                continue;
+
+        // TBD : add comment why block entry can be zero
+        blockno = bp_old[i].blockno;
+        if (blockno)
+                luci_free_block(inode, blockno);
     }
 
     delta = luci_account_delta(bp_old, bp_new, i);
