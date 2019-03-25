@@ -658,7 +658,7 @@ int luci_commit_chunk(struct page *page, loff_t pos, unsigned len);
 unsigned luci_last_byte(struct inode *inode, unsigned long page_nr);
 
 /* inode.c */
-#define TEST_INODE 13
+#define TEST_INODE 12
 
 #define LUCI_COMPR_FLAG  0x1
 
@@ -675,14 +675,15 @@ extern struct inode *luci_iget(struct super_block *sb, unsigned long ino);
 extern int luci_get_block(struct inode *, sector_t, struct buffer_head *, int);
 extern blkptr luci_bmap_fetch_L0bp(struct inode *inode, unsigned long i_block);
 extern int luci_bmap_insert_L0bp(struct inode *inode, unsigned long i_block, blkptr *bp);
+int luci_write_inode_raw(struct inode *inode, int do_sync);
 extern int luci_dump_layout(struct inode * inode);
 
 /* crc32 */
 u32 luci_compute_data_cksum(void *addr, size_t length, u32 crc_seed);
 u32 luci_compute_page_cksum(struct page *page, off_t off, size_t length, u32 crc_seed);
 int luci_compute_pages_cksum(struct page **pages, unsigned nr_pages, size_t length);
-int luci_validate_page_cksum(struct page *page, blkptr *bp);
-int luci_validate_pages_cksum(struct page **pages, unsigned nr_pages, blkptr *bp);
+int luci_validate_data_page_cksum(struct page *page, blkptr *bp);
+int luci_validate_data_pages_cksum(struct page **pages, unsigned nr_pages, blkptr *bp);
 
 /* ialloc.c */
 extern struct buffer_head *read_inode_bitmap(struct super_block *sb, unsigned long block_group);
@@ -726,6 +727,10 @@ int luci_write_extents(struct address_space *mapping,
 int luci_read_extent(struct page * page, blkptr *bp);
 
 int luci_bmap_update_extent_bp(struct page *page, struct inode *inode, blkptr bp[]);
+struct pagevec *luci_scan_pgtree_dirty_pages(struct address_space *mapping,
+                                             struct page *pageout,
+                                             pgoff_t *index,
+                                             struct writeback_control *wbc);
 
 extern const struct inode_operations luci_file_inode_operations;
 extern const struct file_operations luci_file_operations;
