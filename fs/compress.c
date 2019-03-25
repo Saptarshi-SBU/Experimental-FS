@@ -1,5 +1,10 @@
 #include "compress.h"
 
+// Limiting workspaces was causing a soft lockup and observed a pool of 
+// threads were stuck in irqsave/restore. For now, create as many workspaces
+// as need be.
+//define LUCI_LIMIT_WORKSPACES
+
 struct luci_context_pool ctxpool;
 
 /*
@@ -22,7 +27,9 @@ struct list_head *luci_compression_context(void)
     DEFINE_WAIT(wait);
     struct list_head *ctx;
 
+#ifdef LUCI_LIMIT_WORKSPACES
 repeat:
+#endif
 
     spin_lock(&ctxpool.lock);
     if (!list_empty(&ctxpool.idle_list)) {
@@ -32,6 +39,7 @@ repeat:
         return ctx;
     }
 
+#ifdef LUCI_LIMIT_WORKSPACES
     if (atomic_read(&ctxpool.count) >= num_online_cpus()) {
         spin_unlock(&ctxpool.lock);
         prepare_to_wait(&ctxpool.waitq,
@@ -42,6 +50,7 @@ repeat:
         finish_wait(&ctxpool.waitq, &wait);
         goto repeat;
     }
+#endif
 
     atomic_inc(&ctxpool.count);
     spin_unlock(&ctxpool.lock);
@@ -60,7 +69,9 @@ repeat:
 void put_compression_context(struct list_head *ctx)
 {
     spin_lock(&ctxpool.lock);
+#ifdef LUCI_LIMIT_WORKSPACES
     BUG_ON(atomic_read(&ctxpool.count) > num_online_cpus());
+#endif
     list_add(ctx, &ctxpool.idle_list);
     spin_unlock(&ctxpool.lock);
 
