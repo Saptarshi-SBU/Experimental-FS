@@ -146,7 +146,7 @@ finish_def:
         do {
                if (nr_pages >= max_pages) {
                    ret = -E2BIG;
-                   luci_err_inode(mapping->host, "failed to compress cluster "
+                   luci_info_inode(mapping->host, "failed to compress cluster "
                                   "(start = 0x%llx, %d)\n", start, nr_pages);
                    goto out;
                }
@@ -171,15 +171,15 @@ buff_notfull:
 
                 #ifdef DEBUG_COMPRESSION
                 luci_info("zlib: DEFLATE (%u/%d) strm.total in :%lu avail in :%lu "
-                        "total out :%lu avail out :%lu start :0x%llx\n",
+                        "total out :%lu avail out :%lu start :0x%llx, ret :%u\n",
                         nr_pages, flush,
                         workspace->strm.total_in, workspace->strm.avail_in,
                         workspace->strm.total_out, workspace->strm.avail_out,
-                        start);
+                        start, ret);
                 luci_dump_bytes("compressed bytes(w)", out_page, PAGE_SIZE);
                 #endif
 
-        } while (workspace->strm.avail_out == 0);
+        } while ((ret != Z_STREAM_END) && workspace->strm.avail_out == 0);
 
         /* all input will be used */
         BUG_ON(workspace->strm.avail_in);
