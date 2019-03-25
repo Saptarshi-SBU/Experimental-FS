@@ -31,6 +31,9 @@
 #include "luci.h"
 #include "compress.h"
 
+#include "trace.h"
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_scan_pgtree_dirty_pages);
+
 #define WBC_FMT  "wbc: (%llu-%llu) dirty :%lu"
 
 #define WBC_ARGS(wbc) wbc->range_start, wbc->range_end, wbc->nr_to_write
@@ -555,6 +558,12 @@ repeat:
 
         pagevec_add(pvec, page); // does not take a refcount
         luci_pgtrack(page, "locked page for write");
+
+#ifdef HAVE_TRACEPOINT_ENABLED
+        if (trace_luci_scan_pgtree_dirty_pages_enabled())
+#endif
+                trace_luci_scan_pgtree_dirty_pages(inode, next_index, page);
+
     }
 
     luci_dbg_inode(inode, "dirty pages:%u in extent %u(%lu)", nr_dirty,

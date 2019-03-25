@@ -17,6 +17,12 @@
 #include "kern_feature.h"
 #include "luci.h"
 
+#define CREATE_TRACE_POINTS
+#include "trace.h"
+
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_get_block);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_write_inode_raw);
+
 static int
 __luci_setsize(struct inode *inode, loff_t newsize)
 {
@@ -713,6 +719,11 @@ done:
 
 exit:
 
+#ifdef HAVE_TRACEPOINT_ENABLED
+    if (trace_luci_get_block_enabled())
+#endif
+        trace_luci_get_block(inode, iblock, ichain, flags);
+
     mutex_unlock(&(LUCI_I(inode)->truncate_mutex));
     return err;
 }
@@ -1137,6 +1148,11 @@ luci_write_inode_raw(struct inode *inode, int do_sync)
     }
 
     ei->i_state &= ~LUCI_STATE_NEW;
+
+#ifdef HAVE_TRACEPOINT_ENABLED
+    if (trace_luci_write_inode_raw_enabled())
+#endif
+           trace_luci_write_inode_raw(raw_inode, inode->i_ino, do_sync);
 
     brelse (bh);
     return err;

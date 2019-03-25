@@ -73,6 +73,10 @@
    #define HAVE_NEW_BIO_FLAGS
 #endif
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0))
+   #define HAVE_TRACEPOINT_ENABLED
+#endif
+
 #endif // LINUX_VERSION_CODE
 
 #endif
