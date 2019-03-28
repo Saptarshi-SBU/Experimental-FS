@@ -6131,4 +6131,122 @@ root@localhost Linux-LFS]# cat /proc/3934/stack
 [<ffffffffffffffff>] 0xffffffffffffffff
 
 =================================================================================
+[root@localhost Downloads]# cat /proc/11755/stack 
+[<ffffffff81195a60>] balance_dirty_pages_ratelimited+0x3a0/0x7f0
+[<ffffffff81188d33>] generic_perform_write+0x143/0x1d0
+[<ffffffff8118b18f>] __generic_file_write_iter+0x15f/0x350
+[<ffffffff8118b3bd>] generic_file_write_iter+0x3d/0xb0
+[<ffffffffa0612d09>] luci_write_iter+0x19/0x60 [luci]
+[<ffffffff811ffb2e>] new_sync_write+0x8e/0xd0
+[<ffffffffa0612c97>] luci_write+0x47/0xa0 [luci]
+[<ffffffff81200327>] vfs_write+0xb7/0x1f0
+[<ffffffff8120110a>] SyS_pwrite64+0x8a/0xc0
+[<ffffffff8172ec69>] system_call_fastpath+0x16/0x1b
+[<ffffffffffffffff>] 0xffffffffffffffff
+==========================================================
+           fio-5292  [003]  1062.521873: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295930 dirty=249895 bdi_setpoint=295929 bdi_dirty=249744
+dirty_ratelimit=97248 task_ratelimit=578072 dirtied=256 dirtied_pause=256
+paused=0 pause=0 period=1 think=1
+             fio-5292  [003]  1062.522572: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295923 dirty=250211 bdi_setpoint=295922 bdi_dirty=250032
+dirty_ratelimit=97248 task_ratelimit=568860 dirtied=256 dirtied_pause=256
+paused=0 pause=0 period=1 think=1
+             fio-5292  [003]  1062.523206: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295931 dirty=250308 bdi_setpoint=295930 bdi_dirty=250272
+dirty_ratelimit=97248 task_ratelimit=566108 dirtied=256 dirtied_pause=256
+paused=0 pause=0 period=1 think=0
+             fio-5292  [003]  1062.523887: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295929 dirty=250563 bdi_setpoint=295928 bdi_dirty=250512
+dirty_ratelimit=97248 task_ratelimit=559080 dirtied=256 dirtied_pause=256
+paused=0 pause=0 period=1 think=0
+             fio-5292  [003]  1062.524571: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295924 dirty=250891 bdi_setpoint=295923 bdi_dirty=250800
+dirty_ratelimit=97248 task_ratelimit=550340 dirtied=256 dirtied_pause=256
+paused=0 pause=0 period=1 think=0
+             fio-5292  [003]  1062.525232: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295927 dirty=251061 bdi_setpoint=295926 bdi_dirty=251040
+dirty_ratelimit=97248 task_ratelimit=545972 dirtied=256 dirtied_pause=256
+paused=0 pause=0 period=1 think=-1
+             fio-5292  [003]  1062.525891: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295926 dirty=251304 bdi_setpoint=295925 bdi_dirty=251280
+dirty_ratelimit=97248 task_ratelimit=539612 dirtied=256 dirtied_pause=256
+paused=0 pause=0 period=1 think=-1
+             fio-5292  [003]  1062.526576: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295925 dirty=251559 bdi_setpoint=295924 bdi_dirty=251568
+dirty_ratelimit=97248 task_ratelimit=533152 dirtied=256 dirtied_pause=256
+paused=0 pause=0 period=1 think=-1
+             fio-5292  [003]  1062.527228: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295928 dirty=251729 bdi_setpoint=295927 bdi_dirty=251808
+dirty_ratelimit=97248 task_ratelimit=528308 dirtied=256 dirtied_pause=256
+paused=0 pause=0 period=1 think=-2
+             fio-5292  [003]  1062.527873: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295927 dirty=252057 bdi_setpoint=295926 bdi_dirty=252000
+dirty_ratelimit=97248 task_ratelimit=521568 dirtied=256 dirtied_pause=256
+paused=0 pause=0 period=1 think=-2
+             fio-5292  [003]  1062.528555: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295926 dirty=252312 bdi_setpoint=295925 bdi_dirty=252240
+dirty_ratelimit=97248 task_ratelimit=515108 dirtied=256 dirtied_pause=256
+paused=0 pause=0 period=1 think=-2
+             fio-5292  [003]  1062.529218: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295925 dirty=252555 bdi_setpoint=295924 bdi_dirty=252480
+dirty_ratelimit=97248 task_ratelimit=509124 dirtied=256 dirtied_pause=256
+paused=0 pause=0 period=2 think=-3
+             fio-5292  [003]  1062.529904: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295923 dirty=252810 bdi_setpoint=295922 bdi_dirty=252720
+dirty_ratelimit=97248 task_ratelimit=503808 dirtied=256 dirtied_pause=256
+paused=0 pause=6 period=2 think=-4
+             fio-5292  [003]  1062.536023: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295927 dirty=253053 bdi_setpoint=295926 bdi_dirty=252960
+dirty_ratelimit=97248 task_ratelimit=497636 dirtied=237 dirtied_pause=237
+paused=0 pause=0 period=1 think=0
+             fio-5292  [003]  1062.536642: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295926 dirty=253308 bdi_setpoint=295925 bdi_dirty=253200
+dirty_ratelimit=97248 task_ratelimit=492412 dirtied=237 dirtied_pause=237
+paused=0 pause=0 period=1 think=0
+             fio-5292  [003]  1062.537247: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295929 dirty=253551 bdi_setpoint=295928 bdi_dirty=253440
+dirty_ratelimit=97248 task_ratelimit=486332 dirtied=237 dirtied_pause=237
+paused=0 pause=0 period=1 think=-1
+             fio-5292  [003]  1062.537884: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295926 dirty=253770 bdi_setpoint=295925 bdi_dirty=253680
+dirty_ratelimit=97248 task_ratelimit=481300 dirtied=237 dirtied_pause=237
+paused=0 pause=0 period=1 think=-1
+             fio-5292  [003]  1062.538529: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295927 dirty=254001 bdi_setpoint=295926 bdi_dirty=253920
+dirty_ratelimit=97248 task_ratelimit=476360 dirtied=237 dirtied_pause=237
+paused=0 pause=0 period=1 think=-1
+             fio-5292  [003]  1062.539126: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295929 dirty=254220 bdi_setpoint=295928 bdi_dirty=254160
+dirty_ratelimit=97248 task_ratelimit=471992 dirtied=237 dirtied_pause=237
+paused=0 pause=0 period=2 think=-2
+             fio-5292  [003]  1062.539759: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295930 dirty=254524 bdi_setpoint=295929 bdi_dirty=254352
+dirty_ratelimit=97248 task_ratelimit=466104 dirtied=237 dirtied_pause=237
+paused=0 pause=0 period=2 think=-3
+             fio-5292  [003]  1062.540376: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295931 dirty=254670 bdi_setpoint=295930 bdi_dirty=254592
+dirty_ratelimit=97248 task_ratelimit=462592 dirtied=237 dirtied_pause=237
+paused=0 pause=6 period=2 think=-4
+             fio-5292  [003]  1062.547014: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295928 dirty=254974 bdi_setpoint=295927 bdi_dirty=254880
+dirty_ratelimit=97248 task_ratelimit=456036 dirtied=237 dirtied_pause=237
+paused=0 pause=0 period=2 think=0
+             fio-5292  [003]  1062.547686: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295928 dirty=255193 bdi_setpoint=295927 bdi_dirty=255120
+dirty_ratelimit=97248 task_ratelimit=451196 dirtied=237 dirtied_pause=237
+paused=0 pause=0 period=2 think=-1
+             fio-5292  [003]  1062.548303: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295929 dirty=255497 bdi_setpoint=295928 bdi_dirty=255360
+dirty_ratelimit=97248 task_ratelimit=445400 dirtied=237 dirtied_pause=237
+paused=0 pause=0 period=2 think=-3
+             fio-5292  [003]  1062.548933: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295931 dirty=255643 bdi_setpoint=295930 bdi_dirty=255600
+dirty_ratelimit=97248 task_ratelimit=441888 dirtied=237 dirtied_pause=237
+paused=0 pause=6 period=2 think=-4
+             fio-5292  [003]  1062.555063: balance_dirty_pages:  bdi 8:16:
+limit=341998 setpoint=295928 dirty=255891 bdi_setpoint=295927 bdi_dirty=255744
+dirty_ratelimit=97248 task_ratelimit=437236 dirtied=237 dirtied_pause=237
+paused=0 pause=0 period=2 think=0
 
+===================================

@@ -23,6 +23,18 @@
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_get_block);
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_write_inode_raw);
 
+static atomic64_t readpage_in;
+static atomic64_t readpage_out;
+
+static atomic64_t writepage_in;
+static atomic64_t writepage_out;
+
+static atomic64_t setattr_in;
+static atomic64_t setattr_out;
+
+static atomic64_t getattr_in;
+static atomic64_t getattr_out;
+
 static int
 __luci_setsize(struct inode *inode, loff_t newsize)
 {
@@ -54,6 +66,7 @@ luci_setattr(struct dentry *dentry, struct iattr *attr)
     int err = 0;
     struct inode *inode = DENTRY_INODE(dentry);
 
+    atomic64_inc(&setattr_in);
     // check we have permissions to change attributes
 #ifdef HAVE_CHECKINODEPERM
     err = inode_change_ok(inode, attr);
@@ -74,6 +87,7 @@ luci_setattr(struct dentry *dentry, struct iattr *attr)
     }
 
 exit:
+    atomic64_inc(&setattr_out);
     return err;
 }
 
@@ -94,7 +108,12 @@ luci_getattr(const struct path *path,
              u32 request_mask,
              unsigned int query_flags)
 {
-    return __luci_getattr_private(path->dentry, stat);
+    int ret;
+
+    atomic64_inc(&getattr_in);
+    ret = __luci_getattr_private(path->dentry, stat);
+    atomic64_inc(&getattr_out);
+    return ret;
 }
 #else
 int
@@ -102,7 +121,11 @@ luci_getattr(struct vfsmount *mnt,
              struct dentry *dentry,
              struct kstat *stat)
 {
-    return __luci_getattr_private(dentry, stat);
+    int ret;
+    atomic64_inc(&getattr_in);
+    ret = __luci_getattr_private(dentry, stat);
+    atomic64_inc(&getattr_out);
+    return ret;
 }
 #endif
 
@@ -1176,6 +1199,8 @@ luci_writepage(struct page *page, struct writeback_control *wbc)
     int ret;
 #ifdef LUCIFS_COMPRESSION
     struct inode * inode = page->mapping->host;
+
+    atomic64_inc(&writepage_in);
     if (S_ISREG(inode->i_mode)) {
         ret = luci_write_extent(page, wbc);
         goto done;
@@ -1183,6 +1208,7 @@ luci_writepage(struct page *page, struct writeback_control *wbc)
 #endif
     ret = block_write_full_page(page, luci_get_block, wbc);
 done:
+    atomic64_inc(&writepage_out);
     return ret;
 }
 
@@ -1192,6 +1218,7 @@ luci_writepages(struct address_space *mapping, struct writeback_control *wbc)
     int ret;
 #ifdef LUCIFS_COMPRESSION
     struct inode * inode = mapping->host;
+    atomic64_inc(&writepage_in);
     if (S_ISREG(inode->i_mode)) {
         struct blk_plug plug;
 
@@ -1203,6 +1230,7 @@ luci_writepages(struct address_space *mapping, struct writeback_control *wbc)
 #endif
     ret = mpage_writepages(mapping, wbc, luci_get_block);
 done:
+    atomic64_inc(&writepage_out);
     return ret;
 }
 
@@ -1217,6 +1245,8 @@ luci_write_begin(struct file *file,
 {
     int ret;
     struct inode *inode = file_inode(file);
+
+    atomic64_add(len >> PAGE_CACHE_SHIFT, &writepage_in);
 
 #ifdef LUCIFS_COMPRESSION
     if (S_ISREG(inode->i_mode)) {
@@ -1274,6 +1304,7 @@ done:
     if (ret < 0)
         luci_err_inode(inode, "write_end failed with %d", ret);
 
+    atomic64_add(len >> PAGE_CACHE_SHIFT, &writepage_out);
     return ret;
 }
 
@@ -1291,6 +1322,8 @@ luci_readpage(struct file *file, struct page *page)
     bool do_verify = false;
     unsigned long file_block;
     struct inode *inode = page->mapping->host;
+
+    atomic64_inc(&readpage_in);
 
     if (S_ISREG(inode->i_mode)) {
 
@@ -1375,6 +1408,7 @@ uncompressed_read:
     }
 
 done:
+    atomic64_inc(&readpage_out);
     return ret;
 }
 
@@ -1382,7 +1416,12 @@ static int
 luci_readpages(struct file *file, struct address_space *mapping,
     struct list_head *pages, unsigned nr_pages)
 {
-    return mpage_readpages(mapping, pages, nr_pages, luci_get_block);
+    int ret;
+
+    atomic64_add(nr_pages, &readpage_in);
+    ret = mpage_readpages(mapping, pages, nr_pages, luci_get_block);
+    atomic64_add(nr_pages, &readpage_out);
+    return ret;
 }
 
 static int luci_releasepage(struct page *page, gfp_t wait)
@@ -1392,6 +1431,39 @@ static int luci_releasepage(struct page *page, gfp_t wait)
         dbgfsparam.rlsebsy++;
      return rlse;
 }
+
+static int luci_debugfs_show(struct seq_file *m, void *data)
+{
+        seq_printf(m, "readpage  in   :%ld\n"
+                      "readpage  done :%ld\n"
+                      "writepage in   :%ld\n"
+                      "writepage done :%ld\n"
+                      "setattr   in   :%ld\n"
+                      "setattr   done :%ld\n"
+                      "getattr   in   :%ld\n"
+                      "getattr   done :%ld\n",
+                      atomic64_read(&readpage_in),
+                      atomic64_read(&readpage_out),
+                      atomic64_read(&writepage_in),
+                      atomic64_read(&writepage_out),
+                      atomic64_read(&setattr_in),
+                      atomic64_read(&setattr_out),
+                      atomic64_read(&getattr_in),
+                      atomic64_read(&getattr_out));
+        return 0;
+}
+
+static int luci_debugfs_open(struct inode *inode, struct file *file)
+{
+        return single_open(file, luci_debugfs_show, inode->i_private);
+}
+
+const struct file_operations luci_iostat_ops = {
+        .open		= luci_debugfs_open,
+        .read		= seq_read,
+        .llseek		= no_llseek,
+        .release	= single_release,
+};
 
 // Depth first traversal of blocks
 // assumes file is not truncated during this operation

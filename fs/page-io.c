@@ -34,9 +34,9 @@
 #include "trace.h"
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_scan_pgtree_dirty_pages);
 
-#define WBC_FMT  "wbc: (%llu-%llu) dirty :%lu"
+#define WBC_FMT  "wbc: (%llu-%llu) dirty :%lu cyclic :%u sync_mode :%u"
 
-#define WBC_ARGS(wbc) wbc->range_start, wbc->range_end, wbc->nr_to_write
+#define WBC_ARGS(wbc) wbc->range_start, wbc->range_end, wbc->nr_to_write, wbc->range_cyclic, wbc->sync_mode
 
 /*
  * Compressed pages freed here, and must be run in process context.
@@ -504,6 +504,7 @@ luci_scan_pgtree_dirty_pages(struct address_space *mapping,
     if (!nr_pages) {
         pagevec_release(pvec);
         kfree(pvec);
+        luci_info_inode(inode, "page tree is clean, nr_pages = 0");
         return NULL; // next index is not updated
     }
 
@@ -538,7 +539,7 @@ luci_scan_pgtree_dirty_pages(struct address_space *mapping,
     if (!nr_dirty) {
         kfree(pvec);
         *index = next_index;
-        luci_dbg_inode(inode, "dirty page does not belong to this "
+        luci_info_inode(inode, "dirty page does not belong to this "
             "extent(%u), next index %lu\n", extent, next_index);
         return NULL; // next_index is updated
     }
@@ -566,7 +567,7 @@ repeat:
 
     }
 
-    luci_dbg_inode(inode, "dirty pages:%u in extent %u(%lu)", nr_dirty,
+    luci_info_inode(inode, "dirty pages:%u in extent %u(%lu)", nr_dirty,
         extent, *index);
 
     *index = next_index;
@@ -658,7 +659,8 @@ int luci_write_extents(struct address_space *mapping,
     }
 
     BUG_ON(inode == NULL);
-    luci_dbg_inode(inode, "writing pages "WBC_FMT, WBC_ARGS(wbc));
+    luci_dbg_inode(inode, "writing pages start_index :%lu "WBC_FMT,
+                           start_index, WBC_ARGS(wbc));
 
 repeat:
     next_index = start_index;
@@ -697,7 +699,7 @@ repeat:
         mapping->writeback_index = next_index;
 
 exit:
-    luci_info_inode(inode, "exiting writepages, range(%lu-%lu) nr_write :%lu\n",
+    luci_info_inode(inode, "exiting writepages, range(%lu-%lu) nr_pending_write :%lu\n",
         start_index, next_index, wbc->nr_to_write);
     return err;
 }

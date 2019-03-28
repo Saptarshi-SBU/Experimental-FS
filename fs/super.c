@@ -18,6 +18,7 @@
 #include <linux/string.h>
 #include <linux/parser.h>
 #include <linux/debugfs.h>
+#include <linux/seq_file.h>
 #include "kern_feature.h"
 #include "luci.h"
 #include "compress.h"
@@ -28,6 +29,8 @@ MODULE_DESCRIPTION("File System for Linux");
 MODULE_LICENSE("GPL");
 
 debugfs_t dbgfsparam;
+
+extern const struct file_operations luci_iostat_ops;
 
 static struct kmem_cache* luci_inode_cachep;
 
@@ -1100,6 +1103,14 @@ init_debugfs(void) {
                 printk(KERN_ERR "error creating file");
                 return (-ENODEV);
         }
+
+        dbgfsparam.dirent_iostat = debugfs_create_file("iostat", 0644,
+                        dbgfsparam.dirent, (void *) NULL, &luci_iostat_ops);
+        if (dbgfsparam.dirent_iostat == NULL) {
+                printk(KERN_ERR "error creating file");
+                return (-ENODEV);
+        }
+
         return 0;
 }
 

@@ -770,17 +770,18 @@ typedef struct debugfs {
     struct dentry *dirent_inflate_lat;
     u64 avg_io_lat; //ns
     struct dentry *dirent_io_lat;
+    struct dentry *dirent_iostat;
 }debugfs_t;
 
 extern debugfs_t dbgfsparam;
 
 #define luci_dbg(f, a...)  { \
 	            if (dbgfsparam.log) \
-                        printk (KERN_DEBUG "LUCI-FS %s :"f"\n", __func__, ## a); \
+                        printk (KERN_INFO "LUCI-FS %s :"f"\n", __func__, ## a); \
                     }
 #define luci_dbg_inode(inode, f, a...)  { \
 	            if (dbgfsparam.log) \
-                        printk (KERN_DEBUG "LUCI-FS %s :inode :%lu :"f"\n", __func__, \
+                        printk (KERN_INFO "LUCI-FS %s :inode :%lu :"f"\n", __func__, \
                             inode->i_ino, ## a); \
                     }
 #define luci_info(f, a...)  { \
