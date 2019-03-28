@@ -696,7 +696,7 @@ repeat:
 
     // we still have stuff dirty, but that's all we can do for now
     if (wbc->nr_to_write > 0 && wbc->range_cyclic)
-        mapping->writeback_index = next_index;
+            mapping->writeback_index = done ? 0 : next_index;
 
 exit:
     luci_info_inode(inode, "exiting writepages, range(%lu-%lu) nr_pending_write :%lu\n",
