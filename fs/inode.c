@@ -23,11 +23,14 @@
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_get_block);
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_write_inode_raw);
 
-static atomic64_t readpage_in;
-static atomic64_t readpage_out;
+static atomic64_t readfile_in;
+static atomic64_t readfile_out;
 
-static atomic64_t writepage_in;
-static atomic64_t writepage_out;
+static atomic64_t writefile_in;
+static atomic64_t writefile_out;
+
+static atomic64_t writeback_in;
+static atomic64_t writeback_out;
 
 static atomic64_t setattr_in;
 static atomic64_t setattr_out;
@@ -1200,7 +1203,7 @@ luci_writepage(struct page *page, struct writeback_control *wbc)
 #ifdef LUCIFS_COMPRESSION
     struct inode * inode = page->mapping->host;
 
-    atomic64_inc(&writepage_in);
+    atomic64_inc(&writeback_in);
     if (S_ISREG(inode->i_mode)) {
         ret = luci_write_extent(page, wbc);
         goto done;
@@ -1208,7 +1211,7 @@ luci_writepage(struct page *page, struct writeback_control *wbc)
 #endif
     ret = block_write_full_page(page, luci_get_block, wbc);
 done:
-    atomic64_inc(&writepage_out);
+    atomic64_inc(&writeback_out);
     return ret;
 }
 
@@ -1218,7 +1221,7 @@ luci_writepages(struct address_space *mapping, struct writeback_control *wbc)
     int ret;
 #ifdef LUCIFS_COMPRESSION
     struct inode * inode = mapping->host;
-    atomic64_inc(&writepage_in);
+    atomic64_inc(&writeback_in);
     if (S_ISREG(inode->i_mode)) {
         struct blk_plug plug;
 
@@ -1230,7 +1233,7 @@ luci_writepages(struct address_space *mapping, struct writeback_control *wbc)
 #endif
     ret = mpage_writepages(mapping, wbc, luci_get_block);
 done:
-    atomic64_inc(&writepage_out);
+    atomic64_inc(&writeback_out);
     return ret;
 }
 
@@ -1246,7 +1249,7 @@ luci_write_begin(struct file *file,
     int ret;
     struct inode *inode = file_inode(file);
 
-    atomic64_add(len >> PAGE_CACHE_SHIFT, &writepage_in);
+    atomic64_add(len >> PAGE_CACHE_SHIFT, &writefile_in);
 
 #ifdef LUCIFS_COMPRESSION
     if (S_ISREG(inode->i_mode)) {
@@ -1304,7 +1307,7 @@ done:
     if (ret < 0)
         luci_err_inode(inode, "write_end failed with %d", ret);
 
-    atomic64_add(len >> PAGE_CACHE_SHIFT, &writepage_out);
+    atomic64_add(len >> PAGE_CACHE_SHIFT, &writefile_out);
     return ret;
 }
 
@@ -1323,7 +1326,7 @@ luci_readpage(struct file *file, struct page *page)
     unsigned long file_block;
     struct inode *inode = page->mapping->host;
 
-    atomic64_inc(&readpage_in);
+    atomic64_inc(&readfile_in);
 
     if (S_ISREG(inode->i_mode)) {
 
@@ -1408,7 +1411,7 @@ uncompressed_read:
     }
 
 done:
-    atomic64_inc(&readpage_out);
+    atomic64_inc(&readfile_out);
     return ret;
 }
 
@@ -1418,9 +1421,9 @@ luci_readpages(struct file *file, struct address_space *mapping,
 {
     int ret;
 
-    atomic64_add(nr_pages, &readpage_in);
+    atomic64_add(nr_pages, &readfile_in);
     ret = mpage_readpages(mapping, pages, nr_pages, luci_get_block);
-    atomic64_add(nr_pages, &readpage_out);
+    atomic64_add(nr_pages, &readfile_out);
     return ret;
 }
 
@@ -1434,18 +1437,22 @@ static int luci_releasepage(struct page *page, gfp_t wait)
 
 static int luci_debugfs_show(struct seq_file *m, void *data)
 {
-        seq_printf(m, "readpage  in   :%ld\n"
-                      "readpage  done :%ld\n"
-                      "writepage in   :%ld\n"
-                      "writepage done :%ld\n"
+        seq_printf(m, "readfile  in   :%ld\n"
+                      "readfile  done :%ld\n"
+                      "writefile in   :%ld\n"
+                      "writefile done :%ld\n"
+                      "writeback in   :%ld\n"
+                      "writeback done :%ld\n"
                       "setattr   in   :%ld\n"
                       "setattr   done :%ld\n"
                       "getattr   in   :%ld\n"
                       "getattr   done :%ld\n",
-                      atomic64_read(&readpage_in),
-                      atomic64_read(&readpage_out),
-                      atomic64_read(&writepage_in),
-                      atomic64_read(&writepage_out),
+                      atomic64_read(&readfile_in),
+                      atomic64_read(&readfile_out),
+                      atomic64_read(&writefile_in),
+                      atomic64_read(&writefile_out),
+                      atomic64_read(&writeback_in),
+                      atomic64_read(&writeback_out),
                       atomic64_read(&setattr_in),
                       atomic64_read(&setattr_out),
                       atomic64_read(&getattr_in),

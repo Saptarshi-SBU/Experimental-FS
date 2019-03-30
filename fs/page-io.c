@@ -33,6 +33,7 @@
 
 #include "trace.h"
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_scan_pgtree_dirty_pages);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_write_extents);
 
 #define WBC_FMT  "wbc: (%llu-%llu) dirty :%lu cyclic :%u sync_mode :%u"
 
@@ -143,7 +144,13 @@ luci_bio_alloc(struct block_device *bdev, unsigned long start,
     }
 
     bio->bi_vcnt = 0;
+
+    #ifdef HAVE_BIO_SETDEV_NEW
+    bio_set_dev(bio, bdev);
+    #else
     bio->bi_bdev = bdev;
+    #endif
+
     #ifdef HAVE_BIO_ITER
     bio->bi_iter.bi_sector = start >> 9;
     #else
@@ -489,14 +496,16 @@ luci_scan_pgtree_dirty_pages(struct address_space *mapping,
     if (tag == PAGECACHE_TAG_TOWRITE)
         tag_pages_for_writeback(mapping, next_index, end_index);
 
+    // scan for tag
+#ifdef HAVE_PAGEVEC_INIT_NEW
+    pagevec_init(pvec);
+
+    nr_pages = pagevec_lookup_tag(pvec, mapping, &next_index, tag);
+#else
     pagevec_init(pvec, 0);
 
-    // scan for tag
-    nr_pages = pagevec_lookup_tag(pvec,
-                                  mapping,
-                                  &next_index,
-                                  tag,
-                                  EXTENT_NRPAGE);
+    nr_pages = pagevec_lookup_tag(pvec, mapping, &next_index, tag, EXTENT_NRPAGE);
+#endif
 
     BUG_ON(pagevec_count(pvec) != nr_pages);
 
@@ -647,6 +656,7 @@ int luci_write_extents(struct address_space *mapping,
     struct extent_write_work *wrk;
     pgoff_t start_index, end_index, prv_index, next_index;
     struct inode *inode = mapping->host;
+    unsigned long nr_dirty = wbc->nr_to_write;
 
     if (wbc->range_cyclic) {
         start_index = mapping->writeback_index;
@@ -701,8 +711,15 @@ repeat:
 exit:
     luci_info_inode(inode, "exiting writepages, range(%lu-%lu) nr_pending_write :%lu\n",
         start_index, next_index, wbc->nr_to_write);
+
+#ifdef HAVE_TRACEPOINT_ENABLED
+    if (trace_luci_write_extents_enabled())
+#endif
+	trace_luci_write_extents(inode, nr_dirty, wbc->nr_to_write);
+
     return err;
 }
+EXPORT_SYMBOL_GPL(luci_write_extents);
 
 /*
  * Give a page where data will be copied. The page will be locked.

@@ -65,7 +65,6 @@ luci_alloc_bitmap(unsigned long *addr,
                 unsigned int max_bits)
 {
         u8 *ptr;
-        ktime_t start;
         bool found = false;
         unsigned int byte_nr= 0;
         unsigned int start_bit = 0, end_bit = 0, next_bit = 0;
@@ -75,7 +74,6 @@ luci_alloc_bitmap(unsigned long *addr,
                 BUG();
         }
 
-        start = ktime_get();
         // loop till you find zero bit position for range to allocate
         do {
                 start_bit = find_next_zero_bit(addr, max_bits, next_bit);
@@ -124,7 +122,6 @@ luci_alloc_bitmap(unsigned long *addr,
 fail:
         return max_bits;
 done:
-        UPDATE_AVG_LATENCY_NS(dbgfsparam.avg_balloc_lat, start);
         return start_bit;
 }
 
@@ -530,6 +527,9 @@ luci_new_block(struct inode *inode,
         struct luci_group_desc *gdesc = NULL;
         struct luci_super_block *lsb = NULL;
         struct buffer_head *bg_bh = NULL, *bmap_bh = NULL;
+        ktime_t start;
+
+        start = ktime_get();
 
         read_lock(&li->i_meta_lock);
 
@@ -646,6 +646,7 @@ gotit:
 
         mark_inode_dirty(inode);
 
+        UPDATE_AVG_LATENCY_NS(dbgfsparam.avg_balloc_lat, start);
 fail:
         return err;
 }

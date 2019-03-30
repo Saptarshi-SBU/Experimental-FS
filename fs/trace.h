@@ -121,6 +121,25 @@ TRACE_EVENT(luci_scan_pgtree_dirty_pages,
                 __entry->index)
 );
 
+TRACE_EVENT(luci_write_extents,
+	     TP_PROTO(struct inode *inode, size_t dirty_counter_enter, size_t dirty_counter_exit),
+	     TP_ARGS(inode, dirty_counter_enter, dirty_counter_exit),
+	     TP_STRUCT__entry(
+                __field(int, inum);
+                __field(unsigned long, dirty_counter_enter);
+                __field(unsigned long, dirty_counter_exit);
+            ),
+            TP_fast_assign(
+                __entry->inum = inode->i_ino;
+                __entry->dirty_counter_enter = dirty_counter_enter;
+                __entry->dirty_counter_exit  = dirty_counter_exit;
+            ),
+            TP_printk("inum=%u dirty_counter_enter=%lu dirty_counter_exit=%lu",
+                __entry->inum,
+                __entry->dirty_counter_enter,
+                __entry->dirty_counter_exit)
+);
+
 #endif /* _TRACE_LUCI_H */
 
 // updated as config in Makefile

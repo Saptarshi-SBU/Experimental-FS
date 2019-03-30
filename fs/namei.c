@@ -71,7 +71,12 @@ luci_commit_chunk(struct page *page, loff_t pos, unsigned len)
         luci_dbg_inode(dir, "updating dir inode size %llu", dir->i_size);
     }
 
-    if (IS_DIRSYNC(dir) && ((err = write_one_page(page, 1)) == 0))
+    if (IS_DIRSYNC(dir) &&
+#ifdef HAVE_WRITE_ONE_PAGE_NEW
+		    ((err = write_one_page(page)) == 0))
+#else
+		    ((err = write_one_page(page, 1)) == 0))
+#endif
         err = sync_inode_metadata(dir, 1);
     else
         unlock_page(page);
