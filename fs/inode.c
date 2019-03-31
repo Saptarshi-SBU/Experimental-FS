@@ -311,13 +311,16 @@ luci_bmap_get_path(struct inode *inode,
                    int depth,
                    long ipaths[LUCI_MAX_DEPTH],
                    Indirect ichain[LUCI_MAX_DEPTH],
-                   int *err)
+                   int *err,
+                   int flags)
 {
     int i = 0, ret = 0;
     Indirect *p = ichain;
     struct buffer_head *bh = NULL;
     struct super_block *sb = inode->i_sb;
     unsigned long parent_block = 0; // only for debug
+    bool skip_leaf = (S_ISREG(inode->i_mode) &&
+                     ((flags & COMPR_BLK_INSERT) || (flags & COMPR_BLK_UPDATE) || (flags & COMPR_BLK_INFO)));
 
     BUG_ON(!depth);
 
@@ -355,6 +358,9 @@ luci_bmap_get_path(struct inode *inode,
         luci_bmap_add_chain(++p, NULL, (blkptr*)bh->b_data + *++ipaths);
         if (!p->key.blockno)
             goto no_block;
+
+        if ((i + 1 == depth) && skip_leaf)
+                break;
 
         if ((bh = sb_bread(sb, p->key.blockno)) == NULL)
             panic("metadata read error inode :%lu ipath[%d]%u",
@@ -634,15 +640,14 @@ luci_get_block(struct inode *inode,
 
     mutex_lock(&(LUCI_I(inode)->truncate_mutex));
 
-    partial = luci_bmap_get_path(inode,
-                                 depth,
-                                 ipaths,
-                                 ichain,
-                                 &err);
+    partial = luci_bmap_get_path(inode, depth, ipaths, ichain, &err, flags);
     if (err < 0) {
         luci_err_inode(inode, "bmap path error %d", err);
         goto exit;
     }
+
+    if (flags & COMPR_BLK_INFO)
+            flags = 0;
 
     // L0 block exists
     if (!partial) {
@@ -789,7 +794,6 @@ luci_bmap_fetch_L0bp(struct inode *inode,
                      unsigned long i_block)
 {
     blkptr bp;
-    int create = 1;
     struct buffer_head bh;
 
     memset((char*)&bp, 0, sizeof(blkptr));
@@ -797,7 +801,7 @@ luci_bmap_fetch_L0bp(struct inode *inode,
 
     bh.b_state = BH_PrivateStart;
     bh.b_data = (void *)&bp.checksum;
-    if (luci_get_block(inode, i_block, &bh, !create) < 0)
+    if (luci_get_block(inode, i_block, &bh, COMPR_BLK_INFO) < 0)
         panic("error L0 bp, inode :%lu i_block: %lu", inode->i_ino, i_block);
 
     // BH_Mapped
@@ -944,7 +948,6 @@ luci_bmap_update_extent_bp(struct page *page,
         // for compressed extent, start blkptr spans across file offsets entries
         if (blockno && blockno == bp_old[i].blockno)
                 continue;
-
         // TBD : add comment why block entry can be zero
         blockno = bp_old[i].blockno;
         if (blockno)
@@ -1432,7 +1435,7 @@ static int luci_releasepage(struct page *page, gfp_t wait)
     int rlse = try_to_free_buffers(page);
     if (!rlse)
         dbgfsparam.rlsebsy++;
-     return rlse;
+    return rlse;
 }
 
 static int luci_debugfs_show(struct seq_file *m, void *data)
@@ -1500,11 +1503,7 @@ luci_dump_layout(struct inode * inode) {
        // walk blocks in the path and store in ichain
        memset((char*)ichain, 0, sizeof(Indirect) * LUCI_MAX_DEPTH);
 
-       if (luci_bmap_get_path(inode,
-                              depth,
-                              ipaths,
-                              ichain,
-                              &err) != NULL) {
+       if (luci_bmap_get_path(inode, depth, ipaths, ichain, &err, 0) != NULL) {
           luci_info_inode(inode, "detected hole at iblock %ld", i);
           nr_holes++;
        }

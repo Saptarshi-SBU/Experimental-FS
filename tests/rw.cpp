@@ -27,7 +27,7 @@ std::mutex syncTasks_mutex;
 std::condition_variable syncTasks_cv;
 
 struct Timer {
-        std::chrono::seconds secs_;
+        std::chrono::milliseconds secs_;
         std::chrono::time_point<std::chrono::steady_clock> t0_;
 
         void Start() {
@@ -36,7 +36,7 @@ struct Timer {
 
         void Stop() {
                 auto diff = std::chrono::steady_clock::now() - t0_;
-                secs_ = std::chrono::duration_cast<std::chrono::seconds> (diff);
+                secs_ = std::chrono::duration_cast<std::chrono::milliseconds> (diff);
         }
 
         double Duration() {
@@ -109,8 +109,10 @@ struct IOTask {
                   node_affinity_(node) {
 
                   fd_ = open(file.c_str(), (opType == FileConfig::FileOp::READOP) ? O_RDONLY : O_RDWR | O_CREAT, 0777);
-                  if (fd_ < 0)
+                  if (fd_ < 0) {
+                        std::cerr <<  "file " << file << ":" << fd_ << std::endl;
                         throw std::runtime_error("failed to open file");    
+                  }
        }
 
        ~IOTask() {
@@ -159,7 +161,7 @@ struct IOTask {
 
                         accum_duration += tp.Duration();
 
-                        assert (ret > 0);
+                        assert (ret >= 0);
                 }
 
                 task->latency_ = accum_duration / fileops;
@@ -204,7 +206,7 @@ struct TaskManager {
                                   << " reqSize :" << worker->reqSize_
                                   << " fileBytes :" << worker->fileBytes_
                                   << " fileOffset :" << worker->fileOffset_
-                                  << " Latency :" << worker->latency_
+                                  << " Latency :" << worker->latency_ << " ms"
                                   << std::endl;
                         delete worker;
                 }         
@@ -236,14 +238,13 @@ const struct FileConfig file_cfg = {
 
         .file_          = std::string("/mnt/sample"),
         .opType_        = FileConfig::FileOp::WRITEOP,
-        .thread_count_  = 8,
-        .fileSize_      = 1 << 30UL,
+        .fileSize_      = (1 << 30UL),
+        .thread_count_  = 32,
 };
 
 int main(void) {
-         struct TaskManager task_mgr(seqIO_cfg);
-
-         struct FileConfig file_cfg(file_cfg);
+         //struct TaskManager task_mgr(seqIO_cfg);
+         struct TaskManager task_mgr(randIO_cfg);
 
          task_mgr.SetTask(file_cfg);
 

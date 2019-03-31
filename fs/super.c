@@ -354,6 +354,11 @@ luci_evict_inode(struct inode * inode)
                 luci_err("inode invalid layout detected");
         }
 
+#ifdef LUCIFS_COMPRESSION
+        luci_info_inode(inode, "size (%llu) phy_size(%llu)",
+                        inode->i_size, LUCI_I(inode)->i_size_comp);
+#endif
+
         // invalidate the radix tree in page-cache
 #ifdef HAVE_TRUNCATEPAGES_FINAL
         truncate_inode_pages_final(&inode->i_data);

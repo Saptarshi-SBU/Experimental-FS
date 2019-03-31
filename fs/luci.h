@@ -665,6 +665,7 @@ unsigned luci_last_byte(struct inode *inode, unsigned long page_nr);
 #define COMPR_CREATE_ALLOC  0x01
 #define COMPR_BLK_UPDATE    0x02
 #define COMPR_BLK_INSERT    0x04
+#define COMPR_BLK_INFO      0x08
 
 #ifdef HAVE_NEW_GETATTR
 int luci_getattr(const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags);
@@ -696,7 +697,7 @@ int luci_free_block(struct inode *inode, unsigned long block);
 
 /*page-io.c */
 
-#define EXTENT_NRPAGE 4
+#define EXTENT_NRPAGE 8
 
 #define EXTENT_NRBLOCKS_MAX 32
 
