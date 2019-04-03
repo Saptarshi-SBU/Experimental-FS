@@ -64,10 +64,8 @@ luci_alloc_bitmap(unsigned long *addr,
                 unsigned int nr_bits,
                 unsigned int max_bits)
 {
-        u8 *ptr;
-        bool found = false;
-        unsigned int byte_nr= 0;
-        unsigned int start_bit = 0, end_bit = 0, next_bit = 0;
+        u8 *start_bp, *end_bp;
+        unsigned int start_bit = 0, end_bit = 0, next_bit = 0, off_bit;
 
         if (nr_bits > (1 << BYTE_SHIFT)) {
                 luci_err("request for more bits than possible in a byte range");
@@ -77,6 +75,7 @@ luci_alloc_bitmap(unsigned long *addr,
         // loop till you find zero bit position for range to allocate
         do {
                 start_bit = find_next_zero_bit(addr, max_bits, next_bit);
+
                 // bitmap range full, no free bit
                 if (start_bit >= max_bits) {
                         goto fail;
@@ -87,37 +86,20 @@ luci_alloc_bitmap(unsigned long *addr,
                         goto fail;
                 }
                 // translate bitpos to a byte nr
-                byte_nr = start_bit >> BYTE_SHIFT;
-                // falls in a byte nr, so that CAS works
-                if (byte_nr == (end_bit >> BYTE_SHIFT)) {
-                        // prepare mask for CAS
-                        u8 mask = 0, val, old;
-                        unsigned int i = byte_nr << BYTE_SHIFT, lbit = i;
-                        while (i <= end_bit) {
-                                if (i >= start_bit) mask |=  1 << (i - lbit);
-                                i++;
-                        }
-                        ptr = (char*)addr + byte_nr;
-                        val = *ptr;
-                        // val has no common bits in the mask
-                        if (!(val & mask)) {
-                                old = cmpxchg(ptr, val, val | mask);
-                                // CAS is not the best for range finding, since bits
-                                // may get freed without impacting our range, but for
-                                // now this should be ok
-                                if (old == val) {
-                                        smp_mb();
-                                        found = true;
-                                        luci_dbg("mask :0x%x, 0x%x(0x%x) found startb_bit :%d "
-                                                        "endb_bit :%d", mask, *ptr, old, start_bit, end_bit);
-                                        goto done;
-                                }
-                        }
+                start_bp = (u8 *)addr + (start_bit >> BYTE_SHIFT);
+
+                end_bp = (u8 *)addr + (end_bit >> BYTE_SHIFT);
+
+                off_bit = start_bit % 8;
+
+                if (bitmap_find_first_fit(start_bp, end_bp, off_bit, nr_bits)) {
+                        bitmap_mark_first_fit(start_bp, end_bp, off_bit, nr_bits);
+                        goto done;
                 }
-                // if startb == endb, we keep on looping forever
+
                 next_bit = end_bit + 1;
                 // skip the last bit for now
-        } while (!found && next_bit < max_bits);
+        } while (next_bit < max_bits);
 
 fail:
         return max_bits;
@@ -578,9 +560,10 @@ luci_new_block(struct inode *inode,
                         *start_block =  block + luci_group_first_block_no(sb, bg);
                         goto gotit;
                 } else {
+                        luci_err("no free blocks found in bg :%lu nr blocks :%u free blocks :%u",
+                                        bg, nr_blocks, gdesc->bg_free_blocks_count);
+                        luci_dump_bytes("no free blocks:", bmap_bh->b_page, PAGE_SIZE); 
                         brelse(bmap_bh);
-                        luci_dbg("no free blocks found in bg :%lu free blocks :%u",
-                                        bg, gdesc->bg_free_blocks_count);
                 }
 
                 unlock_buffer(bmap_bh);

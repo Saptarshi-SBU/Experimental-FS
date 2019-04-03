@@ -100,3 +100,45 @@ bool areas_overlap(unsigned long src,
     unsigned long distance = (src > dst) ? src - dst : dst - src;
     return distance < len;
 }
+
+bool
+bitmap_find_first_fit(u8 *startb, u8 *endb, int firstzero, int nblocks)
+{
+        u8 i = firstzero, *p;
+
+        for (p = startb; p <= endb; p++) {
+                u8 n = *p;
+
+                while (nblocks && i < 8) {
+                        if (n & (1 << i))
+                                return false;
+                        i++;
+                        nblocks--;
+                }
+
+                if (!nblocks)
+                        break;
+                i = 0;
+        }
+
+        return nblocks ? false : true;
+}
+
+void
+bitmap_mark_first_fit(u8 *startb, u8 *endb, int firstzero, int nblocks)
+{
+        u8 i = firstzero, *p;
+
+        for (p = startb; p <= endb; p++) {
+                while (nblocks && i < 8) {
+                        BUG_ON(*p & (1 << i));
+                        *p |= (1 << i);
+                        i++;
+                        nblocks--;
+                }
+
+                if (!nblocks)
+                        break;
+                i = 0;
+        }
+}

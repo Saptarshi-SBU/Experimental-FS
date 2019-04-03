@@ -350,10 +350,14 @@ __luci_compress_extent_and_write(struct work_struct *work)
     nr_blocks = (total_out + LUCI_BLOCK_SIZE(inode->i_sb) - 1) >>
                  LUCI_BLOCK_SIZE_BITS(inode->i_sb);
 
+    //mutex_lock(&(LUCI_I(inode)->truncate_mutex));
+
     if (luci_new_block(inode, nr_blocks, &start_compr_block) < 0) {
         panic("failed block allocation for extent %u, nr_blocks :%lu",
                extent, nr_blocks);
     }
+
+    //mutex_unlock(&(LUCI_I(inode)->truncate_mutex));
 
     for (i = 0; i < EXTENT_NRBLOCKS_MAX; i++) {
         if (compressed)

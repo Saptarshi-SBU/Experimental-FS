@@ -13,14 +13,12 @@ from shutil import copyfile
 
 from setup import RunCommand
 
-TESTDIR='/mnt'
-#HOMEDIR="/run/media/ssen/NIKON D3200/DCIM/100D3200"
-#HOMEDIR="/run/media/root/Shilpita/sen_santa_cruz_dec2016/DCIM/100D3200"
-HOMEDIR="/home/ssen/Downloads/pics_bakup"
-#HOMEDIR="/home"
+NRRUNS=10
 NRFILES=100
 LARGEFILE='/dev/sda'
-NRRUNS=10
+#HOMEDIR="/home/ssen/Downloads/SHILPITA/Photos/Downtown Santa Clara, CA - Newhall St, August 4, 2016"
+HOMEDIR="/home/ssen/Downloads/SHILPITA/Photos/Downtown Santa Clara, CA - Newhall St, July 31, 2016"
+TESTDIR="/mnt/Photos/Downtown Santa Clara, CA - Newhall St, July 31, 2016"
 
 def GetLargeFile():
     return LARGEFILE

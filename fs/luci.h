@@ -633,6 +633,8 @@ void inline luci_bio_dump(struct bio * bio, const char *msg);
 void copy_pages(struct page *dst_page, struct page *src_page, unsigned long dst_off,
                 unsigned long src_off, unsigned long len);
 bool inline areas_overlap(unsigned long src, unsigned long dst, unsigned long len);
+bool bitmap_find_first_fit(u8 *startb, u8 *endb, int firstzero, int nblocks);
+void bitmap_mark_first_fit(u8 *startb, u8 *endb, int firstzero, int nblocks);
 
 /* super.c */
 struct luci_group_desc *
