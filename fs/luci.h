@@ -660,8 +660,6 @@ int luci_commit_chunk(struct page *page, loff_t pos, unsigned len);
 unsigned luci_last_byte(struct inode *inode, unsigned long page_nr);
 
 /* inode.c */
-#define TEST_INODE 12
-
 #define LUCI_COMPR_FLAG  0x1
 
 #define COMPR_CREATE_ALLOC  0x01
@@ -679,7 +677,6 @@ extern int luci_get_block(struct inode *, sector_t, struct buffer_head *, int);
 extern blkptr luci_bmap_fetch_L0bp(struct inode *inode, unsigned long i_block);
 extern int luci_bmap_insert_L0bp(struct inode *inode, unsigned long i_block, blkptr *bp);
 int luci_write_inode_raw(struct inode *inode, int do_sync);
-extern int luci_dump_layout(struct inode * inode);
 
 /* crc32 */
 u32 luci_compute_data_cksum(void *addr, size_t length, u32 crc_seed);
@@ -753,8 +750,8 @@ typedef struct debugfs {
     struct dentry *dirent;
     u32 log;
     struct dentry *dirent_dbg;
-    u32 layout;
-    struct dentry *dirent_layout;
+    u32 inode_inspect;
+    struct dentry *dirent_inspect;
     u64 latency;
     struct dentry *dirent_lat;
     u32 pgtrack;

@@ -38,6 +38,8 @@ static atomic64_t setattr_out;
 static atomic64_t getattr_in;
 static atomic64_t getattr_out;
 
+extern debugfs_t dbgfsparam;
+
 static int
 __luci_setsize(struct inode *inode, loff_t newsize)
 {
@@ -750,10 +752,12 @@ done:
 
 exit:
 
-#ifdef HAVE_TRACEPOINT_ENABLED
-    if (trace_luci_get_block_enabled())
-#endif
-        trace_luci_get_block(inode, iblock, ichain, flags);
+    if (!dbgfsparam.inode_inspect || (dbgfsparam.inode_inspect == inode->i_ino)) {
+        #ifdef HAVE_TRACEPOINT_ENABLED
+        if (trace_luci_get_block_enabled())
+        #endif
+                trace_luci_get_block(inode, iblock, ichain, flags);
+    }
 
     mutex_unlock(&(LUCI_I(inode)->truncate_mutex));
     return err;
@@ -1122,6 +1126,7 @@ luci_iget(struct super_block *sb, unsigned long ino) {
     }
 
     brelse(bh);
+
     // clears the new state
     unlock_new_inode(inode);
     return inode;
@@ -1438,7 +1443,7 @@ static int luci_releasepage(struct page *page, gfp_t wait)
     return rlse;
 }
 
-static int luci_debugfs_show(struct seq_file *m, void *data)
+static int luci_debugfs_show_stats(struct seq_file *m, void *data)
 {
         seq_printf(m, "readfile  in   :%ld\n"
                       "readfile  done :%ld\n"
@@ -1465,7 +1470,7 @@ static int luci_debugfs_show(struct seq_file *m, void *data)
 
 static int luci_debugfs_open(struct inode *inode, struct file *file)
 {
-        return single_open(file, luci_debugfs_show, inode->i_private);
+        return single_open(file, luci_debugfs_show_stats, inode->i_private);
 }
 
 const struct file_operations luci_iostat_ops = {
@@ -1474,60 +1479,6 @@ const struct file_operations luci_iostat_ops = {
         .llseek		= no_llseek,
         .release	= single_release,
 };
-
-// Depth first traversal of blocks
-// assumes file is not truncated during this operation
-int
-luci_dump_layout(struct inode * inode) {
-    int err, depth;
-    unsigned blocksize;
-    unsigned long i, nr_blocks, nr_holes;
-    long ipaths[LUCI_MAX_DEPTH];
-    Indirect ichain[LUCI_MAX_DEPTH];
-
-    blocksize = luci_chunk_size(inode);
-    nr_blocks = (inode->i_size + blocksize - 1)/blocksize;
-
-    for (i = 0, nr_holes = 0; i < nr_blocks; i++) {
-       memset((char*)ipaths, 0, sizeof(long) * LUCI_MAX_DEPTH);
-
-       depth = luci_bmap_get_indices(inode,
-                                     i,
-                                     ipaths,
-                                     NULL);
-       if (depth < 0) {
-          err = -EIO;
-          goto exit;
-       }
-
-       // walk blocks in the path and store in ichain
-       memset((char*)ichain, 0, sizeof(Indirect) * LUCI_MAX_DEPTH);
-
-       if (luci_bmap_get_path(inode, depth, ipaths, ichain, &err, 0) != NULL) {
-          luci_info_inode(inode, "detected hole at iblock %ld", i);
-          nr_holes++;
-       }
-
-       if (err < 0)
-          goto exit;
-
-       luci_info_inode(inode, "block_path iblock %lu path %u %u %u %u",
-                               i,
-                               ichain[0].key.blockno,
-                               ichain[1].key.blockno,
-                               ichain[2].key.blockno,
-                               ichain[3].key.blockno);
-    }
-
-    luci_info_inode(inode, "total blocks :%lu holes :%lu size :%llu",
-            nr_blocks, nr_holes, inode->i_size);
-    return 0;
-
-exit:
-    luci_err_inode(inode, "error reading path iblock :%lu", i);
-    return err;
-
-}
 
 const struct address_space_operations luci_aops = {
     .readpage       = luci_readpage,

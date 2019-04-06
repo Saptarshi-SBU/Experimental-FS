@@ -348,12 +348,6 @@ luci_evict_inode(struct inode * inode)
 {
         luci_dbg_inode(inode, "evicting inode");
 
-        // dump layout here for sanity
-        if (dbgfsparam.layout && inode->i_size && (inode->i_ino == TEST_INODE) &&
-                        (luci_dump_layout(inode) < 0)) {
-                luci_err("inode invalid layout detected");
-        }
-
 #ifdef LUCIFS_COMPRESSION
         luci_info_inode(inode, "size (%llu) phy_size(%llu)",
                         inode->i_size, LUCI_I(inode)->i_size_comp);
@@ -1035,9 +1029,9 @@ init_debugfs(void) {
                 printk(KERN_ERR "error creating file");
                 return (-ENODEV);
         }
-        dbgfsparam.dirent_layout = debugfs_create_u32("layout", 0644,
-                        dbgfsparam.dirent, &dbgfsparam.layout);
-        if (dbgfsparam.dirent_layout == NULL) {
+        dbgfsparam.dirent_inspect = debugfs_create_u32("inode_inspect", 0644,
+                        dbgfsparam.dirent, &dbgfsparam.inode_inspect);
+        if (dbgfsparam.dirent_inspect == NULL) {
                 printk(KERN_ERR "error creating file");
                 return (-ENODEV);
         }
