@@ -78,18 +78,22 @@ luci_setattr(struct dentry *dentry, struct iattr *attr)
 #else
     err = setattr_prepare(dentry, attr);
 #endif
-    if (err || !(attr->ia_valid & ATTR_SIZE))
+    if (err) {
+        luci_err_inode(inode, "setattr failed :%d", err);
         return err ? err : -EPERM;
+    }
 
     if (attr->ia_size != inode->i_size) {
+        // We do not support DIO
         // Wait for all pending direct I/O requests prior doing a truncate
-        inode_dio_wait(inode);
+        // inode_dio_wait(inode);
         err = __luci_setsize(inode, attr->ia_size);
         if (err)
-            goto exit;
-        setattr_copy(inode, attr);
-        mark_inode_dirty(inode);
+                goto exit;
     }
+
+    setattr_copy(inode, attr);
+    mark_inode_dirty(inode);
 
 exit:
     atomic64_inc(&setattr_out);
@@ -206,7 +210,17 @@ luci_validate_bmap_blkptr_csum(struct inode *inode,
         goto exit;
     }
 
-    BUG_ON(bp->flags);
+    if (bp->flags) {
+        luci_err_inode(inode, "unexpected flag detected in bmap blockptr ipath[%d/%d] %u-0x%x-0x%u[0x%x]",
+                            curr_level,
+                            max_depth,
+                            bp->blockno,
+                            bp->flags,
+                            bp->length,
+                            bp->checksum);
+        return -EIO;
+        BUG_ON(bp->flags);
+    }
 
     crc32 = luci_compute_page_cksum(bh->b_page, 0, PAGE_SIZE, ~0U);
     if (bp->checksum != crc32) {
@@ -828,6 +842,10 @@ luci_bmap_insert_L0bp(struct inode *inode,
 {
     int ret;
     struct buffer_head bh;
+    struct super_block *sb = inode->i_sb;
+
+    // sanity
+    BUG_ON(bp->blockno > blkdev_max_block(sb->s_bdev));
 
     memset((char*)&bh, 0, sizeof(struct buffer_head));
     bh.b_blocknr = bp->blockno;

@@ -2,9 +2,16 @@
 #include <linux/mm.h>
 #include <linux/smp.h>
 #include <linux/bio.h>
+#include <linux/blkdev.h>
 #include <linux/pagemap.h>
 
 #include "luci.h"
+
+sector_t blkdev_max_block(struct block_device *bdev)
+{
+        loff_t sz = i_size_read(bdev->bd_inode);
+        return sz >> blksize_bits(block_size(bdev));
+}
 
 void luci_pageflags_dump(struct page* page, const char *msg)
 {

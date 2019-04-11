@@ -6250,3 +6250,89 @@ dirty_ratelimit=97248 task_ratelimit=437236 dirtied=237 dirtied_pause=237
 paused=0 pause=0 period=2 think=0
 
 ===================================
+
+[16758.312295] LUCI-FS luci_validate_bmap_blkptr_csum : error inode :3268609
+:unexpected flag detected in bmap blockptr ipath[0/2]
+13074950-0xc7-0x33287[0x838400c7]
+[16758.312788] LUCI-FS luci_get_block : error inode :3268609 :bmap path error -5
+
+================================================
+
+[25100.556210] LUCI-FS luci_readdir : error inode :11 :invalid zero record
+length found at page 1(ffff880194e40000-ffff880194e40ff4) pos :4096 inode :0
+[25100.556223] LUCI-FS luci_readdir : error inode :11 :invalid zero record
+length found at page 1(ffff880194e40000-ffff880194e40ff4) pos :4096 inode :0
+
+======================================================
+[  942.644072] LUCI-FS luci_new_block : error no free blocks found in bg :3 nr
+blocks :6 free blocks :221
+[  942.644081] LUCI-FS luci_new_block : error no free blocks found in bg :3 nr
+blocks :4 free blocks :221
+[  942.644099] LUCI-FS luci_new_block : error no free blocks found in bg :3 nr
+blocks :5 free blocks :221
+[  942.644107] LUCI-FS luci_new_block : error no free blocks found in bg :4 nr
+blocks :5 free blocks :70
+[  942.644231] LUCI-FS luci_new_block : error no free blocks found in bg :3 nr
+blocks :5 free blocks :221
+[  942.644239] LUCI-FS luci_new_block : error no free blocks found in bg :4 nr
+blocks :5 free blocks :70
+[  942.644322] LUCI-FS luci_new_block : error no free blocks found in bg :3 nr
+blocks :6 free blocks :221
+[  942.644329] LUCI-FS luci_new_block : error no free blocks found in bg :4 nr
+blocks :6 free blocks :70
+[  942.644382] LUCI-FS luci_new_block : error no free blocks found in bg :4 nr
+blocks :6 free blocks :70
+[  942.644400] LUCI-FS luci_new_block : error no free blocks found in bg :3 nr
+blocks :6 free blocks :221
+[  942.644417] LUCI-FS luci_new_block : error no free blocks found in bg :3 nr
+blocks :6 free blocks :221
+[  942.644427] LUCI-FS luci_new_block : error no free blocks found in bg :4 nr
+blocks :6 free blocks :70
+[  942.644435] LUCI-FS luci_new_block : error no free blocks found in bg :3 nr
+blocks :6 free blocks :221
+[  942.644443] LUCI-FS luci_new_block : error no free blocks found in bg :4 nr
+blocks :6 free blocks :70
+[  942.644449] LUCI-FS luci_new_block : error no free blocks found in bg :4 nr
+blocks :5 free blocks :70
+
+============================================
+
+fio: pid=0, err=5/file:filesetup.c:59, func=unlink, error=Input/output error
+fio-rand-write: Laying out IO file(s) (1 file(s) / 2048MB)
+fio: pid=0, err=5/file:filesetup.c:59, func=unlink, error=Input/output error
+fio-rand-write: Laying out IO file(s) (1 file(s) / 2048MB)
+fio: pid=0, err=5/file:filesetup.c:59, func=unlink, error=Input/output error
+fio-rand-write: Laying out IO file(s) (1 file(s) / 2048MB)
+fio: pid=0, err=5/file:filesetup.c:59, func=unlink, error=Input/output error
+fio-rand-write: Laying out IO file(s) (1 file(s) / 2048MB)
+fio: pid=0, err=5/file:filesetup.c:59, func=unlink, error=Input/output error
+
+28130.856676] LUCI-FS luci_unlink : error name :test01.26.0 failed to free
+blocks
+[28130.859526] LUCI-FS luci_free_block : error free block error, block already
+freed!, 6435358/196/12830
+[28130.859527] LUCI-FS luci_free_branch : error failed to free branch at depth:0
+block:6435358
+[28130.859529] LUCI-FS luci_free_branch : error failed to free branch at depth:1
+block:1045057
+[28130.859530] LUCI-FS luci_free_branch : error failed to free branch at depth:2
+block:1035765
+[28130.859532] LUCI-FS luci_free_blocks : error inode :39 :error freeing inode
+indirect block[4] block :1000154 level :3
+[28130.859533] LUCI-FS luci_unlink : error name :test01.27.0 failed to free
+blocks
+[28130.862792] LUCI-FS luci_free_block : error free block error, block already
+freed!, 5774859/176/7691
+[28130.862794] LUCI-FS luci_free_branch : error failed to free branch at depth:0
+block:5774859
+[28130.862795] LUCI-FS luci_free_branch : error failed to free branch at depth:1
+block:1097509
+[28130.862796] LUCI-FS luci_free_branch : error failed to free branch at depth:2
+block:1081966
+[28130.862798] LUCI-FS luci_free_blocks : error inode :40 :error freeing inode
+indirect block[4] block :1050363 level :3
+[28130.862799] LUCI-FS luci_unlink : error name :test01.28.0 failed to free
+blocks
+
+=======================================================
+fchmodat(AT_FDCWD, "/mnt/sample03", 05111) = -1 EPERM (Operation not permitted)

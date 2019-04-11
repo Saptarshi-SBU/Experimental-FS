@@ -627,6 +627,7 @@ sector_align(unsigned long n)
 }
 
 /* utils.c */
+sector_t blkdev_max_block(struct block_device *bdev);
 void inline luci_pageflags_dump(struct page* page, const char *msg);
 void inline luci_dump_bytes(const char *msg, struct page *page, unsigned int len);
 void inline luci_bio_dump(struct bio * bio, const char *msg);

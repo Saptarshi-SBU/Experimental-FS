@@ -2,15 +2,16 @@
 
 [global]
 name=fio-rand-write
-filename=/mnt/fio-rand-write-02
-rw=write
-bs=8K
-direct=0
-numjobs=1
-time_based=1
-runtime=150
-
-[file1]
-size=4G
 ioengine=libaio
+direct=0
+thread=1
+rw=write
+time_based=1
+runtime=1800
+bs=8K
+
+[test01]
+directory=/mnt/fio
+numjobs=30
+size=2G
 iodepth=16

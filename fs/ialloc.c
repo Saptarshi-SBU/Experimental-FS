@@ -367,6 +367,21 @@ luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
         struct luci_sb_info *sbi =  LUCI_SB(sb);
         struct luci_inode_info *li;
 
+        if (!(mode & S_IFMT)) {
+                luci_err("unknown inode type!");
+                return ERR_PTR(-EINVAL);
+        }
+
+        if (!(mode & S_IRWXU)) {
+                luci_err("no permission bits specified for owner!");
+                return ERR_PTR(-EINVAL);
+        }
+
+        if (mode & ~(S_IRWXUGO)) {
+                luci_err("invalid mode permission bits");
+                return ERR_PTR(-EINVAL);
+        }
+
         inode = new_inode(sb);
         if (!inode) {
                 luci_err("create inode failed, oom!");
@@ -444,7 +459,6 @@ gotit:
         inode_init_owner(inode, dir, mode);
         luci_init_inode_flags(inode);
         inode->i_ino = ino;
-        luci_dbg("new inode :%lu in group :%d", ino, group);
         inode->i_blocks = 0;
         inode->i_mtime = inode->i_atime = inode->i_ctime = LUCI_CURR_TIME;
 
@@ -465,12 +479,17 @@ gotit:
         li->i_size_comp = 0;
 #endif
 
+        percpu_counter_add(&sbi->s_freeinodes_counter, -1);
+
+        if (S_ISDIR(mode))
+                percpu_counter_inc(&sbi->s_dirs_counter);
+
         if (insert_inode_locked(inode) < 0) {
                 inode->i_generation = sbi->s_next_generation++;
                 err = -EIO;
                 brelse(bmap_bh);
                 luci_info("inode locked during create inode :%lu", ino);
-                goto fail;
+                goto free_inode;
         }
         mark_inode_dirty(inode);
 
@@ -480,13 +499,11 @@ gotit:
 
         brelse(bmap_bh);
 
-        percpu_counter_add(&sbi->s_freeinodes_counter, -1);
-
-        if (S_ISDIR(mode))
-                percpu_counter_inc(&sbi->s_dirs_counter);
-
+        luci_info("new inode :%lu mode :0x%x in group :%d", ino, mode, group);
         return inode;
 
+free_inode:
+        luci_free_inode(inode);
 fail:
         make_bad_inode(inode);
         iput(inode);
@@ -557,7 +574,10 @@ luci_new_block(struct inode *inode,
 #endif
 
                 if (block < LUCI_BLOCKS_PER_GROUP(sb)) {
-                        *start_block =  block + luci_group_first_block_no(sb, bg);
+                        unsigned new_block;
+                        new_block =  block + luci_group_first_block_no(sb, bg);
+                        BUG_ON(new_block > blkdev_max_block(sb->s_bdev));
+                        *start_block = new_block;
                         goto gotit;
                 } else {
                         luci_err("no free blocks found in bg :%lu nr blocks :%u free blocks :%u",
