@@ -368,19 +368,20 @@ luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
         struct luci_inode_info *li;
 
         if (!(mode & S_IFMT)) {
-                luci_err("unknown inode type!");
+                luci_err("unknown inode type! 0x%x", mode);
                 return ERR_PTR(-EINVAL);
         }
 
         if (!(mode & S_IRWXU)) {
-                luci_err("no permission bits specified for owner!");
+                luci_err("no permission bits specified for owner! 0x%x", mode);
                 return ERR_PTR(-EINVAL);
         }
-
+#if 0
         if (mode & ~(S_IRWXUGO)) {
-                luci_err("invalid mode permission bits");
+                luci_err("invalid mode permission bits 0x%x", mode);
                 return ERR_PTR(-EINVAL);
         }
+#endif
 
         inode = new_inode(sb);
         if (!inode) {

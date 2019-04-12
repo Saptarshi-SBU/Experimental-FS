@@ -981,6 +981,38 @@ luci_bmap_update_extent_bp(struct page *page,
     return delta;
 }
 
+static int
+luci_bmap_delete_compressed_bp(struct inode *inode, struct blkptr *bp)
+{
+        int ret = 0;
+        unsigned long block;
+        unsigned blksize = LUCI_BLOCK_SIZE(inode->i_sb);
+        unsigned nblocks = (bp->length + blksize - 1) / blksize;
+
+        for (block = bp->blockno; block <= nblocks; block++) {
+                if ((ret = luci_free_block(inode, block)) < 0)
+                        break;
+        }
+        return ret;
+}
+
+int
+luci_bmap_free_extents(struct inode *inode,
+                       blkptr extents_array[],
+                       int n_extents)
+{
+        blkptr bp;
+        int i, err = 0;
+        for (i = 0; i < n_extents; i++) {
+                if (i && bp.blockno == extents_array[i].blockno)
+                        continue;
+                bp = extents_array[i];
+                err = luci_bmap_delete_compressed_bp(inode, &bp);
+                break;
+        }
+        return err;
+}
+
 #ifdef DEBUG_BLOCK2
 static void
 luci_check_bp(struct inode *inode, unsigned long file_block)

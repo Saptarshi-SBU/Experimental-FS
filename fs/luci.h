@@ -568,10 +568,17 @@ static inline void verify_offsets(void)
 #undef A
 }
 
-static inline void verify_size(void)
+static inline void verify_blkptr_size(void)
 {
 #define A(R) _STATIC_ASSERT(R)
     A(sizeof(struct blkptr) == 16);
+#undef A
+}
+
+static inline void verify_blkptr_aligned(void)
+{
+#define A(R) _STATIC_ASSERT(R)
+    A(PAGE_SIZE % sizeof(struct blkptr) == 0);
 #undef A
 }
 
@@ -678,6 +685,7 @@ extern int luci_get_block(struct inode *, sector_t, struct buffer_head *, int);
 extern blkptr luci_bmap_fetch_L0bp(struct inode *inode, unsigned long i_block);
 extern int luci_bmap_insert_L0bp(struct inode *inode, unsigned long i_block, blkptr *bp);
 int luci_write_inode_raw(struct inode *inode, int do_sync);
+int luci_bmap_free_extents(struct inode *inode, blkptr extents_array[], int n_extents);
 
 /* crc32 */
 u32 luci_compute_data_cksum(void *addr, size_t length, u32 crc_seed);

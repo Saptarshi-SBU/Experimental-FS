@@ -131,9 +131,11 @@ __luci_count_free_blocks(struct super_block *sb)
  */
 static int
 luci_free_branch(struct inode *inode,
-                long bp,
+                blkptr *bp,
                 long *delta_blocks,
-                int depth)
+                int depth,
+                blkptr extents_array[],
+                int *n_entries)
 {
         int err = 0;
         blkptr *p, *q;
@@ -142,24 +144,28 @@ luci_free_branch(struct inode *inode,
         int nr_blkptr = LUCI_ADDR_PER_BLOCK(sb);
 
         if (depth == 0) {
-                // Fix : This is a leaf block
-                err = luci_free_block(inode, bp);
-                if (!err) {
-                        luci_dec_size(inode, 1);
-                        *delta_blocks -= 1;
+                if (bp->flags & LUCI_COMPR_FLAG) {
+                        memcpy((char *)&extents_array[*n_entries], bp, sizeof(blkptr));
+                        *n_entries = *n_entries + 1;
+                } else {
+                        // Fix : This is a leaf block
+                        err = luci_free_block(inode, bp->blockno);
+                        if (!err) {
+                                luci_dec_size(inode, 1);
+                                *delta_blocks -= 1;
+                        }
                 }
                 return err;
         }
 
-        bh = sb_bread(sb, bp);
+        bh = sb_bread(sb, bp->blockno);
         if (!bh) {
-                luci_err("failed to read block :%ld during free branch", bp);
+                luci_err("failed to read block :%u during free branch", bp->blockno);
                 return -EIO;
         }
 
         p = (blkptr*)bh->b_data;
         q = (blkptr*)((char*)bh->b_data + bh->b_size - sizeof(blkptr));
-
         BUG_ON(p > q);
         for (;q >= p; q--) {
 
@@ -180,18 +186,25 @@ luci_free_branch(struct inode *inode,
                         continue;
                 }
 
-                err = luci_free_branch(inode, q->blockno, delta_blocks, depth - 1);
+                err = luci_free_branch(inode, q, delta_blocks, depth - 1, extents_array, n_entries);
                 if (err) {
                         luci_err("failed to free branch at depth:%d block:%d", depth - 1,
                                         q->blockno);
                         goto out;
                 }
 
+                if (*n_entries) {
+                        err = luci_bmap_free_extents(inode, extents_array, *n_entries);
+                        if (err)
+                                goto out;
+                        *n_entries = 0;
+                }
+
                 // clear entry
                 memset((char*)q, 0, sizeof(blkptr));
                 mark_buffer_dirty(bh);
-                luci_dbg_inode(inode, "parent block %lu(%d) freed bp %u deltablocks %ld "
-                                "i_size :%llu", bp, depth, entry, *delta_blocks, inode->i_size);
+                luci_dbg_inode(inode, "parent block %u(%d) freed bp %u deltablocks %ld "
+                                "i_size :%llu", bp->blockno, depth, entry, *delta_blocks, inode->i_size);
         }
 
         // block has entries for block address, do not free the metablock
@@ -200,9 +213,9 @@ luci_free_branch(struct inode *inode,
         }
 
         // Free the indirect block
-        err = luci_free_block(inode, bp);
+        err = luci_free_block(inode, bp->blockno);
         if (err) {
-                luci_err_inode(inode, "error freeing indirect block %ld", bp);
+                luci_err_inode(inode, "error freeing indirect block %u", bp->blockno);
                 goto out;
         }
 
@@ -245,32 +258,40 @@ luci_free_blocks(struct inode *inode, long delta_blocks)
 {
         long ret;
         int i, level;
-        unsigned long cur_block;
         struct luci_inode_info *li = LUCI_I(inode);
 
         // Free indirect blocks bottom up
         // Fix : macro represents array index
         for (i = LUCI_TIND_BLOCK, level = 3; level && delta_blocks; i--, level--) {
+                blkptr *extents_array;
+                int n_extents = 0;
 
-                cur_block = li->i_data[i].blockno;
-                if (cur_block == 0) {
+                blkptr bp = li->i_data[i];
+                if (bp.blockno == 0) {
                         luci_dbg("indirect block[%d] level %d empty", i, level);
                         continue;
                 }
 
-                ret = luci_free_branch(inode, cur_block, &delta_blocks, level);
+                extents_array = kmalloc(PAGE_SIZE, GFP_KERNEL | GFP_NOFS);
+                if (!extents_array) {
+                        luci_err_inode(inode, "failed to alloc block array");
+                        return -ENOMEM;
+                }
+
+                ret = luci_free_branch(inode, &bp, &delta_blocks, level, extents_array, &n_extents);
+
+                kfree(extents_array);
                 if (ret < 0) {
                         luci_err_inode(inode, "error freeing inode indirect block[%d] "
-                                        "block :%lu level :%d", i, cur_block, level);
+                                        "block :%u level :%d", i, bp.blockno, level);
                         return ret;
                 }
 
                 // clear the root block from i_data array
                 memset((char*)&li->i_data[i], 0, sizeof(blkptr));
                 mark_inode_dirty(inode);
-
-                luci_dbg("freed i_data[%d] %lu level :%d for inode :%lu nrblocks :%ld",
-                                i, cur_block, level, inode->i_ino, delta_blocks);
+                luci_dbg("freed i_data[%d] %u level :%d for inode :%lu nrblocks :%ld",
+                                i, bp.blockno, level, inode->i_ino, delta_blocks);
         }
 
         // Free direct blocks
