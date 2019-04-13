@@ -7,11 +7,11 @@ direct=0
 thread=1
 rw=write
 time_based=1
-runtime=1800
+runtime=300
 bs=8K
 
 [test01]
 directory=/mnt/fio
-numjobs=8
+numjobs=4
 size=2G
 iodepth=16

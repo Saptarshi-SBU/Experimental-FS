@@ -752,3 +752,87 @@ luci_free_block(struct inode *inode, unsigned long block)
 
         return 0;
 }
+
+void
+luci_scan_block_bitmaps(struct luci_sb_info *sbi)
+{
+        unsigned long bg;
+        const int max_order = LUCI_MAX_BUDDY_ORDER;
+
+        for (bg = 0; bg < sbi->s_groups_count; bg++) {
+                struct buffer_head *bmap_bh;
+
+                bmap_bh = read_block_bitmap(sbi->sb, bg);
+                if (!bmap_bh) {
+                        luci_err("new block, error reading block bitmap for bg :%lu", bg);
+                        break;
+                }
+
+                lock_buffer(bmap_bh);
+
+                luci_create_buddy_map((char *)bmap_bh->b_data,
+                                      PAGE_SIZE,
+                                      sbi->bg_buddy_map + bg * (max_order + 1),
+                                      max_order);
+
+                unlock_buffer(bmap_bh);
+
+                #ifdef VERIFY_BGBUDDY_INFO
+                if (bg == 1)
+                        print_hex_dump(KERN_INFO, "dumping block bitmap",
+                              DUMP_PREFIX_OFFSET,
+                              16,
+                              1,
+                              bmap_bh->b_data,
+                              PAGE_SIZE,
+                              true);
+                #endif
+        }
+}
+
+// TBD: Only reporting till max buddy order 5
+static int luci_show_frag_stats(struct seq_file *m, void *data)
+{
+        unsigned long bg;
+        struct super_block *sb;
+        struct luci_sb_info *sbi;
+
+        sb = (struct super_block *)m->private;
+        if (!sb) {
+                luci_err("dbgfs invalid argument");
+                return -EBADF;
+        }
+        sbi = LUCI_SB(sb);
+
+        for (bg = 0; bg < sbi->s_groups_count; bg++) {
+                int *bdinfo;
+                struct luci_group_desc *gdesc;
+
+                gdesc = luci_get_group_desc(sb, bg, NULL);
+                if (!gdesc) {
+                        luci_err("failed to read bg descriptor");
+                        return -EIO;
+                }
+
+                bdinfo = &sbi->bg_buddy_map[bg * (LUCI_MAX_BUDDY_ORDER + 1)];
+
+                seq_printf(m, "bg[%lu]\t%u\t%u\t%u\t%u\t%u\t%u\t%u\n",
+                                 bg,
+                                 bdinfo[0], bdinfo[1], bdinfo[2],
+                                 bdinfo[3], bdinfo[4], bdinfo[5],
+                                 gdesc->bg_free_blocks_count);
+        }
+        return 0;
+}
+
+static int luci_debugfs_open(struct inode *inode, struct file *file)
+{
+        return single_open(file, luci_show_frag_stats, inode->i_private);
+}
+
+const struct file_operations luci_frag_ops = {
+        .open		= luci_debugfs_open,
+        .read		= seq_read,
+        .llseek		= no_llseek,
+        .release	= single_release,
+};

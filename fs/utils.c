@@ -149,3 +149,59 @@ bitmap_mark_first_fit(u8 *startb, u8 *endb, int firstzero, int nblocks)
                 i = 0;
         }
 }
+
+static void
+bitmap_add_buddy_map(int *buddy_map, int max_order, int nbits) {
+        int k, count; 
+        for (k = max_order; k >= 0; k--) {
+                BUG_ON (nbits < 0);
+                count = nbits >> k;
+                if (count) {
+                        buddy_map[k] += count;
+                        nbits = nbits - count * (1U << k) ;
+                }
+        }
+}
+
+void
+luci_create_buddy_map(char bitmap[], size_t size_bytes, int *buddy_map, int max_order) {
+        volatile size_t i;
+        int j, p, nbits, *buddy_temp;
+        bool begin = false;
+
+        buddy_temp = kzalloc(sizeof(int) * (max_order + 1), GFP_KERNEL);
+        if (!buddy_temp) {
+                luci_err("cannot allocate memory");
+                return;
+        }
+
+        p = 0;
+        for (i = 0; i < size_bytes; i++) {
+                unsigned char d = bitmap[i];
+                for (j = 0; j < 8; j++) {
+                        if (!begin) {
+                                if (d & (1U << j))
+                                        continue;
+                                p = i * 8 + j;
+                                begin = true;
+                        } else {
+                                if (!(d & (1U << j)))
+                                        continue;
+                                nbits = i * 8 + j  - p;
+                                bitmap_add_buddy_map(buddy_temp, max_order, nbits);
+                                begin = false;
+                        }
+                }
+        }
+
+        // exit case
+        if (begin) {
+                nbits = size_bytes * 8 - p;
+                bitmap_add_buddy_map(buddy_temp, max_order, nbits);
+        }
+
+        for (i = 0; i <= max_order; i++)
+                buddy_map[i] = buddy_temp[i];
+
+        kfree(buddy_temp);
+}

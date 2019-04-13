@@ -158,6 +158,7 @@ struct luci_sb_info {
     unsigned long s_blocks_last;    /* Last seen block count */
     struct buffer_head * s_sbh; /* Buffer containing the super block */
     struct luci_super_block * s_lsb;    /* Pointer to the super block in the buffer */
+    struct super_block *sb;
     struct buffer_head ** s_group_desc;
     unsigned long  s_mount_opt;
     unsigned long s_sb_block;
@@ -189,6 +190,12 @@ struct luci_sb_info {
 
     // Workqueue for compressed writes
     struct workqueue_struct *comp_write_wq;
+
+    // stores all block groups buddy info
+    int *bg_buddy_map;
+
+    // Work item for monitoring fragmentation
+    struct delayed_work blockgroup_work;
 };
 
 /*
@@ -643,6 +650,7 @@ void copy_pages(struct page *dst_page, struct page *src_page, unsigned long dst_
 bool inline areas_overlap(unsigned long src, unsigned long dst, unsigned long len);
 bool bitmap_find_first_fit(u8 *startb, u8 *endb, int firstzero, int nblocks);
 void bitmap_mark_first_fit(u8 *startb, u8 *endb, int firstzero, int nblocks);
+void luci_create_buddy_map(char bitmap[], size_t size_bytes, int *buddy_map, int max_order);
 
 /* super.c */
 struct luci_group_desc *
@@ -695,6 +703,9 @@ int luci_validate_data_page_cksum(struct page *page, blkptr *bp);
 int luci_validate_data_pages_cksum(struct page **pages, unsigned nr_pages, blkptr *bp);
 
 /* ialloc.c */
+
+#define LUCI_MAX_BUDDY_ORDER 5
+
 extern struct buffer_head *read_inode_bitmap(struct super_block *sb, unsigned long block_group);
 extern struct buffer_head *read_block_bitmap(struct super_block *sb, unsigned long block_group);
 extern void luci_free_inode (struct inode * inode);
@@ -702,6 +713,7 @@ extern void luci_release_inode(struct super_block *sb, int group, int dir);
 extern struct inode * luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr);
 int luci_new_block(struct inode *, unsigned int, unsigned long *);
 int luci_free_block(struct inode *inode, unsigned long block);
+void luci_scan_block_bitmaps(struct luci_sb_info *);
 
 /*page-io.c */
 
@@ -782,6 +794,7 @@ typedef struct debugfs {
     u64 avg_io_lat; //ns
     struct dentry *dirent_io_lat;
     struct dentry *dirent_iostat;
+    struct dentry *dirent_frags;
 }debugfs_t;
 
 extern debugfs_t dbgfsparam;

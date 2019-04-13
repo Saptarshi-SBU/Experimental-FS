@@ -32,6 +32,8 @@ debugfs_t dbgfsparam;
 
 extern const struct file_operations luci_iostat_ops;
 
+extern const struct file_operations luci_frag_ops;
+
 static struct kmem_cache* luci_inode_cachep;
 
         static struct inode *
@@ -74,6 +76,17 @@ luci_print_sbinfo(struct super_block *sb) {
                         sbi->s_lsb->s_inodes_count, sb->s_blocksize,
                         sbi->s_blocks_per_group, sbi->s_lsb->s_first_data_block,
                         sbi->s_groups_count);
+}
+
+static void
+luci_block_groups_monitor(struct work_struct *work)
+{
+        struct luci_sb_info *sbi = container_of(to_delayed_work(work),
+                                                struct luci_sb_info,
+                                                blockgroup_work);
+
+        luci_scan_block_bitmaps(sbi);
+        schedule_delayed_work(&sbi->blockgroup_work, 15 * HZ);
 }
 
 // Calculate the leaves
@@ -661,6 +674,18 @@ luci_free_super(struct super_block * sb) {
         if (!sbi)
                 return;
 
+        cancel_delayed_work_sync(&sbi->blockgroup_work);
+
+        if (sbi->comp_write_wq) {
+                destroy_workqueue(sbi->comp_write_wq);
+                sbi->comp_write_wq = NULL;
+        }
+
+        if (sbi->bg_buddy_map) {
+                kfree(sbi->bg_buddy_map);
+                sbi->bg_buddy_map = NULL;
+        }
+
         if (sbi->s_group_desc) {
                 for (i = 0; i < sbi->s_gdb_count; i++) {
                         bh = sbi->s_group_desc[i];
@@ -669,11 +694,6 @@ luci_free_super(struct super_block * sb) {
                 }
                 kfree(sbi->s_group_desc);
                 sbi->s_group_desc = NULL;
-        }
-
-        if (sbi->comp_write_wq) {
-                destroy_workqueue(sbi->comp_write_wq);
-                sbi->comp_write_wq = NULL;
         }
 
         if (sbi->s_sbh) {
@@ -701,6 +721,7 @@ luci_read_superblock(struct super_block *sb) {
         unsigned long block_no;
         unsigned long block_of;
         unsigned long block_size;
+        size_t buddy_map_size;
         struct buffer_head *bh;
         struct luci_super_block *lsb;
         struct luci_sb_info *sbi;
@@ -709,6 +730,8 @@ luci_read_superblock(struct super_block *sb) {
         if (!sbi) {
                 return -ENOMEM;
         }
+
+        sbi->sb = sb;
 
         // Note : This block number assumes BLOCK_SIZE
         block_no = 1;
@@ -911,6 +934,19 @@ restart:
                 goto failed;
         }
 
+        buddy_map_size = sbi->s_groups_count * (LUCI_MAX_BUDDY_ORDER + 1) * sizeof(int);
+
+        sbi->bg_buddy_map = kzalloc(buddy_map_size, GFP_KERNEL);
+        if (!sbi->bg_buddy_map) {
+                luci_err("failed to allocate buddy map");
+                ret = -ENOMEM;
+                goto failed;
+        }
+
+        // start block group monitoring
+        INIT_DELAYED_WORK(&sbi->blockgroup_work, luci_block_groups_monitor);
+        schedule_delayed_work(&sbi->blockgroup_work, 1 * HZ);
+
         printk(KERN_DEBUG "super_block read successfully");
         return 0;
 
@@ -992,7 +1028,26 @@ static int parse_options(char *options, struct super_block *sb)
         return 1;
 }
 
-        static int
+static int
+luci_create_per_mount_debugfs(struct super_block *sb)
+{
+        struct dentry* dentry;
+        char buf[BDEVNAME_SIZE];
+
+        if ((dentry = debugfs_create_dir(bdevname(sb->s_bdev, buf),
+                                          dbgfsparam.dirent)) == NULL)
+                goto err;
+
+        if (debugfs_create_file("bg_buddy_map", 0644, dentry, (void *)sb,
+                                          &luci_frag_ops) == NULL)
+                goto err;
+
+        return 0;
+err:
+        return (-ENODEV);
+}
+
+static int
 luci_fill_super(struct super_block *sb, void *data, int silent)
 {
         int ret = 0;
@@ -1013,7 +1068,11 @@ luci_fill_super(struct super_block *sb, void *data, int silent)
                 ret = PTR_ERR(dentry);
                 goto free_sb;
         }
+
         sb->s_root = dentry;
+
+        (void) luci_create_per_mount_debugfs(sb);
+
         luci_dbg("luci super block read sucess");
         return 0;
 
@@ -1022,7 +1081,7 @@ free_sb:
         return ret;
 }
 
-        static struct dentry *
+static struct dentry *
 luci_mount(struct file_system_type *fs_type, int flags,
                 const char *dev_name, void *data)
 {
@@ -1033,7 +1092,7 @@ struct file_system_type luci_fs = {
         .owner    = THIS_MODULE,
         .name     = "luci",
         .mount    = luci_mount,
-        .kill_sb  = kill_block_super,
+        .kill_sb  = kill_block_super, // invokes put_super
         .fs_flags = FS_REQUIRES_DEV,
 };
 
