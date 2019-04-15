@@ -7,7 +7,7 @@ direct=0
 thread=1
 rw=write
 time_based=1
-runtime=300
+runtime=120
 bs=8K
 
 [test01]

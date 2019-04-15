@@ -147,6 +147,28 @@ TRACE_EVENT(luci_write_extents,
                 __entry->dirty_counter_exit)
 );
 
+TRACE_EVENT(luci_free_block,
+	     TP_PROTO(struct inode *inode, unsigned long block, unsigned long blockgroup, unsigned bitpos),
+	     TP_ARGS(inode, block, blockgroup, bitpos),
+	     TP_STRUCT__entry(
+                __field(int, inum);
+                __field(unsigned long, block);
+                __field(unsigned long, blockgroup);
+                __field(unsigned int,  bitpos);
+            ),
+            TP_fast_assign(
+                __entry->inum = inode->i_ino;
+                __entry->block = block;
+                __entry->blockgroup = blockgroup;
+                __entry->bitpos = bitpos;
+            ),
+            TP_printk("inum=%u block=%lu blockgroup=%lu bitpos=%u",
+                __entry->inum,
+                __entry->block,
+                __entry->blockgroup,
+                __entry->bitpos)
+);
+
 #endif /* _TRACE_LUCI_H */
 
 // updated as config in Makefile

@@ -933,6 +933,21 @@ luci_bmap_lookup_extent_bp(struct page *page,
     }
 }
 
+static int
+luci_bmap_delete_extent_bp(struct inode *inode, struct blkptr *bp)
+{
+        int ret = 0;
+        unsigned long block;
+        unsigned blksize = LUCI_BLOCK_SIZE(inode->i_sb);
+        unsigned nblocks = (bp->length + blksize - 1) / blksize, count = 0;
+
+        for (block = bp->blockno, count = 0; count < nblocks; block++, count++) {
+                if ((ret = luci_free_block(inode, block)) < 0)
+                        break;
+        }
+        return ret;
+}
+
 int
 luci_bmap_update_extent_bp(struct page *page,
                            struct inode *inode,
@@ -954,6 +969,8 @@ luci_bmap_update_extent_bp(struct page *page,
 
     // update block pointer
     for (i = 0, b_i = b_start; b_i <= b_end; b_i++, i++) {
+        int flags;
+
         if (luci_bmap_insert_L0bp(inode, b_i, &bp_new[i]) < 0)
             BUG();
 
@@ -970,30 +987,21 @@ luci_bmap_update_extent_bp(struct page *page,
         // for compressed extent, start blkptr spans across file offsets entries
         if (blockno && blockno == bp_old[i].blockno)
                 continue;
+
         // TBD : add comment why block entry can be zero
+        flags   = bp_old[i].flags;
         blockno = bp_old[i].blockno;
-        if (blockno)
-                luci_free_block(inode, blockno);
+        if (blockno) {
+                if (flags & LUCI_COMPR_FLAG)
+                        luci_bmap_delete_extent_bp(inode, bp_old);
+                else
+                        luci_free_block(inode, blockno);
+        }
     }
 
     delta = luci_account_delta(bp_old, bp_new, i);
     luci_dbg_inode(inode, "delta bytes :%d", delta);
     return delta;
-}
-
-static int
-luci_bmap_delete_compressed_bp(struct inode *inode, struct blkptr *bp)
-{
-        int ret = 0;
-        unsigned long block;
-        unsigned blksize = LUCI_BLOCK_SIZE(inode->i_sb);
-        unsigned nblocks = (bp->length + blksize - 1) / blksize;
-
-        for (block = bp->blockno; block <= nblocks; block++) {
-                if ((ret = luci_free_block(inode, block)) < 0)
-                        break;
-        }
-        return ret;
 }
 
 int
@@ -1007,8 +1015,9 @@ luci_bmap_free_extents(struct inode *inode,
                 if (i && bp.blockno == extents_array[i].blockno)
                         continue;
                 bp = extents_array[i];
-                err = luci_bmap_delete_compressed_bp(inode, &bp);
-                break;
+                err = luci_bmap_delete_extent_bp(inode, &bp);
+                if (err)
+                        break;
         }
         return err;
 }

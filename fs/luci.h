@@ -194,6 +194,9 @@ struct luci_sb_info {
     // stores all block groups buddy info
     int *bg_buddy_map;
 
+    // debugfs
+    struct dentry *d_buddy_map;
+
     // Work item for monitoring fragmentation
     struct delayed_work blockgroup_work;
 };
@@ -717,7 +720,7 @@ void luci_scan_block_bitmaps(struct luci_sb_info *);
 
 /*page-io.c */
 
-#define EXTENT_NRPAGE 8
+#define EXTENT_NRPAGE 2 // do not change for now, avoid extent spanning across block map levels
 
 #define EXTENT_NRBLOCKS_MAX 32
 

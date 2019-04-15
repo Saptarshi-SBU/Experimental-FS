@@ -14,6 +14,9 @@
 #include <linux/path.h>
 #include <linux/mpage.h>
 
+#include "trace.h"
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_free_block);
+
 /* 16-bit CRC for group descriptor */
 static inline void
 luci_bg_update_csum(struct luci_group_desc *gdesc)
@@ -671,9 +674,19 @@ luci_free_block(struct inode *inode, unsigned long block)
 
         BUG_ON(block <= le32_to_cpu(lsb->s_first_data_block));
 
-        bg = (block - le32_to_cpu(lsb->s_first_data_block))/sbi->s_blocks_per_group;
+        bg = (block - le32_to_cpu(lsb->s_first_data_block)) /
+                sbi->s_blocks_per_group;
+
         if (bg > sbi->s_groups_count)
                 panic("bogus block group %u(%lu)", bg, sbi->s_groups_count);
+
+        bitpos = (block - le32_to_cpu(lsb->s_first_data_block)) %
+                  sbi->s_blocks_per_group;
+
+#ifdef HAVE_TRACEPOINT_ENABLED
+        if (trace_luci_free_block_enabled())
+#endif
+           trace_luci_free_block(inode, block, bg, bitpos);
 
         gdesc = luci_get_group_desc(sb, bg, &bh_desc);
         if (!gdesc) {
@@ -686,11 +699,6 @@ luci_free_block(struct inode *inode, unsigned long block)
                 luci_err("free block, read error block bmap :%lu/%u", block, bg);
                 return -EIO;
         }
-
-        bitpos = (block - le32_to_cpu(lsb->s_first_data_block)) %
-                  sbi->s_blocks_per_group;
-
-        luci_dbg("freeing block %lu, bg :%u bitpos :%u", block, bg, bitpos);
 
         // lock 1
         lock_buffer(bh_desc);
@@ -776,9 +784,9 @@ luci_scan_block_bitmaps(struct luci_sb_info *sbi)
                                       max_order);
 
                 unlock_buffer(bmap_bh);
-
+                
                 #ifdef VERIFY_BGBUDDY_INFO
-                if (bg == 1)
+                if (bg == 0)
                         print_hex_dump(KERN_INFO, "dumping block bitmap",
                               DUMP_PREFIX_OFFSET,
                               16,

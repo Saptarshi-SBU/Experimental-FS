@@ -300,13 +300,19 @@ __luci_compress_extent_and_write(struct work_struct *work)
     // start compression
     start = ktime_get();
 
+    // for direct-blocks avoid compression, this keeps bmap
+    // deletion operations simple by not spreading compressed
+    // extents across direct/indirect blocks.
+    if (extent < LUCI_NDIR_BLOCKS)
+            goto nocompress;
+
+    total_in = EXTENT_SIZE,
     ws = luci_compression_context();
     if (IS_ERR(ws)) {
         luci_err_inode(inode, "failed to alloc workspace");
         goto write_error;
     }
 
-    total_in = EXTENT_SIZE,
     total_out = EXTENT_SIZE;
     nr_pages_out = EXTENT_NRPAGE;
     err = ctxpool.op->compress_pages(ws,
@@ -331,14 +337,14 @@ __luci_compress_extent_and_write(struct work_struct *work)
                                                 nr_pages_out,
                                                 total_out);
     } else {
-        compressed = false;
-        total_out = EXTENT_SIZE;
-
         while (nr_pages_out--) {
              BUG_ON(!page_array[nr_pages_out]);
              luci_zlib_compress.remit_workspace(ws, page_array[nr_pages_out]);
         }
 
+nocompress:
+        compressed = false;
+        total_out = EXTENT_SIZE;
         nr_pages_out = EXTENT_NRPAGE;
         for (i = 0; i < nr_pages_out; i++) {
             page_array[i] = ext_work->pvec->pages[i];

@@ -161,14 +161,13 @@ luci_free_branch(struct inode *inode,
                         memcpy((char *)&extents_array[*n_entries], bp, sizeof(blkptr));
                         *n_entries = *n_entries + 1;
                 } else {
-                        // Fix : This is a leaf block
                         err = luci_free_block(inode, bp->blockno);
-                        if (!err) {
-                                luci_dec_size(inode, 1);
-                                *delta_blocks -= 1;
-                        }
+                        if (err)
+                                return err;
                 }
-                return err;
+                *delta_blocks -= 1;
+                luci_dec_size(inode, 1);
+                return 0;
         }
 
         bh = sb_bread(sb, bp->blockno);
@@ -206,18 +205,18 @@ luci_free_branch(struct inode *inode,
                         goto out;
                 }
 
-                if (*n_entries) {
-                        err = luci_bmap_free_extents(inode, extents_array, *n_entries);
-                        if (err)
-                                goto out;
-                        *n_entries = 0;
-                }
-
                 // clear entry
                 memset((char*)q, 0, sizeof(blkptr));
                 mark_buffer_dirty(bh);
                 luci_dbg_inode(inode, "parent block %u(%d) freed bp %u deltablocks %ld "
                                 "i_size :%llu", bp->blockno, depth, entry, *delta_blocks, inode->i_size);
+        }
+
+        if (*n_entries) {
+                err = luci_bmap_free_extents(inode, extents_array, *n_entries);
+                if (err)
+                        goto out;
+                *n_entries = 0;
         }
 
         // block has entries for block address, do not free the metablock
@@ -260,7 +259,7 @@ luci_free_direct(struct inode *inode, long *delta_blocks)
                 memset((char*)&li->i_data[i], 0, sizeof(blkptr));
                 mark_inode_dirty(inode);
                 *delta_blocks -= 1;
-                luci_dbg_inode(inode, "freed i_data[%d] %u nrblocks %ld size :%llu", i,
+                luci_info_inode(inode, "freed i_data[%d] %u nrblocks %ld size :%llu", i,
                                 cur_block, *delta_blocks, inode->i_size);
         }
         return 0;
@@ -349,12 +348,14 @@ int
 luci_truncate(struct inode *inode, loff_t size)
 {
         struct super_block *sb = inode->i_sb;
-        long n_blocks = (size + sb->s_blocksize - 1)/ sb->s_blocksize;
-        long i_blocks = (inode->i_size + sb->s_blocksize - 1)/
-                sb->s_blocksize;
+        long n_blocks = (size + sb->s_blocksize - 1) / sb->s_blocksize;
+        // TBD : EXTENT_SIZE will be more accurate here
+        long i_blocks = (inode->i_size + sb->s_blocksize - 1) / sb->s_blocksize;
         long delta_blocks = n_blocks - i_blocks;
-        luci_dbg("truncate blocks :%ld blocksize :%lu %lu-%lu",
+
+        luci_info_inode(inode, "truncate blocks :%ld blocksize :%lu %lu-%lu",
                         delta_blocks, sb->s_blocksize, n_blocks, i_blocks);
+
         if(!delta_blocks) {
                 return 0;
         } else if (delta_blocks > 0) {
@@ -682,6 +683,8 @@ luci_free_super(struct super_block * sb) {
         }
 
         if (sbi->bg_buddy_map) {
+                debugfs_remove_recursive(sbi->d_buddy_map);
+                sbi->d_buddy_map = NULL;
                 kfree(sbi->bg_buddy_map);
                 sbi->bg_buddy_map = NULL;
         }
@@ -1028,23 +1031,25 @@ static int parse_options(char *options, struct super_block *sb)
         return 1;
 }
 
-static int
+static struct dentry *
 luci_create_per_mount_debugfs(struct super_block *sb)
 {
         struct dentry* dentry;
         char buf[BDEVNAME_SIZE];
 
-        if ((dentry = debugfs_create_dir(bdevname(sb->s_bdev, buf),
-                                          dbgfsparam.dirent)) == NULL)
-                goto err;
+        dentry = debugfs_create_dir(bdevname(sb->s_bdev, buf), dbgfsparam.dirent);
+        if (!dentry)
+                goto derror;
 
-        if (debugfs_create_file("bg_buddy_map", 0644, dentry, (void *)sb,
-                                          &luci_frag_ops) == NULL)
-                goto err;
-
-        return 0;
-err:
-        return (-ENODEV);
+        if (debugfs_create_file("bg_buddy_map",
+                                 0644,
+                                 dentry,
+                                 (void *)sb, &luci_frag_ops) == NULL) {
+                debugfs_remove_recursive(dentry);
+                dentry = NULL;
+        }
+derror:
+        return dentry;
 }
 
 static int
@@ -1052,6 +1057,7 @@ luci_fill_super(struct super_block *sb, void *data, int silent)
 {
         int ret = 0;
         struct dentry* dentry;
+        struct luci_sb_info *sbi;
 
         ret = luci_read_superblock(sb);
         if (ret != 0) {
@@ -1071,9 +1077,12 @@ luci_fill_super(struct super_block *sb, void *data, int silent)
 
         sb->s_root = dentry;
 
-        (void) luci_create_per_mount_debugfs(sb);
+        sbi = LUCI_SB(sb);
+
+        sbi->d_buddy_map = luci_create_per_mount_debugfs(sb);
 
         luci_dbg("luci super block read sucess");
+
         return 0;
 
 free_sb:
