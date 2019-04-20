@@ -49,6 +49,7 @@ def TraceConvert(trace_file):
                         if inum not in inode_map:
                                 inode_map[inum] = dict()
                         inode_map[inum][int(off)] = lba_list
+                        #print off
         return inode_map
 
 def PrintColums(inode_map, inum):

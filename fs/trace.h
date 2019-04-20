@@ -16,15 +16,19 @@ TRACE_EVENT(luci_get_block,
                 __field(int, inum)
                 __field(int, iblock)
                 __field(int, bptr_0)
+                __field(int, bptr_0_length)
                 __field(int, bptr_0_flags)
                 __field(int, bptr_0_checksum)
                 __field(int, bptr_1)
+                __field(int, bptr_1_length)
                 __field(int, bptr_1_flags)
                 __field(int, bptr_1_checksum)
                 __field(int, bptr_2)
+                __field(int, bptr_2_length)
                 __field(int, bptr_2_flags)
                 __field(int, bptr_2_checksum)
                 __field(int, bptr_3)
+                __field(int, bptr_3_length)
                 __field(int, bptr_3_flags)
                 __field(int, bptr_3_checksum)
                 __field(int, flags)
@@ -33,25 +37,29 @@ TRACE_EVENT(luci_get_block,
                 __entry->inum = inode->i_ino;
                 __entry->iblock = iblock;
                 __entry->bptr_0 = ichain[0].p ? ichain[0].p->blockno  : 0;
+                __entry->bptr_0_length = ichain[0].p ? ichain[0].p->length  : 0;
                 __entry->bptr_0_flags = ichain[0].p ? ichain[0].p->flags : 0;
                 __entry->bptr_0_checksum = ichain[0].p ? ichain[0].p->checksum : 0;
                 __entry->bptr_1 = ichain[1].p ? ichain[1].p->blockno  : 0;
+                __entry->bptr_1_length = ichain[1].p ? ichain[1].p->length  : 0;
                 __entry->bptr_1_flags = ichain[1].p ? ichain[1].p->flags : 0;
                 __entry->bptr_1_checksum = ichain[1].p ? ichain[1].p->checksum : 0;
                 __entry->bptr_2 = ichain[2].p ? ichain[2].p->blockno  : 0;
+                __entry->bptr_2_length = ichain[2].p ? ichain[2].p->length  : 0;
                 __entry->bptr_2_flags = ichain[2].p ? ichain[2].p->flags : 0;
                 __entry->bptr_2_checksum = ichain[2].p ? ichain[2].p->checksum : 0;
                 __entry->bptr_3 = ichain[3].p ? ichain[3].p->blockno  : 0;
+                __entry->bptr_3_length = ichain[3].p ? ichain[3].p->length  : 0;
                 __entry->bptr_3_flags = ichain[3].p ? ichain[3].p->flags : 0;
                 __entry->bptr_3_checksum = ichain[3].p ? ichain[3].p->checksum : 0;
                 __entry->flags = flags;
             ),
-            TP_printk("inum=%u off=%u, 0-lba=%u-%u-0x%x, 1-lba=%u-%u-0x%x 2-lba=%u-%u-0x%x 3-lba=%u-%u-0x%x flags=0x%x",
+            TP_printk("inum=%u off=%u, 0-lba=%u-%u-%u-0x%x, 1-lba=%u-%u-%u-0x%x 2-lba=%u-%u-%u-0x%x 3-lba=%u-%u-%u-0x%x flags=0x%x",
                       __entry->inum, __entry->iblock,
-                      __entry->bptr_0, __entry->bptr_0_flags, __entry->bptr_0_checksum,
-                      __entry->bptr_1, __entry->bptr_1_flags, __entry->bptr_1_checksum,
-                      __entry->bptr_2, __entry->bptr_2_flags, __entry->bptr_2_checksum,
-                      __entry->bptr_3, __entry->bptr_3_flags, __entry->bptr_3_checksum,
+                      __entry->bptr_0, __entry->bptr_0_length,__entry->bptr_0_flags, __entry->bptr_0_checksum,
+                      __entry->bptr_1, __entry->bptr_1_length,__entry->bptr_1_flags, __entry->bptr_1_checksum,
+                      __entry->bptr_2, __entry->bptr_2_length,__entry->bptr_2_flags, __entry->bptr_2_checksum,
+                      __entry->bptr_3, __entry->bptr_3_length,__entry->bptr_3_flags, __entry->bptr_3_checksum,
                       __entry->flags)
 );
 

@@ -1048,6 +1048,15 @@ luci_create_per_mount_debugfs(struct super_block *sb)
                 debugfs_remove_recursive(dentry);
                 dentry = NULL;
         }
+
+        if (debugfs_create_file("zlib_stats",
+                                 0644,
+                                 dentry,
+                                 (void *)sb, &luci_zlib_stats_ops) == NULL) {
+                debugfs_remove_recursive(dentry);
+                dentry = NULL;
+        }
+
 derror:
         return dentry;
 }

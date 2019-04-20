@@ -1,6 +1,7 @@
 ; fio-rand-write.job for fiotest
 
 [global]
+buffer_compress_percentage=99
 name=fio-rand-write
 ioengine=libaio
 direct=0

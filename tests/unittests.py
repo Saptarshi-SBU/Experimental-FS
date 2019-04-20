@@ -16,9 +16,10 @@ from setup import RunCommand
 NRRUNS=10
 NRFILES=100
 LARGEFILE='/dev/sda'
-#HOMEDIR="/home/ssen/Downloads/SHILPITA/Photos/Downtown Santa Clara, CA - Newhall St, August 4, 2016"
-HOMEDIR="/home/ssen/Downloads/SHILPITA/Photos/Downtown Santa Clara, CA - Newhall St, July 31, 2016"
-TESTDIR="/mnt/Photos/Downtown Santa Clara, CA - Newhall St, July 31, 2016"
+LARGEFILE_ORG="/home/ssen/Downloads/projects/linux-disk-Fedora26.qcow2"
+LARGEFILE_TST="/mnt/linux-disk-Fedora26_test_02.qcow2"
+HOMEDIR="/home/ssen/Downloads/pics_bakup"
+TESTDIR="/mnt/pics_bakup"
 
 def GetLargeFile():
     return LARGEFILE
@@ -92,7 +93,7 @@ class LuciUnitTests(unittest.TestCase):
             if count >= nr:
                 break
 
-    #@unittest.skip('skip test')
+    @unittest.skip('skip test')
     def test_Validation(self):
         """
           Unit test to validate data by running md5 checksumming
@@ -110,6 +111,35 @@ class LuciUnitTests(unittest.TestCase):
             count = count + 1;
             if count >= nr:
                 break
+
+    #@unittest.skip('skip test')
+    def test_Validation_LargeFile(self):
+        m1 = hashlib.md5()
+        m2 = hashlib.md5()
+
+        f1 = open(LARGEFILE_ORG, 'r')
+        f2 = open(LARGEFILE_TST, 'r')
+
+        count       = 0
+        totalblocks = (os.path.getsize(LARGEFILE_ORG) + 4096 - 1) / 4096
+        while True:
+            chunk1 = f1.read(4096)
+            if chunk1 == '':
+                break
+            m1.update(chunk1)
+            md5sum1 = m1.hexdigest()
+
+            chunk2 = f2.read(4096)
+            if chunk2 == '':
+                break
+            m2.update(chunk2)
+            md5sum2 = m2.hexdigest()
+            count = count + 1
+            print '[{}/{}] {} {}'.format(count, totalblocks, md5sum1, md5sum2)
+            if md5sum1 != md5sum2:
+                    print 'chunk 1 {}'.format(chunk1)
+                    print 'chunk 2 {}'.format(chunk2)
+            self.assertEqual(md5sum1, md5sum2)
 
 def TestDriver():
     suite = unittest.TestLoader().loadTestsFromTestCase(LuciUnitTests)

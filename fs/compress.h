@@ -87,6 +87,8 @@ struct luci_compress_op {
 
 extern const struct luci_compress_op luci_zlib_compress;
 
+extern const struct file_operations luci_zlib_stats_ops;
+
 struct luci_context_pool {
     atomic_t count;
     spinlock_t lock;

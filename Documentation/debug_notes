@@ -6336,3 +6336,16 @@ blocks
 
 =======================================================
 fchmodat(AT_FDCWD, "/mnt/sample03", 05111) = -1 EPERM (Operation not permitted)
+
+==================================================================
+seen with fio make:
+
+[11312.496053] LUCI-FS luci_validate_data_page_cksum : error blkptr crc
+mismatch: 0xf0c919bf/0x38e3ffee
+[11312.496059] LUCI-FS luci_readpage : error inode :824 :L0 blkptr checksum
+mismatch on read page, block=16705866-4096
+
+===================================================
+cat /sys/kernel/debug/luci/sdb/zlib_stats 
+pages ingested :912314 pages discarded :216324 wasted(%) :23
+

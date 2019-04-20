@@ -31,6 +31,12 @@
 #include "kern_feature.h"
 #include "compress.h"
 
+/* compression engine stats */
+
+atomic64_t pages_ingested;
+
+atomic64_t pages_discarded;
+
 struct workspace {
     char *buf;
     z_stream strm;
@@ -136,6 +142,7 @@ int zlib_compress_pages(struct list_head *ws,
         workspace->strm.next_in = data_in;
         workspace->strm.avail_in = min(*total_in - workspace->strm.total_in,
                                         PAGE_SIZE);
+        atomic64_inc(&pages_ingested);
 
 finish_def:
 
@@ -146,6 +153,7 @@ finish_def:
         do {
                if (nr_pages >= max_pages) {
                    ret = -E2BIG;
+                   atomic64_inc(&pages_discarded);
                    luci_info_inode(mapping->host, "failed to compress cluster "
                                   "(start = 0x%llx, %d)\n", start, nr_pages);
                    goto out;
@@ -409,4 +417,38 @@ const struct luci_compress_op luci_zlib_compress = {
     .remit_workspace    = zlib_remit_workspace,
     .compress_pages     = zlib_compress_pages,
     .decompress_pages   = zlib_decompress_pages,
+};
+
+static int luci_show_zlib_stats(struct seq_file *m, void *data)
+{
+        struct super_block *sb;
+        struct luci_sb_info *sbi;
+        unsigned long ingested, discarded;
+
+        sb = (struct super_block *)m->private;
+        if (!sb) {
+                luci_err("dbgfs invalid argument");
+                return -EBADF;
+        }
+        sbi = LUCI_SB(sb);
+
+        ingested  = atomic64_read(&pages_ingested);
+        discarded = atomic64_read(&pages_discarded);
+
+        seq_printf(m, "pages ingested :%lu pages discarded :%lu "
+                      "wasted(%%) :%lu\n", ingested, discarded,
+                      (discarded * 100) / ingested);
+        return 0;
+}
+
+static int luci_debugfs_open(struct inode *inode, struct file *file)
+{
+        return single_open(file, luci_show_zlib_stats, inode->i_private);
+}
+
+const struct file_operations luci_zlib_stats_ops = {
+        .open		= luci_debugfs_open,
+        .read		= seq_read,
+        .llseek		= no_llseek,
+        .release	= single_release,
 };
