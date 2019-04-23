@@ -34,6 +34,8 @@ extern const struct file_operations luci_iostat_ops;
 
 extern const struct file_operations luci_frag_ops;
 
+extern const struct file_operations luci_compression_stats_ops;
+
 static struct kmem_cache* luci_inode_cachep;
 
         static struct inode *
@@ -1041,7 +1043,7 @@ luci_create_per_mount_debugfs(struct super_block *sb)
         if (!dentry)
                 goto derror;
 
-        if (debugfs_create_file("bg_buddy_map",
+        if (debugfs_create_file("blockgroup_buddy_map",
                                  0644,
                                  dentry,
                                  (void *)sb, &luci_frag_ops) == NULL) {
@@ -1049,13 +1051,15 @@ luci_create_per_mount_debugfs(struct super_block *sb)
                 dentry = NULL;
         }
 
-        if (debugfs_create_file("zlib_stats",
+        #ifdef LUCI_COMPRESSION_HEURISTICS
+        if (debugfs_create_file("compression_stats",
                                  0644,
                                  dentry,
-                                 (void *)sb, &luci_zlib_stats_ops) == NULL) {
+                                 (void *)sb, &luci_compression_stats_ops) == NULL) {
                 debugfs_remove_recursive(dentry);
                 dentry = NULL;
         }
+        #endif
 
 derror:
         return dentry;

@@ -39,6 +39,12 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(luci_write_extents);
 
 #define WBC_ARGS(wbc) wbc->range_start, wbc->range_end, wbc->nr_to_write, wbc->range_cyclic, wbc->sync_mode
 
+/* compression engine stats */
+atomic64_t pages_ingested;
+atomic64_t pages_notcompressed;
+atomic64_t pages_notcompressible;
+atomic64_t pages_wellcompressed;
+
 /*
  * Compressed pages freed here, and must be run in process context.
  * Should be run only after processing completes on compressed pages.
@@ -271,7 +277,7 @@ __luci_compress_extent_and_write(struct work_struct *work)
     ktime_t start;
     int i, err, delta;
     bool compressed = true, redirty_page = false;
-    struct list_head *ws;
+    struct list_head *ws = NULL;
     struct inode *inode;
     unsigned extent;
     struct page **page_array;
@@ -297,17 +303,29 @@ __luci_compress_extent_and_write(struct work_struct *work)
         return;
     }
 
-    // start compression
-    start = ktime_get();
+    atomic64_add(EXTENT_NRPAGE, &pages_ingested);
+
+#ifdef LUCI_COMPRESSION_HEURISTICS
+    // apply heuristics
+    if (!can_compress(ext_work->begin_page)) {
+            atomic64_add(EXTENT_NRPAGE, &pages_notcompressible);
+            goto notcompressible;
+    }
+#endif
 
     // for direct-blocks avoid compression, this keeps bmap
     // deletion operations simple by not spreading compressed
     // extents across direct/indirect blocks.
-    if (extent < LUCI_NDIR_BLOCKS)
-            goto nocompress;
+    if (extent < LUCI_NDIR_BLOCKS) {
+            atomic64_add(EXTENT_NRPAGE, &pages_notcompressible);
+            goto notcompressible;
+    }
+
+    // start compression
+    start = ktime_get();
 
     total_in = EXTENT_SIZE,
-    ws = luci_compression_context();
+    ws = luci_get_compression_context();
     if (IS_ERR(ws)) {
         luci_err_inode(inode, "failed to alloc workspace");
         goto write_error;
@@ -323,11 +341,16 @@ __luci_compress_extent_and_write(struct work_struct *work)
                                      &total_in,
                                      &total_out);
 
-    put_compression_context(ws);
+    luci_put_compression_context(ws);
 
     if (!err) {
+        unsigned reduction_pc;
+
         compressed = true;
         BUG_ON(nr_pages_out == 0);
+        reduction_pc = ((EXTENT_SIZE - total_out) * 100)/EXTENT_SIZE;
+        if (reduction_pc >= COMPRESS_RATIO_LIMIT)
+                atomic64_add(EXTENT_NRPAGE, &pages_wellcompressed);
         UPDATE_AVG_LATENCY_NS(dbgfsparam.avg_deflate_lat, start);
         LUCI_COMPRESS_RESULT(extent,
                              page_index(ext_work->begin_page),
@@ -342,7 +365,8 @@ __luci_compress_extent_and_write(struct work_struct *work)
              luci_zlib_compress.remit_workspace(ws, page_array[nr_pages_out]);
         }
 
-nocompress:
+notcompressible:
+
         compressed = false;
         total_out = EXTENT_SIZE;
         nr_pages_out = EXTENT_NRPAGE;
@@ -350,6 +374,7 @@ nocompress:
             page_array[i] = ext_work->pvec->pages[i];
             crc32[i] = luci_compute_page_cksum(page_array[i], 0, PAGE_SIZE, ~0U);
         }
+        atomic64_add(EXTENT_NRPAGE, &pages_notcompressed);
         luci_info_inode(inode, "cannot compress extent, do regular write");
     }
 
@@ -904,7 +929,7 @@ int luci_read_extent(struct page *page, blkptr *bp)
         goto free_compbio;
     }
 
-    ws = luci_compression_context();
+    ws = luci_get_compression_context();
     if (IS_ERR(ws)) {
         ret = PTR_ERR(ws);
         luci_err_inode(inode, "failed to alloc workspace");
@@ -914,7 +939,7 @@ int luci_read_extent(struct page *page, blkptr *bp)
     if (ctxpool.op->decompress_pages(ws, total_in, comp_bio, pgtree_bio) != 0)
         panic("decompress failed\n");
 
-    put_compression_context(ws);
+    luci_put_compression_context(ws);
 
 free_compbio:
     #ifdef HAVE_NEW_BIO_END
@@ -954,3 +979,38 @@ free_readpages:
 
     return ret;
 }
+
+static int luci_show_compression_stats(struct seq_file *m, void *data)
+{
+        unsigned long ingested, notcompressed, notcompressible, wellcompressed;
+
+        ingested        = atomic64_read(&pages_ingested);
+        notcompressed   = atomic64_read(&pages_notcompressed);
+        notcompressible = atomic64_read(&pages_notcompressible);
+        wellcompressed  = atomic64_read(&pages_wellcompressed);
+
+        #ifdef  LUCI_COMPRESSION_HEURISTICS
+        seq_printf(m, "pages ingested :%lu\npages notcompressed :%lu\n"
+                      "pages notcompressible(heuristics) :%lu\npages wellcompressed(>%d%%) :%lu\n"
+                      "pages notwellcompressed :%lu\n",
+                      ingested, notcompressed, notcompressible, COMPRESS_RATIO_LIMIT,
+                      wellcompressed, ingested - notcompressed - wellcompressed);
+        #else
+        seq_printf(m, "pages ingested :%lu\npages notcompressed :%lu\n"
+                      "pages wellcompressed(>%d%%) :%lu\n",
+                      ingested, notcompressed, COMPRESS_RATIO_LIMIT, wellcompressed);
+        #endif
+        return 0;
+}
+
+static int luci_debugfs_open(struct inode *inode, struct file *file)
+{
+        return single_open(file, luci_show_compression_stats, inode->i_private);
+}
+
+const struct file_operations luci_compression_stats_ops = {
+        .open           = luci_debugfs_open,
+        .read           = seq_read,
+        .llseek         = no_llseek,
+        .release        = single_release,
+};

@@ -15,9 +15,20 @@
 // Updating file size with compressed size may not be correct.
 // POSIX applications use file size attribute for accessing logical offsets.
 
+// zlib parameters
 #define ZLIB_COMPRESSION_LEVEL 3
 
-#define ZLIB_MEMPOOL_PAGES (4 * 1024) //16 MB
+#define ZLIB_MEMPOOL_PAGES     (4 * 1024) //16 MB
+
+// heuristics
+#define LUCI_COMPRESSION_HEURISTICS // enables heuristics
+
+#define NR_SYMBOLS_THRESH      225  // core set size
+
+#define SHANNON_ENTROPY_THRESH 7    // 8(bits) means cannot compress
+
+#define COMPRESS_RATIO_LIMIT   30   // acceptable compression ratio (30%)        
+                                    // associated with the entropy level
 
 #define LUCI_COMPRESS_RESULT(cluster, index, total_in, total_out) \
     luci_dbg("compress result : cluster %u index %lu in %lu out %lu", cluster, \
@@ -87,8 +98,6 @@ struct luci_compress_op {
 
 extern const struct luci_compress_op luci_zlib_compress;
 
-extern const struct file_operations luci_zlib_stats_ops;
-
 struct luci_context_pool {
     atomic_t count;
     spinlock_t lock;
@@ -99,9 +108,9 @@ struct luci_context_pool {
 
 extern struct luci_context_pool ctxpool;
 
-struct list_head *luci_compression_context(void);
+struct list_head *luci_get_compression_context(void);
 
-void put_compression_context(struct list_head *);
+void luci_put_compression_context(struct list_head *);
 
 void init_luci_compress(void);
 

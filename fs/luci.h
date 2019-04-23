@@ -643,6 +643,8 @@ sector_align(unsigned long n)
     return (long)nsec << SECTOR_SHIFT;
 }
 
+bool can_compress(struct page *page);
+
 /* utils.c */
 sector_t blkdev_max_block(struct block_device *bdev);
 void inline luci_pageflags_dump(struct page* page, const char *msg);

@@ -6349,3 +6349,23 @@ mismatch on read page, block=16705866-4096
 cat /sys/kernel/debug/luci/sdb/zlib_stats 
 pages ingested :912314 pages discarded :216324 wasted(%) :23
 
+================================================================
+pages ingested :6102455 pages discarded :692458 pages donotcompress :908415
+pages compressed(30%) :5195737 pages poor compressed :214260
+pages ingested :6111266 pages discarded :692458 pages donotcompress :908415
+pages compressed(30%) :5204548 pages poor compressed :214260
+pages ingested :6119823 pages discarded :692458 pages donotcompress :908415
+pages compressed(30%) :5213105 pages poor compressed :214260
+pages ingested :6127431 pages discarded :692458 pages donotcompress :908415
+pages compressed(30%) :5220713 pages poor compressed :214260
+pages ingested :6135489 pages discarded :692458 pages donotcompress :908415
+pages compressed(30%) :5228771 pages poor compressed :214260
+pages ingested :6143394 pages discarded :692458 pages donotcompress :908416
+pages compressed(30%) :5236663 pages poor compressed :214273
+pages ingested :6151346 pages discarded :692458 pages donotcompress :908421
+pages compressed(30%) :5244603 pages poor compressed :214285
+pages ingested :6159292 pages discarded :692458 pages donotcompress :908422
+pages compressed(30%) :5252541 pages poor compressed :214293
+^C
+[root@localhost Linux-LFS]# for i in {1..10000000}; do cat
+/sys/kernel/debug/luci/sdb/compression_stats; sleep 1; done

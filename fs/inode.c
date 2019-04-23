@@ -226,20 +226,25 @@ luci_validate_bmap_blkptr_csum(struct inode *inode,
     if (bp->checksum != crc32) {
         err = -EBADE;
         luci_err("meta csum ERROR, inode :%lu depth :%u/%u "
-                 "bp {%u/ EXP :0x%x GOT :0x%x}",
+                 "bp {%u/ EXP :0x%x GOT :0x%x}, PageDirty :%d/%d",
                  inode->i_ino,
                  curr_level,
                  max_depth,
                  bp->blockno,
                  bp->checksum,
-                 crc32);
+                 crc32,
+                 buffer_dirty(bh),
+                 PageDirty(bh->b_page));
     } else
-        luci_info("meta csum OK, inode :%lu depth :%u/%u bp {%u/0x%x}",
+        luci_info("meta csum OK, inode :%lu depth :%u/%u bp {%u/0x%x},"
+                  "PageDirty :%d/%d",
                  inode->i_ino,
                  curr_level,
                  max_depth,
                  bp->blockno,
-                 bp->checksum);
+                 bp->checksum,
+                 buffer_dirty(bh),
+                 PageDirty(bh->b_page));
 
 exit:
     unlock_buffer(bh);

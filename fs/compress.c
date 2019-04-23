@@ -22,7 +22,7 @@ void init_luci_compress(void)
 /*
  * finds an available workspace or creates one to run compress/decompress.
  */
-struct list_head *luci_compression_context(void)
+struct list_head *luci_get_compression_context(void)
 {
     DEFINE_WAIT(wait);
     struct list_head *ctx;
@@ -66,7 +66,7 @@ repeat:
 /*
  * put a workspace back to the list after work is done
  */
-void put_compression_context(struct list_head *ctx)
+void luci_put_compression_context(struct list_head *ctx)
 {
     spin_lock(&ctxpool.lock);
 #ifdef LUCI_LIMIT_WORKSPACES

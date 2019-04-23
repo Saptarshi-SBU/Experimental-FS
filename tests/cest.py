@@ -9,12 +9,19 @@
 #--buffer_compress_percentage=10 --ioengine=libaio --bs=8k --iodepth=16
 #--numjobs=4 --size=512M --time_based --runtime=30 --group_reporting --name=fs -o /tmp/log
 #
-#python3 cest.py --file norvig.txt --ci 0.01 --cf 0.999
+#python3 cest.py --file norvig.txt --off 0 --ci 0.01 --cf 0.999
 #Symbol-Set        31
 #Core-Set          31(0.9999999999999998)
 #ShannonEntropy    4.312032249296582
 #L2Norm            1.099745595141958e-07
 #CR                0.5956488100545467 (samples=38005 ci=0.01 cf=0.999)
+#
+# script to span regions of a file:
+#
+# for i in {1..32768};
+#     do
+#       python3 tests/cest.py --file ../projects/linux-disk-Fedora26.qcow2  --off $(($i*4096)) --ci 0.05 --cf 0.99;
+#     done
 #
 
 import os
@@ -163,12 +170,17 @@ def L2_norm(buckets, coreset):
     return l2
 
 def get_next_offset(off, size, blockSize, rand):
+
+    assert size >= blockSize
+
     if rand:
-        off = random.randrange(1, size - blockSize, blockSize)
+        off = random.randrange(off, off + blockSize)
     else:
         off = off + blockSize
-        if off > size - blockSize:
-            off = 0 #wrap
+
+    #wrap
+    if off > size - blockSize:
+         off = 0 #wrap
 
     return off
 
@@ -210,7 +222,7 @@ def compute_compression_ratio(filename, blockSize=32 * 1024):
     print('Compression Ratio (exhaustive) {}'.format(avg_compression_ratio))
     fp.close()
 
-def estimate_compression_ratio(filename, norandom=True, ci=0.02, cf=0.99, blockSize=32*1024):
+def estimate_compression_ratio(filename, off=0, norandom=True, ci=0.02, cf=0.99, blockSize=32*1024):
     '''
         calculates estimate based on samples
     '''
@@ -223,7 +235,9 @@ def estimate_compression_ratio(filename, norandom=True, ci=0.02, cf=0.99, blockS
     probability_list = []
     size = os.path.getsize(filename)
     if size < blockSize:
-            raise Exception("file size less than block Size")
+            raise Exception("file size {} less than block Size {}".format(size, blockSize))
+    if size < off:
+            raise Exception("file size {} less than base Offset {}".format(size, off))
 
     random.random()
     fp = open(filename, 'rb')
@@ -245,6 +259,8 @@ def estimate_compression_ratio(filename, norandom=True, ci=0.02, cf=0.99, blockS
         compData  = zlib.compress(orgData, zlib.Z_BEST_COMPRESSION)
         compRatio = (float(len(orgData)) - float(len(compData)))/float(len(orgData))
         compRatio_list.append(compRatio)
+
+    #print (off_list)
 
     #debugging
     for i in sorted(buckets):
@@ -272,15 +288,23 @@ if __name__ == "__main__":
     cestlogger = pylogger.GetPyLogger(__name__, log_file='cest.log')
     parser = argparse.ArgumentParser()
     parser.add_argument('--file')
+    parser.add_argument('--off')
     parser.add_argument('--ci')
     parser.add_argument('--cf')
     args = parser.parse_args()
     #test_z_table_sample_size(sigma=1.0, ci=0.01)
     #test_hoeffding_sample_size(ci=0.01)
     if useEstimate:
-        if args.ci:
-                estimate_compression_ratio(args.file, norandom=True, ci=args.ci, cf=args.cf)
+        if args.off:
+                estimate_compression_ratio(args.file, \
+                                           off=int(args.off), \
+                                           norandom=False, \
+                                           ci=args.ci, \
+                                           cf=args.cf, \
+                                           blockSize=4096)
         else:
-                estimate_compression_ratio(args.file, norandom=True)
+                estimate_compression_ratio(args.file, \
+                                           off=0, \
+                                           norandom=True)
     else:
         compute_compression_ratio(args.file, blockSize=32768)
