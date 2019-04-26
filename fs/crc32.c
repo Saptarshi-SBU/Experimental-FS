@@ -116,8 +116,9 @@ int luci_validate_data_pages_cksum(struct page **pages, unsigned nr_pages, blkpt
 
     if (bp->checksum != crc) {
         err = -EBADE;
-        luci_err("blkptr crc mismatch, nr_pages :%u EXP :0x%x GOT :0x%x",
-                  nr_pages, bp->checksum, crc);
+        luci_err("blkptr crc mismatch, nr_pages :%u EXP :0x%x GOT :0x%x "
+                 "PageDirty :%d",
+                  nr_pages, bp->checksum, crc, PageDirty(pages[0]));
     }
 
     return err;

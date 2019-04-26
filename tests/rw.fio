@@ -6,13 +6,13 @@ name=fio-rand-write
 ioengine=libaio
 direct=0
 thread=1
-rw=write
+rw=readwrite
 time_based=1
-runtime=120
+runtime=60
 bs=8K
 
 [test01]
-directory=/mnt/fio
+directory=/mnt/fio02
 numjobs=4
-size=2G
+size=1G
 iodepth=16

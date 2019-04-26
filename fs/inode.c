@@ -335,35 +335,34 @@ luci_bmap_get_path(struct inode *inode,
                    int *err,
                    int flags)
 {
-    int i = 0, ret = 0;
+    int i = 0;
     Indirect *p = ichain;
-    struct buffer_head *bh = NULL;
     struct super_block *sb = inode->i_sb;
-    unsigned long parent_block = 0; // only for debug
     bool skip_leaf = (S_ISREG(inode->i_mode) &&
                      ((flags & COMPR_BLK_INSERT) || (flags & COMPR_BLK_UPDATE) || (flags & COMPR_BLK_INFO)));
 
+    *err = 0;
     BUG_ON(!depth);
 
-    *err = 0;
-
-    if (depth == 1)
-        luci_bmap_add_chain (p, NULL, LUCI_I(inode)->i_data + *ipaths);
-    else {
-        luci_bmap_add_chain (p, NULL, LUCI_I(inode)->i_data + *ipaths);
-        if ((bh = sb_bread(sb, p->key.blockno)) == NULL)
-            panic("metadata read error inode :%lu ipath[%d]%u",
-                inode->i_ino, depth, p->key.blockno);
-        p->bh = bh;
-    }
-
+    luci_bmap_add_chain (p, NULL, LUCI_I(inode)->i_data + *ipaths);
     if (!p->key.blockno) {
-        luci_dbg_inode(inode, "root chain :ipath :%ld :%p", *ipaths, p->p);
+        luci_info_inode(inode, "block pointer is empty, ipath[depth=%u] %ld :%p",
+                        depth, *ipaths, p->p);
         goto no_block;
     }
 
-    if (depth > 1)
+    // indirect block
+    if (depth > 1) {
+        p->bh = sb_bread(sb, p->key.blockno);
+        if (p->bh == NULL)
+                panic("metadata read error, inode :%lu ipath[depth=%d] %u",
+                      inode->i_ino, depth, p->key.blockno);
         *err = luci_validate_bmap_blkptr_csum(inode, i, depth, p->bh, &p->key);
+        if (*err) {
+                brelse(p->bh);
+                goto exit;
+        }
+    }
 
     luci_info_inode(inode, "bmap get path, ipath[%d] %d-%u-%u-0x%x[%ld]",
                             i,
@@ -374,8 +373,11 @@ luci_bmap_get_path(struct inode *inode,
                             *ipaths);
 
     while (++i < depth) {
-        parent_block = p->key.blockno;
+        struct buffer_head *bh;
+        unsigned long prev_block = p->key.blockno; // only for debug
 
+        bh = p->bh;
+        BUG_ON(bh == NULL);
         luci_bmap_add_chain(++p, NULL, (blkptr*)bh->b_data + *++ipaths);
         if (!p->key.blockno)
             goto no_block;
@@ -383,11 +385,18 @@ luci_bmap_get_path(struct inode *inode,
         if ((i + 1 == depth) && skip_leaf)
                 break;
 
-        if ((bh = sb_bread(sb, p->key.blockno)) == NULL)
-            panic("metadata read error inode :%lu ipath[%d]%u",
-                inode->i_ino, depth, p->key.blockno);
-        else
-            p->bh = bh;
+        p->bh = sb_bread(sb, p->key.blockno);
+        if (p->bh == NULL)
+                panic("metadata read error, inode :%lu ipath[depth=%d] %u",
+                      inode->i_ino, depth, p->key.blockno);
+
+        if (i + 1 < depth) {
+               *err = luci_validate_bmap_blkptr_csum(inode, i, depth, p->bh, &p->key);
+                if (*err) {
+                        brelse(p->bh);
+                        goto exit;
+                }
+        }
 
         luci_info_inode(inode, "bmap get path, ipath[%d] %d-%u-%u-0x%x[%ld][%lu]",
                                 i,
@@ -396,14 +405,10 @@ luci_bmap_get_path(struct inode *inode,
                                 p->key.length,
                                 p->key.checksum,
                                 *ipaths,
-                                parent_block);
-        if (i + 1 < depth)
-            ret = luci_validate_bmap_blkptr_csum(inode, i, depth, p->bh, &p->key);
-
-        if (!*err)
-               *err = ret;
+                                prev_block);
     }
 
+exit:
     return NULL;
 
 no_block:
@@ -662,7 +667,7 @@ luci_get_block(struct inode *inode,
     mutex_lock(&(LUCI_I(inode)->truncate_mutex));
 
     partial = luci_bmap_get_path(inode, depth, ipaths, ichain, &err, flags);
-    if (err < 0) {
+    if (err) {
         luci_err_inode(inode, "bmap path error %d", err);
         goto exit;
     }
@@ -1476,10 +1481,10 @@ uncompressed_read:
         wait_on_page_locked(page);
         BUG_ON(!PageUptodate(page));
         ret = luci_validate_data_page_cksum(page, &bp);
-        if (ret < 0)
-            luci_err_inode(inode,
-                "L0 blkptr checksum mismatch on read page, block=%u-%u",
-                bp.blockno, bp.length);
+        if (ret == -EBADE) {
+            luci_err_inode(inode, "L0 blkptr checksum mismatch on read page, block=%u-%u",
+                                   bp.blockno, bp.length);
+        }
     }
 
 done:
