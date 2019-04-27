@@ -96,7 +96,7 @@ int zlib_compress_pages(struct list_head *ws,
                         unsigned long *total_out)
 {
     int ret, flush = Z_NO_FLUSH;
-    char *data_in, *cpage_out;
+    char *data_in = NULL, *cpage_out = NULL;
     int nr_pages = 0, max_pages = *out_pages;
     struct page *in_page = NULL, *out_page = NULL;
     struct workspace *workspace = list_entry(ws, struct workspace, list);
@@ -132,6 +132,7 @@ int zlib_compress_pages(struct list_head *ws,
             goto out;
         }
 
+        BUG_ON(!PageLocked(in_page));
         data_in = kmap(in_page);
         workspace->strm.next_in = data_in;
         workspace->strm.avail_in = min(*total_in - workspace->strm.total_in,

@@ -1,18 +1,28 @@
 ; fio-rand-write.job for fiotest
 
 [global]
-buffer_compress_percentage=99
+;buffer_compress_percentage=50
+;do_verify=1
+verify_pattern=0xff%o"abcd"-12
+;zero_buffers
+;scramble_buffers=0
+;buffer_pattern=0xaaaa
 name=fio-rand-write
 ioengine=libaio
 direct=0
 thread=1
-rw=readwrite
+;rw=readwrite
+rw=randrw
+;rw=write
 time_based=1
-runtime=60
+runtime=120
 bs=8K
 
 [test01]
-directory=/mnt/fio02
-numjobs=4
-size=1G
+directory=/mnt/fio
+;directory=/mnt/fio2
+;directory=/mnt/pio
+;directory=/tmp/fio
+numjobs=32
+size=2G
 iodepth=16

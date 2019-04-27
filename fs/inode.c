@@ -1401,69 +1401,61 @@ static int
 luci_readpage(struct file *file, struct page *page)
 {
     int ret = 0;
+#ifdef LUCIFS_CHECKSUM
+    bool do_verify = true;
+#else
+    bool do_verify = false;
+#endif
+    pgoff_t index = page_index(page);
 #ifdef LUCIFS_COMPRESSION
     blkptr bp;
-    struct page *cachep;
-    bool do_verify = false;
+    struct page *cache_page;
     unsigned long file_block;
     struct inode *inode = page->mapping->host;
 
+    bp_reset(&bp, 0, 0, 0, 0);
+
     atomic64_inc(&readfile_in);
-
     if (S_ISREG(inode->i_mode)) {
-
+        // Reads beyond file size are allowed. Zero out the page.
         if (page_offset(page) > inode->i_size) {
-            zero_user(page, 0, PAGE_SIZE);
-
-            SetPageUptodate(page);
-            if (PageLocked(page))
-                unlock_page(page);
-
-            luci_info_inode(inode, "offset exceed inode size, offset (%llu) > "
-                "file size (%llu)", page_offset(page), i_size_read(inode));
-            goto done;
+                zero_user(page, 0, PAGE_SIZE);
+                SetPageUptodate(page);
+                if (PageLocked(page))
+                        unlock_page(page);
+                luci_info_inode(inode, "offset exceeds file size, offset (%llu) > "
+                        "file size (%llu)", page_offset(page), i_size_read(inode));
+                goto done;
         }
 
-        // We can safely assume page is present in cache, due to page readahead
-        // and locked. Fixed : we need to pass page index
-        cachep = find_get_page(inode->i_mapping, page_index(page));
-        if (!cachep) {
-            luci_info("page (%lu) not found in cache, allocating",
-                page_index(page));
-            cachep = find_or_create_page(page->mapping,
-                                         page_index(page),
-                                         GFP_KERNEL);
+        cache_page = find_get_page(inode->i_mapping, index);
+        if (!cache_page) {
+                cache_page = find_or_create_page(page->mapping, index, GFP_KERNEL);
+                BUG_ON(!cache_page);
         }
 
-        BUG_ON(!cachep);
-
-        if (!PageUptodate(cachep)) {
-            #ifdef LUCIFS_CHECKSUM
-            do_verify = true;
-            #endif
-            file_block = page_offset(page)/luci_chunk_size(inode);
-
-            bp = luci_bmap_fetch_L0bp(inode, file_block);
-            if (bp.flags & LUCI_COMPR_FLAG) {
-                luci_info_inode(inode, "reading compressed page :%lu",
-                    page_index(page));
-                ret = luci_read_extent(page, &bp);
-                if (ret)
-                    panic("read failed :%d", ret);
-            } else {
-                put_page(cachep);
-                luci_info_inode(inode, "reading uncompressed page :%lu",
-                    page_index(page));
-                goto uncompressed_read;
-            }
-            luci_dump_blkptr(inode, file_block, &bp);
+        // page-tree page is not yet mapped
+        if (!PageUptodate(cache_page)) {
+                file_block = page_offset(page)/luci_chunk_size(inode);
+                bp = luci_bmap_fetch_L0bp(inode, file_block);
+                luci_dump_blkptr(inode, file_block, &bp);
+                if (bp.flags & LUCI_COMPR_FLAG) {
+                        ret = luci_read_extent(page, &bp);
+                        if (ret)
+                                panic("extent read failed :%d", ret);
+                        luci_info_inode(inode, "read compressed page :%lu", index);
+                } else {
+                        put_page(cache_page);
+                        goto uncompressed_read;
+                }
         }
 
-        copy_pages(page, cachep, 0, 0, PAGE_SIZE);
-        if (PageLocked(cachep))
-            unlock_page(cachep);
-
-        put_page(cachep);
+        BUG_ON(!PageUptodate(cache_page));
+        // copy data from page-tree to user page
+        copy_pages(page, cache_page, 0, 0, PAGE_SIZE);
+        if (PageLocked(cache_page))
+                unlock_page(cache_page);
+        put_page(cache_page);
 
         // Needed otherwise will result in an EIO
         SetPageUptodate(page);
@@ -1471,25 +1463,23 @@ luci_readpage(struct file *file, struct page *page)
 
         // Ideally page should be locked, but seen cases where page not locked
         if (PageLocked(page))
-            unlock_page(page);
+                unlock_page(page);
 
-        luci_info_inode(inode, "compressed read completed for pg index :%lu "
-            "status :%d\n", page_index(page), ret);
         goto done;
     }
-#endif
 uncompressed_read:
+#endif
     // trace mpage_readpage with unlock issue
-    ret = mpage_readpage(page, luci_get_block);
+    luci_info_inode(inode, "read uncompressed page :%lu", index);
+    (void) mpage_readpage(page, luci_get_block);
 
-    if (!ret && bp.length && do_verify) {
+    if (do_verify && bp.length) {
         wait_on_page_locked(page);
         BUG_ON(!PageUptodate(page));
         ret = luci_validate_data_page_cksum(page, &bp);
-        if (ret == -EBADE) {
-            luci_err_inode(inode, "L0 blkptr checksum mismatch on read page, block=%u-%u",
-                                   bp.blockno, bp.length);
-        }
+        if (ret == -EBADE)
+            luci_err_inode(inode, "L0 blkptr checksum mismatch on uncompressed read page, "
+                                  "block=%u-%u-0x%x", bp.blockno, bp.length, bp.flags);
     }
 
 done:

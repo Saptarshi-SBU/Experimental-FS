@@ -106,12 +106,10 @@ struct luci_context_pool {
     struct list_head idle_list;
 };
 
-struct luci_cluster_bio_data {
-        struct inode     *inode;
-        unsigned long     cluster_index;
-        blkptr            bp_array[EXTENT_NRBLOCKS_MAX];
-        u32               crc32 [EXTENT_NRBLOCKS_MAX];
-        struct list_head *workspace;
+struct luci_compressed_bio_data {
+        struct list_head         *ws;
+        struct extent_write_work *ext_work;
+        size_t total_out;
 };
 
 extern struct luci_context_pool ctxpool;

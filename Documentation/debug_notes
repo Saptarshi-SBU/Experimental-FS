@@ -6369,3 +6369,41 @@ pages compressed(30%) :5252541 pages poor compressed :214293
 ^C
 [root@localhost Linux-LFS]# for i in {1..10000000}; do cat
 /sys/kernel/debug/luci/sdb/compression_stats; sleep 1; done
+
+=========================================================================================
+[  468.871118] LUCI-FS luci_validate_data_pages_cksum : error blkptr crc mismatch, nr_pages :1 EXP :0x16acfbeb GOT :0x46588e7d PageDirty :0
+[  468.871126] LUCI-FS luci_read_extent : error L0 checksum mismatch on read extent, block=218511-962
+
+[  468.875799] LUCI-FS luci_validate_data_pages_cksum : error blkptr crc mismatch, nr_pages :1 EXP :0xb355c67e GOT :0x837f8d6e PageDirty :0
+[  468.875805] LUCI-FS luci_read_extent : error L0 checksum mismatch on read extent, block=1023403-59
+
+
+[root@localhost Linux-LFS]# grep -r 218511-962 /tmp/log 
+ kworker/u96:123-4295  [007]   383.847946: luci_get_block:       inum=13 off=4, 0-lba=1550-0-0-0x20f833a9, 1-lba=218511-962-1-0x16acfbeb 2-lba=0-0-0-0x0 3-lba=0-0-0-0x0 flags=0x6
+             fio-4473  [011]   468.870983: luci_get_block:       inum=13 off=4, 0-lba=1550-0-0-0xd369720f, 1-lba=218511-962-1-0x16acfbeb 2-lba=0-0-0-0x0 3-lba=0-0-0-0x0 flags=0x0
+[root@localhost Linux-LFS]# 
+[root@localhost Linux-LFS]# 
+[root@localhost Linux-LFS]# grep -r 1023403 /tmp/log 
+           <...>-4175  [001]   424.581175: luci_get_block:       inum=14 off=98, 0-lba=1551-0-0-0x5b8ca62b, 1-lba=1023403-59-1-0xb355c67e 2-lba=0-0-0-0x0 3-lba=0-0-0-0x0 flags=0x6
+             fio-4474  [008]   468.875776: luci_get_block:       inum=14 off=98,0-lba=1551-0-0-0xe4ba2344, 1-lba=1023403-59-1-0xb355c67e 2-lba=0-0-0-0x0 3-lba=0-0-0-0x0 flags=0x0
+[root@localhost Linux-LFS]# 
+
+============================================================================================================
+48602.669322] LUCI-FS luci_read_extent : error L0 checksum mismatch on read extent, block=1678296-1135
+
+ kworker/u96:0-11223 [000] 48570.917180: luci_get_block:       inum=17 off=103431, 0-lba=73092-0-0-0x8b439bde, 1-lba=73093-0-0-0x76bc9b39 2-lba=112559-0-0-0x3c4458a3 3-lba=1678296-1135-1-0x455ee599 flags=0x6
+           loop0-4440  [009] 48570.920006: luci_bio_complete:    device :7,0 blockno :1678296 length :4096 error :0
+           <...>-13361 [009] 48602.661942: luci_get_block:       inum=17 off=103431, 0-lba=73092-0-0-0x42b4d8df, 1-lba=73093-0-0-0x952ffa16 2-lba=112559-0-0-0x8b1217b 3-lba=1678296-1135-1-0x455ee599 flags=0x0
+
+==================================================================================================================
+ kworker/u96:167-15652 [003] 52373.988549: luci_get_block:       inum=15
+off=367939, 0-lba=71409-0-0-0x88a9947b, 1-lba=343896-0-0-0xc77c3ddf
+2-lba=384687-0-0-0x520d1b06 3-lba=1453829-41-1-0x2c1a5f2f flags=0x6
+           loop0-4440  [009] 52373.988951: luci_bio_complete:    device :7,0
+blockno :1453829 length :4096 error :0 crc :0x0
+           <...>-15825 [005] 52442.913574: luci_get_block:       inum=15
+off=367939, 0-lba=71409-0-0-0x6d542748, 1-lba=343896-0-0-0x24c4298a
+2-lba=384687-0-0-0xda0bb06c 3-lba=1453829-41-1-0x2c1a5f2f flags=0x0
+           <...>-15873 [002] 52465.984493: luci_get_block:       inum=15
+off=367939, 0-lba=71409-0-0-0x80c2dbbc, 1-lba=343896-0-0-0x87a704c7
+2-lba=384687-0-0-0xda0bb06c 3-lba=1453829-41-1-0x2c1a5f2f flags=0x0

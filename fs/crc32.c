@@ -5,6 +5,8 @@
 
 #include "luci.h"
 
+//#define LUCI_DUMP_CHECKSUM_DATA
+
 /* compute checksum */
 u32 luci_compute_data_cksum(void *addr, size_t length, u32 crc_seed)
 {
@@ -117,8 +119,20 @@ int luci_validate_data_pages_cksum(struct page **pages, unsigned nr_pages, blkpt
     if (bp->checksum != crc) {
         err = -EBADE;
         luci_err("blkptr crc mismatch, nr_pages :%u EXP :0x%x GOT :0x%x "
-                 "PageDirty :%d",
-                  nr_pages, bp->checksum, crc, PageDirty(pages[0]));
+                 "PageDirty :%d", nr_pages, bp->checksum, crc, PageDirty(pages[0]));
+#ifdef LUCI_DUMP_CHECKSUM_DATA
+        if (bp->length <= PAGE_SIZE) {
+                void *kaddr = kmap(pages[0]);
+                print_hex_dump(KERN_INFO, "data block :",
+                                      DUMP_PREFIX_OFFSET,
+                                      16,
+                                      1,
+                                      kaddr,
+                                      bp->length,
+                                      true);
+                kunmap(kaddr);
+        }
+#endif
     }
 
     return err;

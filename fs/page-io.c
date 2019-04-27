@@ -34,6 +34,9 @@
 #include "trace.h"
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_scan_pgtree_dirty_pages);
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_write_extents);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_bio_complete);
+
+//#define LUCI_BIO_CHECKSUM //only when you are paranoid
 
 #define WBC_FMT  "wbc: (%llu-%llu) dirty :%lu cyclic :%u sync_mode :%u"
 
@@ -44,6 +47,26 @@ atomic64_t pages_ingested;
 atomic64_t pages_notcompressed;
 atomic64_t pages_notcompressible;
 atomic64_t pages_wellcompressed;
+
+static void
+luci_release_backing_pages(struct pagevec *pvec) 
+{
+    int i;
+
+    for (i = 0; i < pagevec_count(pvec); i++) {
+        struct page *page = pvec->pages[i];
+
+        BUG_ON(page == NULL);
+
+        if (PageWriteback(page))
+                end_page_writeback(page);
+
+        if (PageLocked(page))
+                unlock_page(page);
+
+        put_page(page); // grab_cache_page bumps ref count.
+    }
+}
 
 /*
  * Compressed pages freed here, and must be run in process context.
@@ -80,18 +103,47 @@ luci_end_bio_write_compressed(struct bio *bio, int error)
 #endif
 {
     int i = 0;
-    struct bio_vec *bvec;
-    struct list_head *ws;
+    u32 crc = ~0U;
     struct page *page;
+    struct bio_vec *bvec;
+    struct luci_compressed_bio_data *bdata;
+#ifdef LUCI_BIO_CHECKSUM
+    size_t totalb, minb;
+#endif
+
+    page = bio->bi_io_vec[0].bv_page;
+    bdata = (struct luci_compressed_bio_data *) (page->private);
+    BUG_ON(bdata == NULL);
+    BUG_ON(bdata->ws == NULL);
+    BUG_ON(bdata->ext_work == NULL);
+    BUG_ON(bdata->ext_work->pvec == NULL);
+#ifdef LUCI_BIO_CHECKSUM
+    totalb = bdata->total_out;
+#endif
+
     bio_for_each_segment_all(bvec, bio, i) {
         page = bvec->bv_page;
-        ws = (struct list_head*) page->private;
-        BUG_ON(ws == NULL);
         BUG_ON(page_has_buffers(page));
         BUG_ON(PageLocked(page));
         BUG_ON(PageWriteback(page));
-        luci_zlib_compress.remit_workspace(ws, page);
+        luci_zlib_compress.remit_workspace(bdata->ws, page);
+#ifdef LUCI_BIO_CHECKSUM
+        BUG_ON(totalb <= 0);
+        minb = min((ssize_t)totalb, (ssize_t)PAGE_SIZE);
+        crc = luci_compute_page_cksum(page, 0, minb, crc);
+        totalb -= minb;
+#endif
     }
+    luci_release_backing_pages(bdata->ext_work->pvec);
+    kfree(bdata->ext_work->pvec);
+    kfree(bdata->ext_work);
+    kfree(bdata);
+#ifdef HAVE_TRACEPOINT_ENABLED
+    if (trace_luci_bio_complete_enabled())
+        trace_luci_bio_complete(bio, error, crc);
+#else
+    trace_luci_bio_complete(bio, error, crc);
+#endif
     bio_put(bio);
 }
 
@@ -107,9 +159,13 @@ luci_end_bio_write(struct bio *bio, int error)
 #endif
 {
     int i;
+    u32 crc = ~0U;
     struct page *page;
     struct bio_vec *bvec;
 
+    #ifndef  HAVE_NEW_BIO_END
+    BUG_ON(error);
+    #endif
     bio_for_each_segment_all(bvec, bio, i) {
         page = bvec->bv_page;
         BUG_ON(page_has_buffers(page)); // L0 blocks are no_bh based
@@ -125,12 +181,13 @@ luci_end_bio_write(struct bio *bio, int error)
         unlock_page(page);
         put_page(page);
     }
-
+#ifdef HAVE_TRACEPOINT_ENABLED
+    if (trace_luci_bio_complete_enabled())
+        trace_luci_bio_complete(bio, error, crc);
+#else
+    trace_luci_bio_complete(bio, error, crc);
+#endif
     bio_put(bio);
-
-    #ifndef  HAVE_NEW_BIO_END
-    BUG_ON(error);
-    #endif
 }
 
 /*
@@ -177,8 +234,7 @@ luci_construct_bio(struct inode *inode,
                    struct page **pages,
                    unsigned long total,
                    unsigned long disk_start,
-                   bool write,
-                   struct list_head *ws)
+                   bool write)
 {
     int i, err = 0;
     struct bio *bio;
@@ -197,7 +253,6 @@ luci_construct_bio(struct inode *inode,
     }
 
     for (i = 0; i < nr_pages; i++) {
-
        BUG_ON(!pages[i]);
        BUG_ON(sector_bytes == 0);
 
@@ -210,12 +265,6 @@ luci_construct_bio(struct inode *inode,
        }
        sector_bytes -= (unsigned long)curr_bytes;
        luci_info("added page %p to bio, len :%u", pages[i], curr_bytes);
-
-       if (!write)
-           continue;
-
-       BUG_ON((void *) pages[i]->private != NULL);
-       pages[i]->private = (unsigned long) ws;
     }
 
     BUG_ON(sector_bytes);
@@ -234,18 +283,25 @@ exit:
  * bio function to build and submit io for compressed/uncompressed pages.
  */
 static int
-luci_prepare_and_submit_bio(struct inode * inode,
+luci_prepare_and_submit_bio(struct inode *inode,
                             struct page **pages,
                             unsigned long total_out,
                             unsigned long disk_start,
                             bool compressed,
-                            struct list_head *ws)
+                            struct luci_compressed_bio_data *bdata)
 {
     ktime_t start;
     struct bio *bio;
+    struct page *page;
 
-    bio = luci_construct_bio(inode, pages, total_out, disk_start, true, ws);
+    bio = luci_construct_bio(inode, pages, total_out, disk_start, true);
     BUG_ON(IS_ERR(bio));
+
+    page = bio_page(bio);
+    if (compressed) {
+        BUG_ON(bdata == NULL);
+        page->private = (unsigned long) bdata;
+    }
 
     bio->bi_end_io = compressed ?
                      luci_end_bio_write_compressed : luci_end_bio_write;
@@ -266,9 +322,11 @@ luci_prepare_and_submit_bio(struct inode * inode,
 /*
  * Worker thread function.
  *
- *  1. Compreses pages of a extent, and creates a bio out of compressed pages.
- *  2. If compression is not beneficial, creates a bio out of cached pages
- *  3. Issues async IO
+ *  1. Applies compression heuristics to cluster pages.
+ *  2. if compression possible, compreses the cluser, and creates a compressed bio.
+ *  3. Otherwise, creates a bio from regular pages cached in page tree
+ *  4. Issues async IO
+ *  5. Updates bmap after bio completion
  */
 
 static void
@@ -280,22 +338,25 @@ __luci_compress_extent_and_write(struct work_struct *work)
     struct list_head *ws = NULL;
     struct inode *inode;
     unsigned extent;
-    struct page **page_array;
+    struct page **page_array, *pageout;
     struct extent_write_work *ext_work;
     unsigned long start_compr_block, disk_start, nr_blocks;
     unsigned long nr_pages_out, total_in, total_out;
-    blkptr bp_array[EXTENT_NRBLOCKS_MAX];
-    u32 crc32[EXTENT_NRPAGE], crc32_extent = 0;
+    blkptr bp_array[EXTENT_NRBLOCKS_MAX]; // [-Waggressive-loop-optimizations]
+    u32 crc32[EXTENT_NRBLOCKS_MAX], crc32_extent = 0;
+    struct luci_compressed_bio_data *bio_data = NULL;
 
-    memset((char *)crc32, 0, sizeof(u32) * EXTENT_NRPAGE);
+    memset((char *)crc32, 0, sizeof(u32) * EXTENT_NRBLOCKS_MAX);
 
     ext_work = container_of(work, struct extent_write_work, work);
+
     /* We are nobh. See *_write_end */
     BUG_ON(page_has_buffers(ext_work->begin_page));
     BUG_ON(pagevec_count(ext_work->pvec) != EXTENT_NRPAGE);
 
     inode = ext_work->begin_page->mapping->host;
     extent = luci_extent_no(page_index(ext_work->begin_page));
+    pageout = ext_work->pageout;
 
     page_array = kzalloc(EXTENT_NRPAGE * sizeof(struct page *), GFP_NOFS);
     if (!page_array) {
@@ -344,21 +405,28 @@ __luci_compress_extent_and_write(struct work_struct *work)
     luci_put_compression_context(ws);
 
     if (!err) {
-        unsigned reduction_pc;
+        unsigned cr;
 
         compressed = true;
         BUG_ON(nr_pages_out == 0);
-        reduction_pc = ((EXTENT_SIZE - total_out) * 100)/EXTENT_SIZE;
-        if (reduction_pc >= COMPRESS_RATIO_LIMIT)
+        bio_data = kzalloc(sizeof(struct luci_compressed_bio_data), GFP_NOFS);
+        if (!bio_data) {
+                luci_err_inode(inode, "failed to allocate bio data for cluster");
+                goto write_error;
+        }
+        bio_data->ext_work = ext_work;
+        bio_data->ws = ws;
+        bio_data->total_out = total_out;
+        crc32_extent = luci_compute_pages_cksum(page_array, nr_pages_out, total_out);
+        cr = ((EXTENT_SIZE - total_out) * 100)/EXTENT_SIZE;
+        if (cr >= COMPRESS_RATIO_LIMIT)
                 atomic64_add(EXTENT_NRPAGE, &pages_wellcompressed);
+
         UPDATE_AVG_LATENCY_NS(dbgfsparam.avg_deflate_lat, start);
         LUCI_COMPRESS_RESULT(extent,
                              page_index(ext_work->begin_page),
                              total_in,
                              total_out);
-        crc32_extent = luci_compute_pages_cksum(page_array,
-                                                nr_pages_out,
-                                                total_out);
     } else {
         while (nr_pages_out--) {
              BUG_ON(!page_array[nr_pages_out]);
@@ -366,7 +434,6 @@ __luci_compress_extent_and_write(struct work_struct *work)
         }
 
 notcompressible:
-
         compressed = false;
         total_out = EXTENT_SIZE;
         nr_pages_out = EXTENT_NRPAGE;
@@ -421,7 +488,7 @@ notcompressible:
                                     total_out,
                                     disk_start,
                                     compressed,
-                                    compressed ? ws : NULL) < 0) {
+                                    compressed ? bio_data : NULL) < 0) {
         redirty_page = true;
         luci_err_inode(inode, "submit write error for extent %u", extent);
         goto write_error;
@@ -439,36 +506,19 @@ write_error:
 
 release:
 
-    if (!compressed)
-        goto exit;
-
-    // release regular pages
-    // FIXME : redirty_page on error
-    for (i = 0; i < pagevec_count(ext_work->pvec); i++) {
-        struct page *page = ext_work->pvec->pages[i];
-
-        if (PageLocked(page))
-            unlock_page(page);
-
-        if (PageWriteback(page))
-            end_page_writeback(page);
-
-        //drop ref from grab_cache_page_nowait
-        put_page(page);
-
-        // spcl case :drop ref in context of luci_writepage only
-        if (ext_work->pageout && ext_work->pageout == page)
-            put_page(page);
-    }
-
-exit:
     if (page_array)
         kfree(page_array);
 
-    if (ext_work->pvec)
-        kfree(ext_work->pvec);
+    if (!compressed) {
+        if (ext_work->pvec)
+                kfree(ext_work->pvec);
+        kfree(ext_work);
+        return;
+    }
 
-    kfree(ext_work);
+    // backing pages will be released later after io completion
+    if (pageout)
+        put_page(pageout);
 }
 
 /*
@@ -663,18 +713,18 @@ luci_write_extent(struct page *page, struct writeback_control *wbc)
                                         wbc);
     if (pvec && !IS_ERR(pvec)) {
         if ((wrk = luci_init_work(pvec, page)) == NULL) {
-            err = -EIO;
             kfree(pvec);
             goto exit;
         }
         queue_work(LUCI_SB(inode->i_sb)->comp_write_wq, &wrk->work);
         dbgfsparam.nrbatches++;
-    } else
-        err = -EIO;
-
+    } else {
 exit:
-    if (PageLocked(page))
-        unlock_page(page);
+        err = -EIO;
+        if (PageLocked(page))
+             unlock_page(page);
+    }
+
     return err;
 }
 
@@ -861,7 +911,7 @@ int luci_read_extent(struct page *page, blkptr *bp)
 
     // allocate pages for reading compressed blocks
     for (i = 0; i < nr_pages; i++) {
-        page_in = alloc_page(GFP_NOFS | __GFP_HIGHMEM);
+        page_in = alloc_page(GFP_NOFS | __GFP_HIGHMEM | __GFP_ZERO);
         if (!page_in) {
             ret = -ENOMEM;
             luci_err("failed to allocate page for compressed read");
@@ -874,8 +924,7 @@ int luci_read_extent(struct page *page, blkptr *bp)
                                   compressed_pages,
                                   aligned_bytes,
                                   disk_start,
-                                  false,
-                                  NULL);
+                                  false);
     if (IS_ERR(comp_bio)) {
         ret = -EIO;
         luci_err("failed to allocate comp_bio for read");
@@ -900,8 +949,8 @@ int luci_read_extent(struct page *page, blkptr *bp)
         SetPageUptodate(bvec->bv_page);
 
     if (luci_validate_data_pages_cksum(compressed_pages, nr_pages, bp) == -EBADE) {
-            luci_err("L0 checksum mismatch on read extent, block=%u-%u\n",
-                      bp->blockno, bp->length);
+            luci_err("L0 checksum mismatch on read extent, block=%u-%u-%u\n",
+                      bp->blockno, bp->flags, bp->length);
             goto free_compbio;
     }
 
@@ -916,13 +965,7 @@ int luci_read_extent(struct page *page, blkptr *bp)
         pgtree_pages[i] = page_out;
     }
 
-    pgtree_bio = luci_construct_bio(inode,
-                                    pgtree_pages,
-                                    EXTENT_SIZE,
-                                    0,
-                                    false,
-                                    NULL);
-
+    pgtree_bio = luci_construct_bio(inode, pgtree_pages, EXTENT_SIZE, 0, false);
     if (IS_ERR(pgtree_bio)) {
         ret = -EIO;
         luci_err("failed to allocate bio for inflate");
@@ -952,7 +995,7 @@ free_compbio:
         page_out = pgtree_pages[i];
         if (!page_out)
              break;
-
+        SetPageUptodate(page_out);
         if (PageLocked(page_out)) // TBD: check if page can be at all locked
              unlock_page(page_out);
 
