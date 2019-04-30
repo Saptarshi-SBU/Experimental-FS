@@ -445,6 +445,8 @@ luci_bmap_allocate_entry(struct inode *inode,
     if (curr_level >= depth) // base case
         return 0;
 
+    memset((char *)&ichain[curr_level].key, 0, sizeof(blkptr));
+
     if (luci_new_block(inode, 1, &curr_block) < 0)
         panic("block allocation failed\n");
 
@@ -531,6 +533,8 @@ luci_bmap_insert_entry(struct inode *inode,
 
     if (curr_level >= depth) // base case
         return 0;
+
+    memset((char *)&ichain[curr_level].key, 0, sizeof(blkptr));
 
     // only allocate till L1 block
     if (curr_level + 1 < depth) {
@@ -684,6 +688,7 @@ luci_get_block(struct inode *inode,
 
             // update L0 block ptr at L1
             BUG_ON(ichain[depth - 1].p == NULL);
+            memset((char *)ichain[depth - 1].p, 0, sizeof(blkptr));
             ichain[depth - 1].p->blockno = bh_result->b_blocknr;
             ichain[depth - 1].p->checksum = *(u32*)bh_result->b_data;
             if (bh_result->b_state & BH_PrivateStart) {
