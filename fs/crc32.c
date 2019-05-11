@@ -18,7 +18,7 @@ u32 luci_compute_data_cksum(void *addr, size_t length, u32 crc_seed)
     luci_info("crc for addr, length :%lu crc:0x%x", length, crc);
     return crc;
     #else
-    return 0
+    return 0;
     #endif
 }
 
@@ -39,7 +39,7 @@ u32 luci_compute_page_cksum(struct page *page, off_t off, size_t length,
     luci_info("crc for page, off :%lu length :%lu crc:0x%x", off, length, crc);
     return crc;
     #else
-    return 0
+    return 0;
     #endif
 }
 
@@ -61,7 +61,7 @@ int luci_compute_pages_cksum(struct page **pages, unsigned nr_pages,
     BUG_ON(totalb);
     return crc;
     #else
-    return 0
+    return 0;
     #endif
 }
 
@@ -89,7 +89,7 @@ exit:
     luci_pageflags_dump(page, "cannot verify checksum for page");
     return err;
     #else
-    return 0
+    return 0;
     #endif
 }
 
@@ -141,6 +141,6 @@ exit:
         luci_pageflags_dump(page, "cannot verify checksum for page");
     return err;
     #else
-    return 0
+    return 0;
     #endif
 }

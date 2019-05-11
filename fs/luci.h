@@ -765,6 +765,8 @@ extern const struct file_operations luci_file_operations;
 extern const struct inode_operations luci_dir_inode_operations;
 extern const struct file_operations luci_dir_operations;
 extern const struct address_space_operations luci_aops;
+extern const struct inode_operations luci_symlink_inode_operations;
+
 /*
  * Define LUCIFS_DEBUG to produce debug messages
  */

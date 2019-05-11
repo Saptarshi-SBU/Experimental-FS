@@ -163,19 +163,28 @@ luci_readdir(struct file *file, struct dir_context *ctx)
                               de->name_len,
                               le32_to_cpu(de->inode),
                               DT_UNKNOWN)) {
-	            luci_err("failed to emit dir for :%s", de->name);
+                    luci_err("failed to emit dentry :%s, inode :%u, namelen :%u reclen :%u pos :%llu",
+                              de->name,
+                              de->inode,
+                              de->name_len,
+                              luci_rec_len_from_disk(de->rec_len),
+                              ctx->pos);
                     luci_put_page(page);
-                    return 0;
+                    return -EIO;
                 }
 
                 #ifdef DEBUG_DENTRY
-                luci_dbg("dentry name :%s, inode :%u, namelen :%u reclen :%u "
-		         "pos :%llu",
+                luci_info("dentry name :%s, inode :%u/%llu, namelen :%u reclen :%u "
+		         "pos :%llu 0x%p/0x%p/0x%p",
                          de->name,
                          de->inode,
+                         dir->i_size,
                          de->name_len,
 		         luci_rec_len_from_disk(de->rec_len),
-                         ctx->pos);
+                         ctx->pos,
+                         de,
+                         limit,
+                         luci_next_entry(de));
                 #endif
             }
             ctx->pos += luci_rec_len_from_disk(de->rec_len);
