@@ -106,13 +106,27 @@ long luci_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
    switch (cmd) {
    case FS_IOC_GETFLAGS:
+   case FS_IOC32_GETFLAGS:
            return luci_ioctl_getflags(file, (void __user *)arg);
    case FS_IOC_SETFLAGS:
+   case FS_IOC32_SETFLAGS:
+           luci_err("FS_IOC_SETFLAGS, not supported ioctl :0x%x\n", cmd);
+           break;
    case FS_IOC_GETVERSION:
+   case FS_IOC32_GETVERSION:
+           luci_err("FS_IOC_GETVERSION, not supported ioctl :0x%x\n", cmd);
+           break;
+   case FS_IOC_SETVERSION:
+   case FS_IOC32_SETVERSION:
+           luci_err("FS_IOC_SETVERSION, not supported ioctl :0x%x\n", cmd);
+           break;
+   case FS_IOC_FIEMAP:
+           luci_err("FS_IOC_FIEMAP, not supported ioctl :0x%x\n", cmd);
+           break;
    default:
            luci_err("not supported ioctl :0x%x\n", cmd);
-           return -ENOTTY;
    }
+   return -ENOTTY;
 }
 
 const struct file_operations luci_file_operations = {

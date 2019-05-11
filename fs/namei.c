@@ -271,8 +271,10 @@ gotit:
     dir->i_mtime = dir->i_ctime = LUCI_CURR_TIME;
     mark_inode_dirty(dir);
 
-    luci_info_inode(dir, "sucessfully inserted dentry %s rec_len :%d "
+    luci_info("sucessfully inserted parent :%lu/%u dentry %s rec_len :%d "
        "next_rec :%d page :%lu pos :%llu size :%llu va :%p",
+       dir->i_ino,
+       de->inode,
        dentry->d_name.name,
        LUCI_DIR_REC_LEN(de->name_len),
        de->rec_len,
@@ -455,7 +457,7 @@ luci_delete_entry(struct luci_dir_entry_2* de, struct page *page)
     // Fix : rec_len can be smaller than 'from', since it's an offset
     unsigned length = luci_rec_len_from_disk(de->rec_len);
     pos = page_offset(page) + from;
-    luci_dbg("dentry %s pos %llu from %u len %u", de->name, pos, from, length);
+    luci_info("dentry %u/%s pos %llu from %u len %u", de->inode, de->name, pos, from, length);
     de->inode = 0;
     lock_page(page);
     err = luci_prepare_chunk(page, pos, length);
@@ -478,7 +480,7 @@ luci_unlink(struct inode * dir, struct dentry *dentry)
     struct page * page;
     int err;
 
-    luci_dbg("name :%s", dentry->d_name.name);
+    luci_info("%s name :%s", __func__, dentry->d_name.name);
 
     de = luci_find_entry(dir, &dentry->d_name, &page);
     if (!de) {
@@ -604,49 +606,125 @@ static int
 luci_link(struct dentry * old_dentry, struct inode * dir,
         struct dentry *dentry)
 {
-    luci_dbg("inode :%lu", dir->i_ino);
-    return 0;
+    luci_err_inode(dir, "not Implemented %s", __func__);
+    return -ENOSYS;
 }
 
 static int
 luci_symlink(struct inode * dir, struct dentry *dentry,
         const char * symname)
 {
-    luci_dbg("inode :%lu", dir->i_ino);
+    int err;
+    struct inode *inode;
+    int length = strlen(symname) + 1;
+
+    luci_info("%s name :%s", __func__, dentry->d_name.name);
+
+    if (length > dir->i_sb->s_blocksize)
+        return -ENAMETOOLONG;
+
+    // create inode
+    inode = luci_new_inode(dir, S_IFLNK | S_IRWXUGO, &dentry->d_name);
+    if (IS_ERR(inode)) {
+        luci_err("failed to create symlink inode");
+        return PTR_ERR(inode);
+    }
+
+    luci_info_inode(inode, "created new symlink inode %s",
+                    dentry->d_name.name);
+    inode->i_op = &luci_symlink_inode_operations;
+    inode->i_mapping->a_ops = &luci_aops;
+
+    err = page_symlink(inode, symname, length);
+    if (err)
+        goto failed;
+
+    mark_inode_dirty(inode);
+    err = luci_add_link(dentry, inode);
+    if (err)
+        goto failed;
+
+    unlock_new_inode(inode);
+    d_instantiate(dentry, inode);
     return 0;
+
+failed:
+    inode_dec_link_count(inode);
+    unlock_new_inode(inode);
+    iput(inode);
+    return err;
 }
 
 static int
 luci_mknod(struct inode * dir, struct dentry *dentry, umode_t mode, dev_t rdev)
 {
-    luci_dbg("inode :%lu", dir->i_ino);
-    return 0;
+    luci_err_inode(dir, "not Implemented %s", __func__);
+    return -ENOSYS;
 }
 
 static int
 luci_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
 {
-    luci_dbg("inode :%lu", dir->i_ino);
-    return 0;
+    luci_err_inode(dir, "not Implemented %s", __func__);
+    return -ENOSYS;
 }
 
 #ifdef HAVE_NEW_RENAME
 static int
-luci_rename(struct inode * old_dir, struct dentry *old_dentry,
-        struct inode * new_dir, struct dentry *new_dentry, unsigned int flags)
-{
-    luci_dbg_inode(old_dir, "renaming");
-    return 0;
-}
+luci_rename(struct inode * src_dir, struct dentry *src_dentry,
+        struct inode * tgt_dir, struct dentry *tgt_dentry, unsigned int flags)
 #else
 static int
-luci_rename(struct inode * old_dir, struct dentry *old_dentry,
-    struct inode * new_dir, struct dentry *new_dentry)
-{
-    luci_dbg_inode(old_dir, "renaming");
-    return 0;
-}
+luci_rename(struct inode * src_dir, struct dentry *src_dentry,
+    struct inode * tgt_dir, struct dentry *tgt_dentry)
 #endif
+{
+    int ret;
+    loff_t pos;
+    unsigned int len;
+    struct page *page = NULL;
+    struct luci_dir_entry_2 *de_src, *de_tgt;
+
+    de_src = luci_find_entry(src_dir, &src_dentry->d_name, &page);
+    if (!de_src)
+        return -ENOENT;
+
+    if (tgt_dentry->d_inode) {
+        de_tgt = luci_find_entry(tgt_dir, &tgt_dentry->d_name, &page);
+        if (!de_tgt) {
+                luci_put_page(page);
+                return -ENOENT;
+        }
+        pos = page_offset(page) +
+                        (char *) de_tgt - (char *) page_address(page);
+        len = luci_rec_len_from_disk(de_tgt->rec_len);
+
+        lock_page(page);
+
+        ret = luci_prepare_chunk(page, pos, len);
+        BUG_ON(ret);
+
+        de_tgt->inode = cpu_to_le32(tgt_dentry->d_inode->i_ino);
+        luci_set_de_type(de_tgt, tgt_dentry->d_inode);
+
+        ret = luci_commit_chunk(page, pos, len);
+        luci_put_page(page);
+
+        tgt_dir->i_mtime = tgt_dir->i_ctime = CURRENT_TIME_SEC;
+        tgt_dentry->d_inode->i_ctime = CURRENT_TIME_SEC;
+        mark_inode_dirty(tgt_dir);
+        mark_inode_dirty(tgt_dentry->d_inode);
+    } else
+        ret = luci_add_link(tgt_dentry, src_dentry->d_inode);
+
+    if (!ret) {
+        ret = luci_delete_entry(de_src, page);
+        if (!ret && S_ISDIR(src_dir->i_mode))
+                inode_dec_link_count(src_dir);
+    }
+
+    return ret;
+}
 
 const struct inode_operations luci_dir_inode_operations = {
     .create         = luci_create,

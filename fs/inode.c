@@ -145,6 +145,13 @@ const struct inode_operations luci_file_inode_operations =
     .getattr = luci_getattr,
 };
 
+const struct inode_operations luci_symlink_inode_operations = {
+        .readlink       = generic_readlink,
+        .follow_link    = page_follow_link_light,
+        .put_link       = page_put_link,
+        .setattr        = luci_setattr
+};
+
 /* bmap functions */
 
 /*
@@ -1330,8 +1337,10 @@ luci_write_begin(struct file *file,
                  void **fsdata)
 {
     int ret;
-    struct inode *inode = file_inode(file);
+    struct inode *inode = mapping->host; // symlinks do not have associated file.
+                                         // file_inode(file) will not be valid
 
+    BUG_ON(inode == NULL);
     atomic64_add(len >> PAGE_CACHE_SHIFT, &writefile_in);
 
 #ifdef LUCIFS_COMPRESSION
@@ -1367,8 +1376,9 @@ luci_write_end(struct file *file,
                void *fsdata)
 {
     int ret;
-    struct inode *inode = file_inode(file);
+    struct inode *inode = mapping->host;
 
+    BUG_ON(inode == NULL);
 #ifdef LUCIFS_COMPRESSION
     if (S_ISREG(inode->i_mode)) {
         ret = luci_write_extent_end(mapping,
