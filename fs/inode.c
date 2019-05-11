@@ -83,7 +83,8 @@ luci_setattr(struct dentry *dentry, struct iattr *attr)
         return err ? err : -EPERM;
     }
 
-    if (attr->ia_size != inode->i_size) {
+    if ((attr->ia_valid & ATTR_SIZE) &&
+                    (attr->ia_size != inode->i_size)) {
         // We do not support DIO
         // Wait for all pending direct I/O requests prior doing a truncate
         // inode_dio_wait(inode);

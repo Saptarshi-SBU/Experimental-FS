@@ -316,7 +316,7 @@ luci_free_blocks(struct inode *inode, long delta_blocks)
         }
 
         if (delta_blocks) {
-                luci_err_inode(inode, "detected blocks with possible holes, nr :%lu",
+                luci_err_inode(inode, "detected blocks with possible holes, nr :%ld",
                                 delta_blocks);
                 //BUG_ON(delta_blocks);
         }
@@ -351,22 +351,18 @@ luci_truncate(struct inode *inode, loff_t size)
 {
         struct super_block *sb = inode->i_sb;
         long n_blocks = (size + sb->s_blocksize - 1) / sb->s_blocksize;
-        // TBD : EXTENT_SIZE will be more accurate here
-        long i_blocks = (inode->i_size + sb->s_blocksize - 1) / sb->s_blocksize;
+        long i_blocks = (inode->i_size + sb->s_blocksize - 1) / sb->s_blocksize; // TBD : EXTENT_SIZE will be more accurate here
         long delta_blocks = n_blocks - i_blocks;
 
         luci_info_inode(inode, "truncate blocks :%ld blocksize :%lu %lu-%lu",
                         delta_blocks, sb->s_blocksize, n_blocks, i_blocks);
 
-        if(!delta_blocks) {
-                return 0;
-        } else if (delta_blocks > 0) {
-                luci_dbg("adding %ld blocks on truncate", delta_blocks);
-                return luci_grow_blocks(inode, i_blocks, n_blocks);
-        } else {
+        // do not grow blocks; this makes truncate O(n) operation.
+        if (delta_blocks < 0) {
                 luci_dbg("freeing %ld blocks on truncate", delta_blocks);
                 return luci_free_blocks(inode, -delta_blocks);
         }
+        return 0;
 }
 
 // invoked when i_count (in-memory references) drops to zero
