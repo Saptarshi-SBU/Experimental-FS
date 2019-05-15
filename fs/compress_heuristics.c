@@ -190,12 +190,13 @@ long *prepare_symbol_set(struct page *page)
         addr = kmap(page);
 
         for (i = 0; i < MAX_SAMPLES; i++) {
+                #ifdef HAVE_PRAND
                 off_t off = prandom_u32_max(PAGE_SIZE - 1);
-
+                #else
+                off_t off = get_random_int() % PAGE_SIZE;
+                #endif
                 u8 *byteaddr = (u8 *) addr + off;
-
                 symbol_table[*byteaddr] += 1;
-
                 #ifdef DEBUG_COMPRESS_HEURISTICS
                 pr_debug("%s off :%lu :%d\n", __func__, off, *byteaddr);
                 #endif

@@ -16,30 +16,30 @@
 #include <linux/version.h>
 
 /*
- *  returns a mapped page, which is unmapped on a luci_put_page
- *  page needs to be mapped for dentry access.
+ *  returns a mapped page
+ *  use luci_put_page to unmap
  */
-struct page *
-luci_get_page(struct inode *dir, unsigned long n)
+struct page*
+luci_get_page(struct inode *dir, unsigned long off)
 {
     struct page *page;
-#   ifdef DEBUG_DENTRY
+    #ifdef DEBUG_DENTRY
     blkptr bp;
 
-    bp = luci_bmap_fetch_L0bp(dir, n);
+    bp = luci_bmap_fetch_L0bp(dir, off);
     luci_info_inode(dir, "mapping page no %lu(%u)", n, bp.blockno);
-#   endif
+    #endif
 
     // makes an internal call to luci_get_block
-    page = read_mapping_page(dir->i_mapping, n, NULL);
+    page = read_mapping_page(dir->i_mapping, off, NULL);
     if (IS_ERR(page)) {
-        luci_err("read mapping page failed, page no %lu", n);
-        goto fail;
+        luci_err("read mapping page failed, page no %lu", off);
+        return ERR_PTR(-EIO);
     }
 
     // FIXME: check pages
     if (unlikely(!PageChecked(page)) && PageError(page)) {
-        luci_err("mapped page with error, page no %lu", n);
+        luci_err("mapped page with error, page no %lu", off);
         goto fail;
     }
 
