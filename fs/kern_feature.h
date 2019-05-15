@@ -8,6 +8,10 @@
 
 #ifdef LINUX_VERSION_CODE
 
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3,15,0))
+    #define HAVE_PRAND
+#endif
+
 #if (LINUX_VERSION_CODE > KERNEL_VERSION(3,12,0))
     #define HAVE_BIO_ITER
 #endif

@@ -53,7 +53,6 @@ luci_commit_chunk(struct page *page, loff_t pos, unsigned len)
     struct inode *dir = mapping->host;
 
     BUG_ON(!page_has_buffers(page));
-
     luci_dbg_inode(dir,"pos :%llu len :%u err :%d", pos, len, err);
 
     dir->i_version++;
@@ -71,6 +70,7 @@ luci_commit_chunk(struct page *page, loff_t pos, unsigned len)
         luci_dbg_inode(dir, "updating dir inode size %llu", dir->i_size);
     }
 
+    // The page must be locked by the caller and will be unlocked upon return.
     if (IS_DIRSYNC(dir) &&
 #ifdef HAVE_WRITE_ONE_PAGE_NEW
 		    ((err = write_one_page(page)) == 0))
@@ -83,7 +83,6 @@ luci_commit_chunk(struct page *page, loff_t pos, unsigned len)
 
     return err;
 }
-
 int
 luci_make_empty(struct inode *inode, struct inode *parent)
 {
@@ -153,7 +152,6 @@ luci_add_link(struct dentry *dentry, struct inode *inode) {
     unsigned chunk_size = luci_chunk_size(inode);
 
     BUG_ON(inode->i_ino == 0); // sanity check for new inode
-
     dir = DENTRY_INODE(dentry->d_parent);
     npages = dir_pages(dir);
 
@@ -212,8 +210,8 @@ luci_add_link(struct dentry *dentry, struct inode *inode) {
             de = (struct luci_dir_entry_2*)((char*)de + rec_len);
         }
 
-        unlock_page(page);
         luci_put_page(page);
+        unlock_page(page);
         luci_dbg("dentry page %ld nr_pages :%ld ", n, npages);
     }
 
@@ -294,7 +292,7 @@ luci_create(struct inode *dir,
             bool excl)
 {
     int err;
-    struct inode * inode;
+    struct inode *inode;
 
     // create inode
     inode = luci_new_inode(dir, mode, &dentry->d_name);
@@ -363,16 +361,18 @@ luci_find_entry (struct inode * dir, const struct qstr * child,
                 goto found;
             }
 
-#           ifdef DEBUG_DENTRY
+            #ifdef DEBUG_DENTRY
             luci_dbg("dentry name :%s, inode :%u, namelen :%u reclen :%u",
 	        de->name, de->inode, de->name_len,
                 luci_rec_len_from_disk(de->rec_len));
-#           endif
+            #endif
         }
-        luci_put_page(page);
+        luci_put_page(page);    // get_page
     }
+
 fail:
     return NULL;
+
 found:
     *res = page;
     return de;
@@ -395,19 +395,19 @@ luci_inode_by_name(struct inode *dir, const struct qstr *child)
 static int
 luci_empty_dir(struct inode *dir)
 {
+    struct page* page = NULL;
     unsigned long n;
     unsigned long npages = dir_pages(dir);
 
     for (n = 0; n < npages; n++) {
         char *kaddr;
-        struct page *page;
         struct luci_dir_entry_2 *de, *limit;
 
         page = luci_get_page(dir, n);
         if (IS_ERR(page)) {
             luci_err_inode(dir, "bad dentry page page :%ld err:%ld", n,
                PTR_ERR(page));
-            return -PTR_ERR(page);
+            return PTR_ERR(page);
         }
 
         kaddr = page_address(page);
@@ -442,6 +442,8 @@ luci_empty_dir(struct inode *dir)
     return 1;
 
 not_empty:
+    if (page)
+        luci_put_page(page);
     return 0;
 }
 
@@ -450,7 +452,7 @@ luci_delete_entry(struct luci_dir_entry_2* de, struct page *page)
 {
     int err;
     loff_t pos;
-    struct inode * inode = page->mapping->host;
+    struct inode *inode = page->mapping->host;
     // Fix : an invalid ~, while computing the offset
     unsigned from = ((char*)de - (char*)page_address(page)) &
 	    (luci_chunk_size(inode) - 1);
@@ -458,8 +460,8 @@ luci_delete_entry(struct luci_dir_entry_2* de, struct page *page)
     unsigned length = luci_rec_len_from_disk(de->rec_len);
     pos = page_offset(page) + from;
     luci_info("dentry %u/%s pos %llu from %u len %u", de->inode, de->name, pos, from, length);
-    de->inode = 0;
     lock_page(page);
+    de->inode = 0;
     err = luci_prepare_chunk(page, pos, length);
     BUG_ON(err);
     err = luci_commit_chunk(page, pos, length);
@@ -473,7 +475,7 @@ luci_delete_entry(struct luci_dir_entry_2* de, struct page *page)
 }
 
 static int
-luci_unlink(struct inode * dir, struct dentry *dentry)
+luci_unlink(struct inode* dir, struct dentry* dentry)
 {
     struct inode * inode = DENTRY_INODE(dentry);
     struct luci_dir_entry_2 * de;
@@ -503,12 +505,17 @@ luci_unlink(struct inode * dir, struct dentry *dentry)
        goto out;
     }
 
+    dir->i_mtime = dir->i_ctime = CURRENT_TIME_SEC;
     inode->i_ctime = dir->i_ctime;
+
+    mark_inode_dirty(dir);
+    mark_inode_dirty(inode);
     inode_dec_link_count(inode);
 out:
     return err;
 }
 
+// Creating a dir increments refcount to its parent directory
 static int
 luci_mkdir(struct inode * dir, struct dentry *dentry, umode_t mode)
 {
@@ -517,7 +524,8 @@ luci_mkdir(struct inode * dir, struct dentry *dentry, umode_t mode)
 
     luci_dbg_inode(dir,"mkdir");
 
-    inode_inc_link_count(dir);
+    inode_inc_link_count(dir);  //upref directory
+
     inode = luci_new_inode(dir, S_IFDIR | mode, &dentry->d_name);
     if (IS_ERR(inode)) {
         luci_err("failed to create new inode");
@@ -526,7 +534,9 @@ luci_mkdir(struct inode * dir, struct dentry *dentry, umode_t mode)
     inode->i_op = &luci_dir_inode_operations;
     inode->i_fop = &luci_dir_operations;
     inode->i_mapping->a_ops = &luci_aops;
+
     inode_inc_link_count(inode);
+
     err = luci_make_empty(inode, dir);
     if (err) {
         luci_err("failed to make empty directory");
@@ -568,6 +578,7 @@ luci_rmdir(struct inode * dir, struct dentry *dentry)
             luci_err("rmdir failed for inode %lu", inode->i_ino);
 	    return err;
 	}
+        inode->i_size = 0;
         inode_dec_link_count(inode);
         inode_dec_link_count(dir);
 	return 0;
@@ -610,6 +621,7 @@ luci_link(struct dentry * old_dentry, struct inode * dir,
     return -ENOSYS;
 }
 
+// Creating a symlink does not increment refcount to its holding directory inode
 static int
 luci_symlink(struct inode * dir, struct dentry *dentry,
         const char * symname)
@@ -669,60 +681,89 @@ luci_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
     return -ENOSYS;
 }
 
+/*
+ * re-name cases
+ *
+ * src dir invalid, tgt dir invalid
+ * src dir same as tgt dir
+ * src and tgt dir different
+ * src dentry and tgt dentry are files
+ * src dentry and tgt dentry are dirs
+ * tgt dentry is a dir and it exists
+ * src dentry same as tgt dentry
+ *
+ */
+
 #ifdef HAVE_NEW_RENAME
 static int
-luci_rename(struct inode * src_dir, struct dentry *src_dentry,
-        struct inode * tgt_dir, struct dentry *tgt_dentry, unsigned int flags)
+luci_rename(struct inode *src_dir, struct dentry *src_dentry,
+        struct inode *tgt_dir, struct dentry *tgt_dentry, unsigned int flags)
 #else
 static int
-luci_rename(struct inode * src_dir, struct dentry *src_dentry,
-    struct inode * tgt_dir, struct dentry *tgt_dentry)
+luci_rename(struct inode *src_dir, struct dentry *src_dentry,
+    struct inode *tgt_dir, struct dentry *tgt_dentry)
 #endif
 {
     int ret;
     loff_t pos;
     unsigned int len;
-    struct page *page = NULL;
+    struct page *src_page = NULL, *dst_page = NULL;
     struct luci_dir_entry_2 *de_src, *de_tgt;
 
-    de_src = luci_find_entry(src_dir, &src_dentry->d_name, &page);
-    if (!de_src)
+    // check if source entry is valid
+    de_src = luci_find_entry(src_dir, &src_dentry->d_name, &src_page);
+    if (!de_src) {
         return -ENOENT;
+    }
 
+    // check if destination exists
     if (tgt_dentry->d_inode) {
-        de_tgt = luci_find_entry(tgt_dir, &tgt_dentry->d_name, &page);
-        if (!de_tgt) {
-                luci_put_page(page);
-                return -ENOENT;
-        }
-        pos = page_offset(page) +
-                        (char *) de_tgt - (char *) page_address(page);
-        len = luci_rec_len_from_disk(de_tgt->rec_len);
+            // check if the destination dentry is valid
+            de_tgt = luci_find_entry(tgt_dir, &tgt_dentry->d_name, &dst_page);
+            if (!de_tgt) {
+                    return -ENOENT;
+            }
 
-        lock_page(page);
+            // destination type is directory
+            if (S_ISDIR(tgt_dentry->d_inode->i_mode)) {
+                    luci_put_page(dst_page);
+                    return -EEXIST;
+            }
 
-        ret = luci_prepare_chunk(page, pos, len);
-        BUG_ON(ret);
+            // mark the dentry inode to zero
+            pos = page_offset(dst_page) +
+                  (char *) de_tgt - (char *) page_address(dst_page);
+            len = luci_rec_len_from_disk(de_tgt->rec_len);
 
-        de_tgt->inode = cpu_to_le32(tgt_dentry->d_inode->i_ino);
-        luci_set_de_type(de_tgt, tgt_dentry->d_inode);
+            // dirty this page
+            lock_page(dst_page);
+            ret = luci_prepare_chunk(dst_page, pos, len);
+            BUG_ON(ret);
+            de_tgt->inode = 0;
+            ret = luci_commit_chunk(dst_page, pos, len);
+            luci_put_page(dst_page);
 
-        ret = luci_commit_chunk(page, pos, len);
-        luci_put_page(page);
+            // lookup a slot to accomodate new dentry. Note we
+            // re-use the inode
+            BUG_ON(tgt_dentry->d_parent->d_inode != tgt_dir);
+            ret = luci_add_link(tgt_dentry, tgt_dentry->d_inode);
+            BUG_ON(ret);
 
-        tgt_dir->i_mtime = tgt_dir->i_ctime = CURRENT_TIME_SEC;
-        tgt_dentry->d_inode->i_ctime = CURRENT_TIME_SEC;
-        mark_inode_dirty(tgt_dir);
-        mark_inode_dirty(tgt_dentry->d_inode);
+            // update dest and dir metadata
+            tgt_dentry->d_inode->i_ctime = CURRENT_TIME_SEC;
+            tgt_dir->i_mtime = tgt_dir->i_ctime = CURRENT_TIME_SEC;
+
+            mark_inode_dirty(tgt_dir);
+            mark_inode_dirty(tgt_dentry->d_inode);
     } else
         ret = luci_add_link(tgt_dentry, src_dentry->d_inode);
 
     if (!ret) {
-        ret = luci_delete_entry(de_src, page);
-        if (!ret && S_ISDIR(src_dir->i_mode))
+        ret = luci_delete_entry(de_src, src_page);
+        // if source is a directory, decref its parent
+        if (!ret && S_ISDIR(src_dentry->d_inode->i_mode)) // decrement
                 inode_dec_link_count(src_dir);
     }
-
     return ret;
 }
 

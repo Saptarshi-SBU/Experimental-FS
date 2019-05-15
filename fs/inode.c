@@ -1203,8 +1203,12 @@ luci_iget(struct super_block *sb, unsigned long ino) {
         inode->i_op = &luci_dir_inode_operations;
         inode->i_mapping->a_ops = &luci_aops;
         inode->i_fop = &luci_dir_operations;
+    } else if (S_ISLNK(inode->i_mode)) {
+        inode->i_op = &luci_symlink_inode_operations;
+        inode->i_mapping->a_ops = &luci_aops;
     } else {
         luci_err("Inode mode not supported");
+        BUG();
     }
 
     brelse(bh);

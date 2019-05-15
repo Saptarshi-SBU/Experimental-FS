@@ -7073,3 +7073,25 @@ length found at page 1(ffff8801bde1a000-ffff8801bde1aff4) pos :4096 inode :0
 [ 1039.880451] LUCI-FS luci_new_inode : error new inode :829740 mode :0xa1ff in group :101
 [ 1039.881059] LUCI-FS luci_add_link : error inode :829740 :sucessfully inserted parent :829739/829740 dentry dt-bindings rec_len :20 next_rec :4072 page :0 pos :24 size :4096 va :ffff8801becd5000
 [ 1039.881063] luci_add_link :0xffff8801becd5018-829740
+
+===============================
+
+[12103.367463] LUCI-FS luci_find_entry : error inode :32796 :invalid zero record
+length found at page 0(ffff880016478000-ffff880016478ff0)
+[12103.367467] LUCI-FS luci_lookup : error inode lookup failed for Kbuild
+[12103.367491] LUCI-FS luci_find_entry : error inode :32796 :invalid zero record
+length found at page 0(ffff880016478000-ffff880016478ff0)
+[12103.367492] LUCI-FS luci_lookup : error inode lookup failed for Makefile
+[12103.367499] LUCI-FS luci_find_entry : error inode :32796 :invalid zero record
+length found at page 0(ffff880016478000-ffff880016478ff0)
+[12103.367500] LUCI-FS luci_lookup : error inode lookup failed for Makefile
+[12103.367504] LUCI-FS luci_find_entry : error inode :32796 :invalid zero record
+length found at page 0(ffff880016478000-ffff880016478ff0)
+[12103.367505] LUCI-FS luci_lookup : error inode lookup failed for Makefile
+[12103.368378] LUCI-FS luci_find_entry : error inode :32796 :invalid zero record
+length found at page 0(ffff880016478000-ffff880016478ff0)
+[12103.368380] LUCI-FS luci_lookup : error inode lookup failed for Makefile
+[12103.368402] LUCI-FS luci_readdir : error inode :32796 :invalid zero record
+length found at page 0(ffff880016478000-ffff880016478ff4) pos :0 inode :0
+[12103.373670] LUCI-FS luci_lookup : error inode lookup failed for kconfig.h.gch
+

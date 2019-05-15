@@ -178,7 +178,6 @@ TRACE_EVENT(luci_free_block,
 );
 
 TRACE_EVENT(luci_bio_complete,
-
         TP_PROTO(struct bio *bio, int error, u32 crc),
         TP_ARGS(bio, error, crc),
         TP_STRUCT__entry(
@@ -190,7 +189,11 @@ TRACE_EVENT(luci_bio_complete,
         ),
         TP_fast_assign(
                 __entry->dev            = bio->bi_bdev->bd_dev;
+#ifdef HAVE_BIO_ITER
                 __entry->blockno        = bio->bi_iter.bi_sector >> 3;
+#else
+                __entry->blockno        = bio->bi_sector >> 3;
+#endif
                 __entry->length         = bio_sectors(bio) << 9;
                 __entry->error          = error;
                 __entry->crc            = crc;
