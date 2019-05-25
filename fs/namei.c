@@ -17,11 +17,29 @@
 #include "kern_feature.h"
 #include "luci.h"
 
+#include "trace.h"
+
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_add_link);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_unlink);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_make_empty);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_delete_entry);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_mkdir);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_rmdir);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_symlink);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_rename);
+
 // TBD
 static inline void
 luci_set_de_type(struct luci_dir_entry_2 *de, struct inode *inode)
 {
-    de->file_type  = 0;
+    if (S_ISREG(inode->i_mode))
+        de->file_type = DT_REG;
+    else if (S_ISDIR(inode->i_mode))
+        de->file_type = DT_DIR;
+    else if (S_ISLNK(inode->i_mode))
+        de->file_type = DT_LNK;
+    else
+        de->file_type = DT_UNKNOWN;
 }
 
 static inline int
@@ -83,6 +101,7 @@ luci_commit_chunk(struct page *page, loff_t pos, unsigned len)
 
     return err;
 }
+
 int
 luci_make_empty(struct inode *inode, struct inode *parent)
 {
@@ -128,6 +147,10 @@ luci_make_empty(struct inode *inode, struct inode *parent)
     kunmap_atomic(kaddr);
     err = luci_commit_chunk(page, 0, chunk_size);
 fail:
+#ifdef HAVE_TRACEPOINT_ENABLED
+    if (trace_luci_make_empty_emabled())
+#endif
+    trace_luci_make_empty(inode, parent);
     put_page(page);
     return err;
 }
@@ -281,6 +304,10 @@ gotit:
        dir->i_size,
        page_address(page));
 
+#ifdef HAVE_TRACEPOINT_ENABLED
+    trace_luci_add_link_enabled()
+#endif
+    trace_luci_add_link(dentry, inode);
     luci_put_page(page);
     return err;
 }
@@ -460,6 +487,10 @@ luci_delete_entry(struct luci_dir_entry_2* de, struct page *page)
     unsigned length = luci_rec_len_from_disk(de->rec_len);
     pos = page_offset(page) + from;
     luci_info("dentry %u/%s pos %llu from %u len %u", de->inode, de->name, pos, from, length);
+#ifdef HAVE_TRACEPOINT_ENABLED
+    trace_luci_delete_entry_enabled()
+#endif
+    trace_luci_delete_entry(de);
     lock_page(page);
     de->inode = 0;
     err = luci_prepare_chunk(page, pos, length);
@@ -512,12 +543,16 @@ luci_unlink(struct inode* dir, struct dentry* dentry)
     mark_inode_dirty(inode);
     inode_dec_link_count(inode);
 out:
+#ifdef HAVE_TRACEPOINT_ENABLED
+    trace_luci_unlink_enabled()
+#endif
+    trace_luci_unlink(dir, dentry);
     return err;
 }
 
 // Creating a dir increments refcount to its parent directory
 static int
-luci_mkdir(struct inode * dir, struct dentry *dentry, umode_t mode)
+luci_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 {
     int err = 0;
     struct inode *inode;
@@ -550,6 +585,10 @@ luci_mkdir(struct inode * dir, struct dentry *dentry, umode_t mode)
 
     unlock_new_inode(inode);
     d_instantiate(dentry, inode);
+#ifdef HAVE_TRACEPOINT_ENABLED
+    trace_luci_mkdir_enabled()
+#endif
+    trace_luci_mkdir(dir, dentry);
     return err;
 
 out_fail:
@@ -566,10 +605,15 @@ fail_dir:
 }
 
 static int
-luci_rmdir(struct inode * dir, struct dentry *dentry)
+luci_rmdir(struct inode *dir, struct dentry *dentry)
 {
     int err = -ENOTEMPTY;
     struct inode * inode = DENTRY_INODE(dentry);
+
+#ifdef HAVE_TRACEPOINT_ENABLED
+    trace_luci_rmdir_enabled()
+#endif
+    trace_luci_rmdir(dir, dentry);
 
     luci_dbg_inode(inode, "rmdir on inode");
     if (luci_empty_dir(inode) == 0) {
@@ -600,7 +644,7 @@ luci_lookup(struct inode *dir,
 
     ino = luci_inode_by_name(dir, &dentry->d_name);
     if (!ino) {
-        luci_err("inode lookup failed for %s", dentry->d_name.name);
+        luci_info("inode lookup failed for %s", dentry->d_name.name);
         return NULL;
     }
 
@@ -631,6 +675,11 @@ luci_symlink(struct inode * dir, struct dentry *dentry,
     int length = strlen(symname) + 1;
 
     luci_info("%s name :%s", __func__, dentry->d_name.name);
+
+#ifdef HAVE_TRACEPOINT_ENABLED
+    trace_luci_symlink_enabled()
+#endif
+    trace_luci_symlink(dir, dentry, symname);
 
     if (length > dir->i_sb->s_blocksize)
         return -ENAMETOOLONG;
@@ -709,6 +758,11 @@ luci_rename(struct inode *src_dir, struct dentry *src_dentry,
     unsigned int len;
     struct page *src_page = NULL, *dst_page = NULL;
     struct luci_dir_entry_2 *de_src, *de_tgt;
+
+#ifdef HAVE_TRACEPOINT_ENABLED
+    trace_luci_rename_enabled()
+#endif
+    trace_luci_rename(src_dir, src_dentry, tgt_dir, tgt_dentry);
 
     // check if source entry is valid
     de_src = luci_find_entry(src_dir, &src_dentry->d_name, &src_page);

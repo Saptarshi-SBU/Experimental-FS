@@ -124,7 +124,8 @@ long luci_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
            luci_err("FS_IOC_FIEMAP, not supported ioctl :0x%x\n", cmd);
            break;
    default:
-           luci_err("not supported ioctl :0x%x\n", cmd);
+           luci_err("not supported ioctl :0x%x/dir=%u nr=%u size=%u type=0x%x\n",
+                           cmd, _IOC_DIR(cmd), _IOC_NR(cmd), _IOC_SIZE(cmd), _IOC_TYPE(cmd));
    }
    return -ENOTTY;
 }

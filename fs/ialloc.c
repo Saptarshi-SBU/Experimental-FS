@@ -16,6 +16,8 @@
 
 #include "trace.h"
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_free_block);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_free_inode);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_new_inode);
 
 /* 16-bit CRC for group descriptor */
 static inline void
@@ -291,7 +293,7 @@ luci_free_inode (struct inode *inode) {
                 return;
         }
 
-        bg = ino/(sbi->s_lsb->s_inodes_per_group);
+        bg = (ino - 1)/(sbi->s_lsb->s_inodes_per_group);
 
         gdesc = luci_get_group_desc(sb, bg, &bg_bh);
         if (!gdesc) {
@@ -321,6 +323,12 @@ luci_free_inode (struct inode *inode) {
 
         // Note -1 takes care of one-based index for inodes. Fix : use modulo
         bit = (ino - 1) % (sbi->s_lsb->s_inodes_per_group);
+
+#ifdef HAVE_TRACEPOINT_ENABLED
+        if (trace_luci_free_inode_enabled())
+#endif
+           trace_luci_free_inode(inode, bg, bit);
+
         if (!(__test_and_clear_bit_le(bit, bmap_bh->b_data))) {
                 unlock_buffer(bmap_bh);
                 unlock_buffer(bg_bh);
@@ -363,6 +371,7 @@ struct inode *
 luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
         ino_t ino;
         int i, group, err;
+        unsigned long bit;
         struct inode *inode;
         struct buffer_head *bg_bh, *bmap_bh;
         struct luci_group_desc *gdesc;
@@ -457,6 +466,7 @@ gotit:
         // unlock 1
         unlock_buffer(bg_bh);
 
+        bit = ino;
         // Fix : note added 1 to ino, dentry maps treat 0 inode as empty
         ino += (group * LUCI_INODES_PER_GROUP(sb)) + 1;
 
@@ -493,7 +503,7 @@ gotit:
                 inode->i_generation = sbi->s_next_generation++;
                 err = -EIO;
                 brelse(bmap_bh);
-                luci_info("inode locked during create inode :%lu", ino);
+                luci_err("inode locked during create inode :%lu", ino);
                 goto free_inode;
         }
         mark_inode_dirty(inode);
@@ -504,6 +514,10 @@ gotit:
 
         brelse(bmap_bh);
 
+#ifdef HAVE_TRACEPOINT_ENABLED
+        if (trace_luci_new_inode_enabled())
+#endif
+           trace_luci_new_inode(inode, i, bit);
         luci_info("new inode :%lu mode :0x%x in group :%d", ino, mode, group);
         return inode;
 

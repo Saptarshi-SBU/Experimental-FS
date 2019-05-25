@@ -7095,3 +7095,22 @@ length found at page 0(ffff880016478000-ffff880016478ff0)
 length found at page 0(ffff880016478000-ffff880016478ff4) pos :0 inode :0
 [12103.373670] LUCI-FS luci_lookup : error inode lookup failed for kconfig.h.gch
 
+=====================================================
+
+[<ffffffff8121b63b>] iget_locked+0xab/0x170
+[<ffffffffa06209ad>] luci_iget+0x1d/0x3b0 [luci]
+[<ffffffffa0622a2b>] luci_lookup+0x5b/0xc0 [luci]
+[<ffffffff812099dd>] lookup_real+0x1d/0x50
+[<ffffffff8120a312>] __lookup_hash+0x42/0x60
+[<ffffffff81726493>] lookup_slow+0x42/0xa7
+[<ffffffff8120c245>] link_path_walk+0x7a5/0x880
+[<ffffffff8120c38b>] path_lookupat+0x6b/0x790
+[<ffffffff8120cadb>] filename_lookup+0x2b/0xc0
+[<ffffffff81210d37>] user_path_at_empty+0x67/0xc0
+[<ffffffff81210da1>] user_path_at+0x11/0x20
+[<ffffffff81205123>] vfs_fstatat+0x63/0xc0
+[<ffffffff8120568e>] SYSC_newstat+0x2e/0x60
+[<ffffffff8120595e>] SyS_newstat+0xe/0x10
+[<ffffffff8172ec69>] system_call_fastpath+0x16/0x1b
+[<ffffffffffffffff>] 0xffffffffffffffff
+

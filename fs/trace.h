@@ -4,6 +4,7 @@
 #if !defined(_TRACE_LUCI_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_LUCI_H
 
+#include <linux/dcache.h>
 #include <linux/tracepoint.h>
 #include <linux/trace_seq.h>
 
@@ -177,6 +178,44 @@ TRACE_EVENT(luci_free_block,
                 __entry->bitpos)
 );
 
+TRACE_EVENT(luci_new_inode,
+	     TP_PROTO(struct inode *inode, unsigned long blockgroup, unsigned bitpos),
+	     TP_ARGS(inode, blockgroup, bitpos),
+	     TP_STRUCT__entry(
+                __field(int, inum);
+                __field(unsigned long, blockgroup);
+                __field(unsigned int,  bitpos);
+            ),
+            TP_fast_assign(
+                __entry->inum = inode->i_ino;
+                __entry->blockgroup = blockgroup;
+                __entry->bitpos = bitpos;
+            ),
+            TP_printk("inum=%u blockgroup=%lu bitpos=%u",
+                __entry->inum,
+                __entry->blockgroup,
+                __entry->bitpos)
+);
+
+TRACE_EVENT(luci_free_inode,
+	     TP_PROTO(struct inode *inode, unsigned long blockgroup, unsigned bitpos),
+	     TP_ARGS(inode, blockgroup, bitpos),
+	     TP_STRUCT__entry(
+                __field(int, inum);
+                __field(unsigned long, blockgroup);
+                __field(unsigned int,  bitpos);
+            ),
+            TP_fast_assign(
+                __entry->inum = inode->i_ino;
+                __entry->blockgroup = blockgroup;
+                __entry->bitpos = bitpos;
+            ),
+            TP_printk("inum=%u blockgroup=%lu bitpos=%u",
+                __entry->inum,
+                __entry->blockgroup,
+                __entry->bitpos)
+);
+
 TRACE_EVENT(luci_bio_complete,
         TP_PROTO(struct bio *bio, int error, u32 crc),
         TP_ARGS(bio, error, crc),
@@ -202,6 +241,145 @@ TRACE_EVENT(luci_bio_complete,
                   MAJOR(__entry->dev), MINOR(__entry->dev),
                   (unsigned long long)__entry->blockno,
                   __entry->length, __entry->error, __entry->crc)
+);
+
+/* directory operation traces */
+
+TRACE_EVENT(luci_add_link,
+        TP_PROTO(struct dentry *dentry, struct inode *inode),
+        TP_ARGS(dentry, inode),
+        TP_STRUCT__entry(
+                __field( const char *,  name           )
+                __field( unsigned,      inum           )
+                __field( unsigned,      dir_inum       )
+        ),
+        TP_fast_assign(
+                __entry->name           = dentry->d_name.name;
+                __entry->inum           = inode->i_ino;
+                __entry->dir_inum       = DENTRY_INODE(dentry->d_parent)->i_ino;
+        ),
+        TP_printk("name :%s, inode :%u, dir_inode :%u",
+                __entry->name, __entry->inum, __entry->dir_inum)
+);
+
+TRACE_EVENT(luci_unlink,
+        TP_PROTO(struct inode *dir, struct dentry *dentry),
+        TP_ARGS(dir, dentry),
+        TP_STRUCT__entry(
+                __field( const char *,  name           )
+                __field( unsigned,      inum           )
+                __field( unsigned,      dir_inum       )
+        ),
+        TP_fast_assign(
+                __entry->name           = dentry->d_name.name;
+                __entry->inum           = DENTRY_INODE(dentry)->i_ino;
+                __entry->dir_inum       = dir->i_ino;
+        ),
+        TP_printk("name :%s, inode :%u, dir_inode :%u",
+                __entry->name, __entry->inum, __entry->dir_inum)
+);
+
+TRACE_EVENT(luci_make_empty,
+        TP_PROTO(struct inode *inode, struct inode *parent),
+        TP_ARGS(inode, parent),
+        TP_STRUCT__entry(
+                __field( unsigned,      inum           )
+                __field( unsigned,      dir_inum       )
+        ),
+        TP_fast_assign(
+                __entry->inum           = inode->i_ino;
+                __entry->dir_inum       = parent->i_ino;
+        ),
+        TP_printk("inode :%u, dir_inode :%u",
+                __entry->inum, __entry->dir_inum)
+);
+
+TRACE_EVENT(luci_delete_entry,
+        TP_PROTO(struct luci_dir_entry_2* de),
+        TP_ARGS(de),
+        TP_STRUCT__entry(
+                __field( const char *,  name           )
+                __field( unsigned,      inum           )
+        ),
+        TP_fast_assign(
+                __entry->name           = de->name;
+                __entry->inum           = de->inode;
+        ),
+        TP_printk("name :%s, inode :%u", __entry->name, __entry->inum)
+);
+
+TRACE_EVENT(luci_mkdir,
+        TP_PROTO(struct inode *dir, struct dentry *dentry),
+        TP_ARGS(dir, dentry),
+        TP_STRUCT__entry(
+                __field( const char *,  name           )
+                __field( unsigned,      inum           )
+                __field( unsigned,      dir_inum       )
+        ),
+        TP_fast_assign(
+                __entry->name           = dentry->d_name.name;
+                __entry->inum           = DENTRY_INODE(dentry)->i_ino;
+                __entry->dir_inum       = dir->i_ino;
+        ),
+        TP_printk("name :%s, inode :%u, dir_inode :%u",
+                __entry->name, __entry->inum, __entry->dir_inum)
+);
+
+TRACE_EVENT(luci_rmdir,
+        TP_PROTO(struct inode *dir, struct dentry *dentry),
+        TP_ARGS(dir, dentry),
+        TP_STRUCT__entry(
+                __field( const char *,  name           )
+                __field( unsigned,      inum           )
+                __field( unsigned,      dir_inum       )
+        ),
+        TP_fast_assign(
+                __entry->name           = dentry->d_name.name;
+                __entry->inum           = DENTRY_INODE(dentry)->i_ino;
+                __entry->dir_inum       = dir->i_ino;
+        ),
+        TP_printk("name :%s, inode :%u, dir_inode :%u",
+                __entry->name, __entry->inum, __entry->dir_inum)
+);
+
+TRACE_EVENT(luci_symlink,
+        TP_PROTO(struct inode *dir, struct dentry *dentry, const char *symlink),
+        TP_ARGS(dir, dentry, symlink),
+        TP_STRUCT__entry(
+                __field( const char *,  name           )
+                __field( unsigned,      inum           )
+                __field( unsigned,      dir_inum       )
+                __field( const char *,  symlink        )
+        ),
+        TP_fast_assign(
+                __entry->name           = dentry->d_name.name;
+                __entry->inum           = DENTRY_INODE(dentry)->i_ino;
+                __entry->dir_inum       = dir->i_ino;
+                __entry->symlink        = symlink;
+        ),
+        TP_printk("name :%s, inode :%u, dir_inode :%u, symlink :%s",
+                __entry->name, __entry->inum, __entry->dir_inum, __entry->symlink)
+);
+
+TRACE_EVENT(luci_rename,
+        TP_PROTO(struct inode *src_dir, struct dentry* src_dentry,
+                struct inode *dst_dir, struct dentry* dst_dentry),
+        TP_ARGS(src_dir, src_dentry, dst_dir, dst_dentry),
+        TP_STRUCT__entry(
+                __field( const char *,  src_name       )
+                __field( unsigned,      src_inum       )
+                __field( const char *,  dst_name       )
+                __field( unsigned,      dst_inum       )
+        ),
+        TP_fast_assign(
+                __entry->src_name       = src_dentry->d_name.name;
+                __entry->src_inum       = src_dir->i_ino;
+                __entry->dst_name       = dst_dentry->d_name.name;
+                __entry->dst_inum       = dst_dir->i_ino;
+        ),
+        TP_printk("src_name :%s, src_inode :%u dst_name :%s dst_inode :%u",
+                __entry->src_name, __entry->src_inum,
+                __entry->dst_name, __entry->dst_inum)
 );
 
 #endif /* _TRACE_LUCI_H */

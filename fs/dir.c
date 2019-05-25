@@ -139,12 +139,13 @@ luci_readdir(struct file *file, struct dir_context *ctx)
 
             if (!de->rec_len) {
                 luci_err_inode(dir, "invalid zero record length found at page "
-                                    "%lu(%p-%p) pos :%llu inode :%u",
+                                    "%lu(%p-%p) pos :%llu inode :%u , dir size :%llu",
                                     n,
                                     (char*)de,
                                     (char*)limit,
                                     ctx->pos,
-                                    de->inode);
+                                    de->inode,
+                                    dir->i_size);
                 #ifdef DEBUG_DENTRY
                 luci_dump_bytes("dentry page", page, PAGE_SIZE);
                 #endif
@@ -162,15 +163,18 @@ luci_readdir(struct file *file, struct dir_context *ctx)
                               de->name,
                               de->name_len,
                               le32_to_cpu(de->inode),
-                              DT_UNKNOWN)) {
-                    luci_err("failed to emit dentry :%s, inode :%u, namelen :%u reclen :%u pos :%llu",
+                              de->file_type)) {
+                    luci_info("failed to emit dentry :%s, inode :%u, ftype :%u namelen :%u reclen :%u pos :%llu size :%llu/%d",
                               de->name,
                               de->inode,
+                              de->file_type,
                               de->name_len,
                               luci_rec_len_from_disk(de->rec_len),
-                              ctx->pos);
+                              ctx->pos,
+                              dir->i_size,
+                              ctx->actor(ctx, de->name, de->name_len, ctx->pos, le32_to_cpu(de->inode), de->file_type));
                     luci_put_page(page);
-                    return -EIO;
+                    return 0; // This is not an error, but an indication that vfs buffer cannot accomodate more
                 }
 
                 #ifdef DEBUG_DENTRY
