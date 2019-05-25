@@ -1123,6 +1123,7 @@ luci_iget(struct super_block *sb, unsigned long ino) {
 
     if ((ino != LUCI_ROOT_INO && ino < LUCI_FIRST_INO(sb)) ||
             (ino > le32_to_cpu(LUCI_SB(sb)->s_lsb->s_inodes_count))) {
+        iget_failed(inode);
         return ERR_PTR(-EINVAL);
     }
 
@@ -1132,6 +1133,7 @@ luci_iget(struct super_block *sb, unsigned long ino) {
     gdesc = (struct luci_group_desc *)
         LUCI_SB(sb)->s_group_desc[block_no]->b_data + offset;
     if (!gdesc) {
+        iget_failed(inode);
         return ERR_PTR(-EIO);
     }
 
@@ -1140,6 +1142,7 @@ luci_iget(struct super_block *sb, unsigned long ino) {
     block_no = gdesc->bg_inode_table +
         (offset >> sb->s_blocksize_bits);
     if (!(bh = sb_bread(sb, block_no))) {
+        iget_failed(inode);
         return (ERR_PTR(-EIO));
     }
 
@@ -1154,8 +1157,10 @@ luci_iget(struct super_block *sb, unsigned long ino) {
 
     //luci_info_inode(inode, "inode size low :%u high :%u",
     //   raw_inode->i_size, raw_inode->i_dir_acl);
-    if (i_size_read(inode) < 0)
+    if (i_size_read(inode) < 0) {
+        iget_failed(inode);
         return ERR_PTR(-EFSCORRUPTED);
+    }
 
     inode->i_atime.tv_sec = (signed)le32_to_cpu(raw_inode->i_atime);
     inode->i_ctime.tv_sec = (signed)le32_to_cpu(raw_inode->i_ctime);
@@ -1192,8 +1197,10 @@ luci_iget(struct super_block *sb, unsigned long ino) {
     }
 
     err = luci_bmap_scan_metacsum(inode);
-    if(err < 0)
+    if(err < 0) {
+        iget_failed(inode);
         return ERR_PTR(err);
+    }
 
     if (S_ISREG(inode->i_mode)) {
         inode->i_op = &luci_file_inode_operations;
@@ -1492,9 +1499,12 @@ uncompressed_read:
         wait_on_page_locked(page);
         BUG_ON(!PageUptodate(page));
         ret = luci_validate_data_page_cksum(page, &bp);
-        if (ret == -EBADE)
+        if (ret == -EBADE) {
             luci_err_inode(inode, "L0 blkptr checksum mismatch on uncompressed read page, "
                                   "block=%u-%u-0x%x", bp.blockno, bp.length, bp.flags);
+            luci_err_inode(inode, "PageDirty :%u PageWriteback :%u/%u", PageDirty(page),
+                                PageWriteback(page), PageLocked(page));
+        }
     }
 
 done:

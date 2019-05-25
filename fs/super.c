@@ -316,7 +316,7 @@ luci_free_blocks(struct inode *inode, long delta_blocks)
         }
 
         if (delta_blocks) {
-                luci_err_inode(inode, "detected blocks with possible holes, nr :%ld",
+                luci_info_inode(inode, "detected blocks with possible holes, nr :%ld",
                                 delta_blocks);
                 //BUG_ON(delta_blocks);
         }

@@ -21,7 +21,14 @@
 static inline void
 luci_set_de_type(struct luci_dir_entry_2 *de, struct inode *inode)
 {
-    de->file_type  = 0;
+    if (S_ISREG(inode->i_mode))
+        de->file_type = DT_REG;
+    else if (S_ISDIR(inode->i_mode))
+        de->file_type = DT_DIR;
+    else if (S_ISLNK(inode->i_mode))
+        de->file_type = DT_LNK;
+    else
+        de->file_type = DT_UNKNOWN;
 }
 
 static inline int
@@ -600,7 +607,7 @@ luci_lookup(struct inode *dir,
 
     ino = luci_inode_by_name(dir, &dentry->d_name);
     if (!ino) {
-        luci_err("inode lookup failed for %s", dentry->d_name.name);
+        luci_info("inode lookup failed for %s", dentry->d_name.name);
         return NULL;
     }
 

@@ -145,9 +145,9 @@ luci_readdir(struct file *file, struct dir_context *ctx)
                                     (char*)limit,
                                     ctx->pos,
                                     de->inode);
-                #ifdef DEBUG_DENTRY
+                //#ifdef DEBUG_DENTRY
                 luci_dump_bytes("dentry page", page, PAGE_SIZE);
-                #endif
+                //#endif
 	        luci_put_page(page);
                 return -EIO;
             }
@@ -162,15 +162,18 @@ luci_readdir(struct file *file, struct dir_context *ctx)
                               de->name,
                               de->name_len,
                               le32_to_cpu(de->inode),
-                              DT_UNKNOWN)) {
-                    luci_err("failed to emit dentry :%s, inode :%u, namelen :%u reclen :%u pos :%llu",
+                              de->file_type)) {
+                    luci_err("failed to emit dentry :%s, inode :%u, ftype :%u namelen :%u reclen :%u pos :%llu size :%llu/%d",
                               de->name,
                               de->inode,
+                              de->file_type,
                               de->name_len,
                               luci_rec_len_from_disk(de->rec_len),
-                              ctx->pos);
+                              ctx->pos,
+                              dir->i_size,
+                              ctx->actor(ctx, de->name, de->name_len, ctx->pos, le32_to_cpu(de->inode), de->file_type));
                     luci_put_page(page);
-                    return -EIO;
+                    return 0;
                 }
 
                 #ifdef DEBUG_DENTRY
