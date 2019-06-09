@@ -35,6 +35,9 @@
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_scan_pgtree_dirty_pages);
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_write_extents);
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_bio_complete);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_write_extent_begin);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_write_extent_end);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_end_bio_write);
 
 //#define LUCI_BIO_CHECKSUM //only when you are paranoid
 
@@ -49,7 +52,7 @@ atomic64_t pages_notcompressible;
 atomic64_t pages_wellcompressed;
 
 static void
-luci_release_backing_pages(struct pagevec *pvec) 
+luci_release_backing_pages(struct pagevec *pvec)
 {
     int i;
 
@@ -169,6 +172,8 @@ luci_end_bio_write(struct bio *bio, int error)
     bio_for_each_segment_all(bvec, bio, i) {
         page = bvec->bv_page;
         BUG_ON(page_has_buffers(page)); // L0 blocks are no_bh based
+
+        trace_luci_end_bio_write(page);
 
         if (PageWriteback(page))
             end_page_writeback(page);
@@ -569,17 +574,18 @@ luci_scan_pgtree_dirty_pages(struct address_space *mapping,
         return ERR_PTR(-ENOMEM);
     }
 
-    next_index = ALIGN(*index, EXTENT_NRPAGE);
+    if (!IS_ALIGNED(*index, EXTENT_NRPAGE))
+        next_index = ALIGN_DOWN(*index, EXTENT_NRPAGE);
+    else
+        next_index = *index;
+
     end_index = next_index + EXTENT_NRPAGE - 1;
 
-    if ((wbc->sync_mode == WB_SYNC_ALL || wbc->tagged_writepages))
+    if ((wbc->sync_mode == WB_SYNC_ALL || wbc->tagged_writepages)) {
         tag = PAGECACHE_TAG_TOWRITE;
-    else
+        tag_pages_for_writeback(mapping, next_index, end_index); // tag state prior WRITEBACK
+    } else
         tag = PAGECACHE_TAG_DIRTY;
-
-    // tag state prior WRITEBACK
-    if (tag == PAGECACHE_TAG_TOWRITE)
-        tag_pages_for_writeback(mapping, next_index, end_index);
 
     // scan for tag
 #ifdef HAVE_PAGEVEC_INIT_NEW
@@ -617,13 +623,13 @@ luci_scan_pgtree_dirty_pages(struct address_space *mapping,
         // dirty page must have most latest/uptodate data
         BUG_ON(!PageUptodate(page));
 
+        // Page is already been under writeback
+        if (PageWriteback(page))
+            wait_for_stable_page(page);
+
         // this is not expected!!!
         if (!PageDirty(page))
             SetPageDirty(page);
-
-        // Page is already been under writeback
-        if (PageLocked(page) || PageWriteback(page))
-            continue;
 
         nr_dirty++;
     }
@@ -638,6 +644,10 @@ luci_scan_pgtree_dirty_pages(struct address_space *mapping,
         return NULL; // next_index is updated
     }
 
+    if (nr_dirty != EXTENT_NRPAGE)
+        pr_warn("pagevec does not have all extent pages :%u!", nr_dirty);
+
+
     // extent has dirty pages, lock pages in the extent here
     for (i = 0; i < EXTENT_NRPAGE; i++) {
 repeat:
@@ -646,10 +656,9 @@ repeat:
             goto repeat;
         }
 
-        if (PageDirty(page)) {
+        if (PageDirty(page))
             clear_page_dirty_for_io(page);
-            set_page_writeback(page);
-        }
+        set_page_writeback(page);
 
         pagevec_add(pvec, page); // does not take a refcount
         luci_pgtrack(page, "locked page for write");
@@ -816,8 +825,10 @@ luci_write_extent_begin(struct address_space *mapping,
                         loff_t pos, unsigned len, unsigned flags,
                         struct page **pagep)
 {
+    int i;
+    struct pagevec pvec;
     struct page *page = NULL;
-    pgoff_t index = pos >> PAGE_CACHE_SHIFT;
+    pgoff_t index_begin, index = pos >> PAGE_CACHE_SHIFT;
     struct inode *inode = mapping->host;
 
     // vfs limits len to page size
@@ -825,13 +836,49 @@ luci_write_extent_begin(struct address_space *mapping,
         luci_err("write length exceeds page size!");
         return -EINVAL;
     }
-    // Find or create a page and returned the locked page.
-    page = grab_cache_page_write_begin(mapping, index, flags);
-    BUG_ON(page == NULL);
-    BUG_ON(!PageLocked(page));
 
-    SetPageUptodate(page);
-    *pagep = page;
+    // prepare cluster for compression
+    if (!IS_ALIGNED(index, EXTENT_NRPAGE))
+        index_begin = ALIGN_DOWN(index, EXTENT_NRPAGE);
+    else
+        index_begin = index;
+
+    pagevec_init(&pvec, 0);
+
+    // Find or create a page and returned the locked page.
+    for (i = 0; i < EXTENT_NRPAGE; i++) {
+        page = grab_cache_page_write_begin(mapping, index_begin + i, flags);
+        BUG_ON(page == NULL);
+        BUG_ON(!PageLocked(page));
+
+        // page-tree page is not yet mapped
+        if (!PageUptodate(page)) {
+            mapping->a_ops->readpage(NULL, page);
+            if (!PageLocked(page))
+               lock_page(page);
+            BUG_ON(!PageUptodate(page));
+            //put_page(page);
+        }
+
+        if ((index_begin + i) == index)
+            *pagep = page;
+
+        pagevec_add(&pvec, page);
+    }
+
+    for (i = 0; i < pagevec_count(&pvec); i++) {
+            page = pvec.pages[i];
+            if (!PageLocked(page))
+                    lock_page(page);
+    }
+
+#ifdef HAVE_TRACEPOINT_ENABLED
+    if (trace_luci_write_extent_begin_enabled()) {
+        u32 crc = luci_compute_page_cksum(*pagep, 0, len, ~0U);
+        trace_luci_write_extent_begin(inode, pos, len, flags, crc);
+    }
+#endif
+
     luci_pgtrack(page, "grabbed page for inode %lu off %llu-%u",
         inode->i_ino, pos, len);
     return 0;
@@ -852,28 +899,59 @@ luci_write_extent_end(struct address_space *mapping,
                       unsigned flags,
                       struct page *pagep)
 {
+    int i, n;
+    struct pagevec pvec;
+    struct page *page, *pages[EXTENT_NRPAGE];
     struct inode *inode = mapping->host;
+    pgoff_t index_begin, index = pos >> PAGE_CACHE_SHIFT;
 
-    BUG_ON(!PageLocked(pagep));
-    SetPageUptodate(pagep);
+    if (!IS_ALIGNED(index, EXTENT_NRPAGE))
+        index_begin = ALIGN_DOWN(index, EXTENT_NRPAGE);
+    else
+        index_begin = index;
 
-    if (!PageDirty(pagep)) {
-        __set_page_dirty_nobuffers(pagep);
-        luci_pgtrack(pagep, "copied cache page(%lu) for inode %lu off %llu-%u",
+    n = find_get_pages_contig(mapping, index_begin, EXTENT_NRPAGE, pages);
+    BUG_ON(n != EXTENT_NRPAGE);
+
+    pagevec_init(&pvec, 0);
+
+    for (i = 0; i < EXTENT_NRPAGE; i++) {
+        page = pages[i];
+
+        BUG_ON(!PageLocked(page));
+        SetPageUptodate(page);
+
+        if (!PageDirty(page))
+           __set_page_dirty_nobuffers(page);
+
+        unlock_page(page);
+        put_page(page);
+        pagevec_add(&pvec, page);
+    }
+
+    for (i = 0; i < pagevec_count(&pvec); i++) {
+            page = pvec.pages[i];
+            put_page(page);
+    }
+
+    luci_pgtrack(pagep, "copied cache page(%lu) for inode %lu off %llu-%u",
                              page_index(pagep),
                              inode->i_ino,
                              pos,
                              len);
-    }
-
-    unlock_page(pagep);
-    put_page(pagep);
 
     if (pos + len > inode->i_size) {
         i_size_write(inode, pos + len);
         mark_inode_dirty(inode);
         luci_dbg_inode(inode, "updating inode new size %llu", inode->i_size);
     }
+
+#ifdef HAVE_TRACEPOINT_ENABLED
+    if (trace_luci_write_extent_end_enabled()) {
+        u32 crc = luci_compute_page_cksum(pagep, 0, len, ~0U);
+        trace_luci_write_extent_end(inode, pos, len, flags, crc);
+    }
+#endif
 
     // Ensure we trigger page writeback once, dirty pages exceeds threshold
     //balance_dirty_pages_ratelimited(mapping);

@@ -73,6 +73,10 @@
    #define HAVE_BIO_BVECITER
 #endif
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,9,0))
+   #define HAVE_ALIGN_DOWN
+#endif
+
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,0))
    #define HAVE_NEW_BIO_FLAGS
 #endif

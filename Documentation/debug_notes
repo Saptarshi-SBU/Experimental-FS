@@ -7114,3 +7114,53 @@ length found at page 0(ffff880016478000-ffff880016478ff4) pos :0 inode :0
 [<ffffffff8172ec69>] system_call_fastpath+0x16/0x1b
 [<ffffffffffffffff>] 0xffffffffffffffff
 
+===================================================
+
+[root@localhost tests]# fio rw_verify.fio 
+write-and-verify: (g=0): rw=randwrite, bs=4K-4K/4K-4K/4K-4K, ioengine=libaio, iodepth=16
+fio-2.1.2
+Starting 1 process
+write-and-verify: Laying out IO file(s) (1 file(s) / 3072MB)
+verify: bad magic header 6dd8, wanted acca at file /mnt/data_verify04 offset 2153873408, length 0
+fio: pid=11661, err=84/file:io_u.c:1611, func=io_u_queued_complete, error=Invalid or incomplete multibyte or wide character
+
+write-and-verify: (groupid=0, jobs=1): err=84 (file:io_u.c:1611, func=io_u_queued_complete, error=Invalid or incomplete multibyte or wide character): pid=11661: Wed Jun  5 00:10:58 2019
+
+[root@localhost Linux-LFS]# trace-cmd report | grep 2153873408
+             fio-11661 [000] 18515.323279: luci_write_extent_end: inum=12 pos=2153873408 size=4096 flags=0x0
+
+[root@localhost Linux-LFS]# trace-cmd report | grep off=525848,
+           <...>-11614 [002] 18488.245647: luci_get_block:       inum=12 off=525848, 0-lba=61721-0-0-0x489671c7, 1-lba=508805-0-0-0xb8db7e30 2-lba=510053-0-0-0x75dd8996 3-lba=0-0-0-0x0 flags=0x0
+           <...>-11614 [002] 18488.245734: luci_get_block:       inum=12 off=525848, 0-lba=61721-0-0-0xfc912ab7, 1-lba=508805-0-0-0x40563b31 2-lba=510053-0-0-0xb1404e0f 3-lba=510067-0-0-0x7f10eafc flags=0x6
+ kworker/u96:144-11543 [006] 18531.228953: luci_get_block:       inum=12 off=525848, 0-lba=61721-0-0-0x17fe14d5, 1-lba=508805-0-0-0xe3d84f5d 2-lba=510053-0-0-0xd3845dfb 3-lba=510067-0-0-0x7f10eafc flags=0x0
+ kworker/u96:144-11543 [006] 18531.228987: luci_get_block:       inum=12 off=525848, 0-lba=61721-0-0-0x50bf7c71, 1-lba=508805-0-0-0x8d945e0a 2-lba=510053-0-0-0xdb3f42f8 3-lba=920526-0-0-0xb2885fcb flags=0x6
+           <...>-11439 [009] 18620.133039: luci_get_block:       inum=12 off=525848, 0-lba=61721-0-0-0xb27b5f97, 1-lba=508805-0-0-0x305ad868 2-lba=510053-0-0-0x242792e3 3-lba=920526-0-0-0xb2885fcb flags=0x0
+           <...>-11439 [009] 18620.133122: luci_get_block:       inum=12 off=525848, 0-lba=61721-0-0-0x11802bf4, 1-lba=508805-0-0-0xbe6e3ca4 2-lba=510053-0-0-0xeaa82555 3-lba=1666980-5986-1-0xc1ef2e24 flags=0x6
+             fio-11661 [005] 18624.875937: luci_get_block:       inum=12 off=525848, 0-lba=61721-0-0-0xf262b86c, 1-lba=508805-0-0-0x5fa9e87e 2-lba=510053-0-0-0xff5048e7 3-lba=1666980-5986-1-0xc1ef2e24 flags=0x0
+
+[root@localhost Linux-LFS]# trace-cmd report | grep bio_complete | grep 510067
+          <idle>-0     [000] 18488.385082: luci_bio_complete:    device :8,16 blockno :510067 length :0 error :0 crc :0xffffffff
+[root@localhost Linux-LFS]# trace-cmd report | grep bio_complete | grep 920526
+          <idle>-0     [000] 18532.256831: luci_bio_complete:    device :8,16 blockno :920526 length :0 error :0 crc :0xffffffff
+[root@localhost Linux-LFS]# trace-cmd report | grep bio_complete | grep 1666980
+           <...>-11510 [000] 18620.158586: luci_bio_complete:    device :8,16 blockno :1666980 length :0 error :0 crc :0xffffffff
+
+====================================================
+rc32c: verify failed at file /mnt/data_verify05 offset 49303552, length 40960s]      
+       Expected CRC: 1a9f9a94
+       Received CRC: 6acf5e43
+
+[root@localhost Linux-LFS]# trace-cmd report | grep off=12037,
+           <...>-13608 [002] 21287.466168: luci_get_block:       inum=13 off=12037, 0-lba=1662-0-0-0x33322014, 1-lba=8288-0-0-0xe99bc707 2-lba=0-0-0-0x0 3-lba=0-0-0-0x0 flags=0x0
+           <...>-13608 [002] 21287.466238: luci_get_block:       inum=13 off=12037, 0-lba=1662-0-0-0x608b4742, 1-lba=8288-0-0-0xeafa8c3d 2-lba=8285-0-0-0xf9a14d68 3-lba=0-0-0-0x0 flags=0x6
+ kworker/u96:136-13667 [006] 21404.070613: luci_get_block:       inum=13 off=12037, 0-lba=1662-0-0-0xe466dfd, 1-lba=8288-0-0-0x5b67d449 2-lba=8285-0-0-0xf9a14d68 3-lba=0-0-0-0x0 flags=0x0
+ kworker/u96:136-13667 [006] 21404.070727: luci_get_block:       inum=13 off=12037, 0-lba=1662-0-0-0x8b5eeb0d, 1-lba=8288-0-0-0x801862b2 2-lba=1749065-0-0-0x3a6ff6be 3-lba=0-0-0-0x0 flags=0x6
+             fio-14214 [005] 21804.524073: luci_get_block:       inum=13 off=12037, 0-lba=1662-0-0-0x54164221, 1-lba=8288-0-0-0xe1eab0b5 2-lba=1749065-0-0-0x3a6ff6be 3-lba=0-0-0-0x0 flags=0x0
+             fio-14214 [005] 21804.524563: luci_get_block:       inum=13 off=12037, 0-lba=1662-0-0-0x54164221, 1-lba=8288-0-0-0xe1eab0b5 2-lba=1749065-0-0-0x3a6ff6be 3-lba=0-0-0-0x0 flags=0x0
+[root@localhost Linux-LFS]# trace-cmd report | grep 49303552
+             fio-14214 [002] 21405.861348: luci_write_extent_end: inum=13 pos=49303552 size=4096 flags=0x0
+
+no trace for block io complete found
+
+
+

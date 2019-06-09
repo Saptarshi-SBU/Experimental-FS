@@ -30,6 +30,9 @@
 
 #include "kern_feature.h"
 #include "compress.h"
+#include "trace.h"
+EXPORT_TRACEPOINT_SYMBOL_GPL(zlib_compress_pages);
+EXPORT_TRACEPOINT_SYMBOL_GPL(zlib_decompress_pages);
 
 struct workspace {
     char *buf;
@@ -137,6 +140,7 @@ int zlib_compress_pages(struct list_head *ws,
         workspace->strm.next_in = data_in;
         workspace->strm.avail_in = min(*total_in - workspace->strm.total_in,
                                         PAGE_SIZE);
+        trace_zlib_compress_pages(mapping->host, in_page);
 finish_def:
 
         if (workspace->strm.avail_out)
@@ -296,6 +300,7 @@ int zlib_decompress_pages(struct list_head *ws,
     for (i = 0; i < compr_bio->bi_vcnt; i++) {
         struct bio_vec* bvec = &compr_bio->bi_io_vec[i];
         pages_in[i] = bvec->bv_page;
+        trace_zlib_decompress_pages(pages_in[i]);
     }
 
     data_in = kmap(pages_in[0]);

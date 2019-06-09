@@ -156,6 +156,131 @@ TRACE_EVENT(luci_write_extents,
                 __entry->dirty_counter_exit)
 );
 
+TRACE_EVENT(luci_write_begin,
+	     TP_PROTO(struct inode *inode, loff_t pos, size_t size),
+	     TP_ARGS(inode, pos, size),
+	     TP_STRUCT__entry(
+                __field(int, inum);
+                __field(loff_t, pos);
+                __field(size_t, size);
+            ),
+            TP_fast_assign(
+                __entry->inum = inode->i_ino;
+                __entry->pos = pos;
+                __entry->size = size;
+            ),
+            TP_printk("inum=%u pos=%llu size=%lu",
+                __entry->inum,
+                __entry->pos,
+                __entry->size)
+);
+
+TRACE_EVENT(luci_write_extent_begin,
+	     TP_PROTO(struct inode *inode, loff_t pos, size_t size, unsigned flags, u32 crc),
+	     TP_ARGS(inode, pos, size, flags, crc),
+	     TP_STRUCT__entry(
+                __field(int, inum);
+                __field(loff_t, pos);
+                __field(size_t, size);
+                __field(unsigned, flags);
+                __field(u32, crc);
+            ),
+            TP_fast_assign(
+                __entry->inum = inode->i_ino;
+                __entry->pos = pos;
+                __entry->size = size;
+                __entry->flags = flags;
+                __entry->crc = crc;
+            ),
+            TP_printk("inum=%u pos=%llu size=%lu flags=0x%x crc=0x%x",
+                __entry->inum,
+                __entry->pos,
+                __entry->size,
+                __entry->flags,
+                __entry->crc)
+);
+
+TRACE_EVENT(luci_write_extent_end,
+	     TP_PROTO(struct inode *inode, loff_t pos, size_t size, unsigned flags, u32 crc),
+	     TP_ARGS(inode, pos, size, flags, crc),
+	     TP_STRUCT__entry(
+                __field(int, inum);
+                __field(loff_t, pos);
+                __field(size_t, size);
+                __field(unsigned, flags);
+                __field(u32, crc);
+            ),
+            TP_fast_assign(
+                __entry->inum = inode->i_ino;
+                __entry->pos = pos;
+                __entry->size = size;
+                __entry->flags = flags;
+                __entry->crc = crc;
+            ),
+            TP_printk("inum=%u pos=%llu size=%lu flags=0x%x, crc=0x%x",
+                __entry->inum,
+                __entry->pos,
+                __entry->size,
+                __entry->flags,
+                __entry->crc)
+);
+
+TRACE_EVENT(luci_readpage,
+	     TP_PROTO(struct inode *inode, struct page *page),
+	     TP_ARGS(inode, page),
+	     TP_STRUCT__entry(
+                __field(int, inum);
+                __field(loff_t, pos);
+             ),
+             TP_fast_assign(
+                __entry->inum = inode->i_ino;
+                __entry->pos = page_offset(page);
+             ),
+             TP_printk("inum=%u pos=%llu", __entry->inum, __entry->pos)
+);
+
+TRACE_EVENT(luci_end_bio_write,
+	     TP_PROTO(struct page *page),
+	     TP_ARGS(page),
+	     TP_STRUCT__entry(
+                __field(int, inum);
+                __field(loff_t, pos);
+             ),
+             TP_fast_assign(
+                __entry->inum = page->mapping->host->i_ino;
+                __entry->pos = page_offset(page);
+             ),
+             TP_printk("inum=%u pos=%llu", __entry->inum, __entry->pos)
+);
+
+TRACE_EVENT(zlib_compress_pages,
+	     TP_PROTO(struct inode *inode, struct page *page),
+	     TP_ARGS(inode, page),
+	     TP_STRUCT__entry(
+                __field(int, inum);
+                __field(loff_t, pos);
+             ),
+             TP_fast_assign(
+                __entry->inum = inode->i_ino;
+                __entry->pos = page_offset(page);
+             ),
+             TP_printk("inum=%u pos=%llu", __entry->inum, __entry->pos)
+);
+
+TRACE_EVENT(zlib_decompress_pages,
+	     TP_PROTO(struct page *page),
+	     TP_ARGS(page),
+	     TP_STRUCT__entry(
+                __field(int, inum);
+                __field(loff_t, pos);
+             ),
+             TP_fast_assign(
+                __entry->inum = page->mapping->host->i_ino;
+                __entry->pos = page_offset(page);
+             ),
+             TP_printk("inum=%u pos=%llu", __entry->inum, __entry->pos)
+);
+
 TRACE_EVENT(luci_free_block,
 	     TP_PROTO(struct inode *inode, unsigned long block, unsigned long blockgroup, unsigned bitpos),
 	     TP_ARGS(inode, block, blockgroup, bitpos),

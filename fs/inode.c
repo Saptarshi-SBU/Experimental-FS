@@ -22,6 +22,8 @@
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_get_block);
 EXPORT_TRACEPOINT_SYMBOL_GPL(luci_write_inode_raw);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_readpage);
+EXPORT_TRACEPOINT_SYMBOL_GPL(luci_write_begin);
 
 static atomic64_t readfile_in;
 static atomic64_t readfile_out;
@@ -43,35 +45,31 @@ extern debugfs_t dbgfsparam;
 static int
 __luci_setsize(struct inode *inode, loff_t newsize)
 {
-    int err = 0;
-
-    if (S_ISREG(inode->i_mode)) {
-        luci_dbg_inode(inode, "oldsize %llu newsize %llu\n",
-            inode->i_size, newsize);
-        luci_truncate(inode, newsize); // update bmap
-
-        truncate_setsize(inode, newsize);
-        inode->i_mtime = inode->i_ctime = LUCI_CURR_TIME;
-        if (inode_needs_sync(inode)) {
-            sync_mapping_buffers(inode->i_mapping);
-            sync_inode_metadata(inode, 1);
-        } else
-            mark_inode_dirty(inode);
-    } else {
-        err = -EINVAL;
-        luci_err_inode(inode, "luci :cannot modify size of directory\n");
+    if (!S_ISREG(inode->i_mode)) {
+        luci_err_inode(inode, "cannot modify size of non-regular file type");
+        return -EINVAL;
     }
+    luci_truncate(inode, newsize); // shrink will need bmap update
+    truncate_setsize(inode, newsize);
+    inode->i_atime = inode->i_mtime = inode->i_ctime = LUCI_CURR_TIME;
+    if (inode_needs_sync(inode)) {
+        sync_mapping_buffers(inode->i_mapping);
+        sync_inode_metadata(inode, 1);
+    } else
+        mark_inode_dirty(inode);
 
-    return err;
+    luci_dbg_inode(inode, "size %llu --> %llu\n", inode->i_size, newsize);
+    return 0;
 }
 
 static int
 luci_setattr(struct dentry *dentry, struct iattr *attr)
 {
-    int err = 0;
+    int err;
     struct inode *inode = DENTRY_INODE(dentry);
 
     atomic64_inc(&setattr_in);
+
     // check we have permissions to change attributes
 #ifdef HAVE_CHECKINODEPERM
     err = inode_change_ok(inode, attr);
@@ -80,21 +78,27 @@ luci_setattr(struct dentry *dentry, struct iattr *attr)
 #endif
     if (err) {
         luci_err_inode(inode, "setattr failed :%d", err);
-        return err ? err : -EPERM;
+        return err;
     }
 
     if ((attr->ia_valid & ATTR_SIZE) &&
                     (attr->ia_size != inode->i_size)) {
-        // We do not support DIO
-        // Wait for all pending direct I/O requests prior doing a truncate
+        // TBD: We do not support DIO. But ideally should
+        // wait for all pending direct I/O requests prior doing a truncate
+ 
         // inode_dio_wait(inode);
         err = __luci_setsize(inode, attr->ia_size);
         if (err)
                 goto exit;
     }
 
+    // stick new attributes to the inode
     setattr_copy(inode, attr);
-    mark_inode_dirty(inode);
+
+    if (inode_needs_sync(inode))
+        mark_inode_dirty_sync(inode);
+    else
+        mark_inode_dirty(inode);
 
 exit:
     atomic64_inc(&setattr_out);
@@ -102,7 +106,7 @@ exit:
 }
 
 static int
-__luci_getattr_private(const struct dentry *dentry, struct kstat *stat)
+__luci_getattr(const struct dentry *dentry, struct kstat *stat)
 {
     struct inode *inode = DENTRY_INODE(dentry);
 
@@ -119,9 +123,8 @@ luci_getattr(const struct path *path,
              unsigned int query_flags)
 {
     int ret;
-
     atomic64_inc(&getattr_in);
-    ret = __luci_getattr_private(path->dentry, stat);
+    ret = __luci_getattr(path->dentry, stat);
     atomic64_inc(&getattr_out);
     return ret;
 }
@@ -133,23 +136,29 @@ luci_getattr(struct vfsmount *mnt,
 {
     int ret;
     atomic64_inc(&getattr_in);
-    ret = __luci_getattr_private(dentry, stat);
+    ret = __luci_getattr(dentry, stat);
     atomic64_inc(&getattr_out);
     return ret;
 }
 #endif
 
+// for regular inodes, we implement the below operations
 const struct inode_operations luci_file_inode_operations =
 {
     .setattr = luci_setattr,
+
     .getattr = luci_getattr,
 };
 
+// for symlink inodes, we implement the below operations
 const struct inode_operations luci_symlink_inode_operations = {
-        .readlink       = generic_readlink,
-        .follow_link    = page_follow_link_light,
-        .put_link       = page_put_link,
-        .setattr        = luci_setattr
+    .readlink       = generic_readlink,
+
+    .follow_link    = page_follow_link_light,
+
+    .put_link       = page_put_link,
+
+    .setattr        = luci_setattr
 };
 
 /* bmap functions */
@@ -159,17 +168,16 @@ const struct inode_operations luci_symlink_inode_operations = {
  * All access to metadata blocks are protected by inode truncate mutex
  */
 static int
-luci_update_blkptr_chain_csum(struct inode *inode,
-                              Indirect ichain[],
-                              int depth,
-                              unsigned long i_block)
+luci_update_bmap_path_cksum(struct inode *inode,
+                            Indirect ichain[],
+                            int depth,
+                            unsigned long i_block)
 {
     u32 crc32;
     Indirect *p;
     struct buffer_head *currbh;
 
     depth -= 1; // ignore leaf block/extent, already csummed
-
     while (depth-- > 0) {
         p = &ichain[depth];
         currbh = p->bh;
@@ -188,9 +196,7 @@ luci_update_blkptr_chain_csum(struct inode *inode,
                   p->key.blockno,
                   p->key.checksum);
     }
-
-    // This is needed, since modifications propagate till root indices which
-    // are part of inode.
+    // since modifications propagate till root indices which are part of inode.
     mark_inode_dirty(inode);
     return 0;
 }
@@ -200,11 +206,11 @@ luci_update_blkptr_chain_csum(struct inode *inode,
  * All access to metadata blocks are protected by mutex
  */
 static int
-luci_validate_bmap_blkptr_csum(struct inode *inode,
-                               int curr_level,
-                               int max_depth,
-                               struct buffer_head *bh,
-                               struct blkptr *bp)
+luci_check_bmap_index_cksum(struct inode *inode,
+                            int curr_level,
+                            int max_depth,
+                            struct buffer_head *bh,
+                            struct blkptr *bp)
 {
     u32 crc32;
     int err = 0;
@@ -219,14 +225,14 @@ luci_validate_bmap_blkptr_csum(struct inode *inode,
     }
 
     if (bp->flags) {
-        luci_err_inode(inode, "unexpected flag detected in bmap blockptr ipath[%d/%d] %u-0x%x-0x%u[0x%x]",
-                            curr_level,
-                            max_depth,
-                            bp->blockno,
-                            bp->flags,
-                            bp->length,
-                            bp->checksum);
-        return -EIO;
+        luci_err_inode(inode, "unexpected flag detected in bmap blockptr "
+                "ipath[%d/%d] %u-0x%x-0x%u[0x%x]",
+                curr_level,
+                max_depth,
+                bp->blockno,
+                bp->flags,
+                bp->length,
+                bp->checksum);
         BUG_ON(bp->flags);
     }
 
@@ -259,20 +265,15 @@ exit:
     return err;
 }
 
-static inline void
-luci_bmap_add_chain(Indirect *p, struct buffer_head *bh, blkptr *v)
-{
-    p->p = v;
-    p->bh = bh;
-    memcpy((char*)&p->key, (char*)v, sizeof(blkptr));
-}
-
-/* bmap search */
+/*
+ * Description : calculate block map indices given a file offset
+ *
+ */
 static int
-luci_bmap_get_indices(struct inode *inode,
-                   long i_block,
-                   long path[LUCI_MAX_DEPTH],
-                   int *blocks_to_boundary)
+luci_calculate_bmap_indices(struct inode *inode,
+                            long i_block,
+                            long path[LUCI_MAX_DEPTH],
+                            int *blocks_to_boundary)
 {
     int n = 0;
     int final = 0;
@@ -322,7 +323,7 @@ luci_bmap_get_indices(struct inode *inode,
         goto done;
     }
 
-    luci_err_inode(inode, "file block :%lu exceeds bmap limits", file_block);
+    luci_err_inode(inode, "bmap cannot accomodate file block :%lu", file_block);
     return -E2BIG;
 
 done:
@@ -334,9 +335,14 @@ done:
     return n;
 }
 
-/* In case of error lets continue scanning the entire path */
+/*
+ * Description : walk an inode block-map
+ *
+ * In case of error lets continue scanning the entire path
+ *
+ */
 static Indirect *
-luci_bmap_get_path(struct inode *inode,
+luci_walk_bmap(struct inode *inode,
                    int depth,
                    long ipaths[LUCI_MAX_DEPTH],
                    Indirect ichain[LUCI_MAX_DEPTH],
@@ -346,8 +352,8 @@ luci_bmap_get_path(struct inode *inode,
     int i = 0;
     Indirect *p = ichain;
     struct super_block *sb = inode->i_sb;
-    bool skip_leaf = (S_ISREG(inode->i_mode) &&
-                     ((flags & COMPR_BLK_INSERT) || (flags & COMPR_BLK_UPDATE) || (flags & COMPR_BLK_INFO)));
+    bool skip_leaf = (S_ISREG(inode->i_mode) && ((flags & COMPR_BLK_INSERT) ||
+        (flags & COMPR_BLK_UPDATE) || (flags & COMPR_BLK_INFO)));
 
     *err = 0;
     BUG_ON(!depth);
@@ -365,7 +371,7 @@ luci_bmap_get_path(struct inode *inode,
         if (p->bh == NULL)
                 panic("metadata read error, inode :%lu ipath[depth=%d] %u",
                       inode->i_ino, depth, p->key.blockno);
-        *err = luci_validate_bmap_blkptr_csum(inode, i, depth, p->bh, &p->key);
+        *err = luci_check_bmap_index_cksum(inode, i, depth, p->bh, &p->key);
         if (*err) {
                 brelse(p->bh);
                 goto exit;
@@ -384,28 +390,28 @@ luci_bmap_get_path(struct inode *inode,
         struct buffer_head *bh;
         unsigned long prev_block = p->key.blockno; // only for debug
 
+        BUG_ON(p->bh == NULL);
         bh = p->bh;
-        BUG_ON(bh == NULL);
         luci_bmap_add_chain(++p, NULL, (blkptr*)bh->b_data + *++ipaths);
         if (!p->key.blockno)
             goto no_block;
 
         if ((i + 1 == depth) && skip_leaf)
-                break;
+            break;
 
         p->bh = sb_bread(sb, p->key.blockno);
-        if (p->bh == NULL)
-                panic("metadata read error, inode :%lu ipath[depth=%d] %u",
-                      inode->i_ino, depth, p->key.blockno);
-
-        if (i + 1 < depth) {
-               *err = luci_validate_bmap_blkptr_csum(inode, i, depth, p->bh, &p->key);
-                if (*err) {
-                        brelse(p->bh);
-                        goto exit;
-                }
+        if (p->bh == NULL) {
+            panic("metadata read error, inode :%lu ipath[depth=%d] %u",
+                   inode->i_ino, depth, p->key.blockno);
         }
 
+        if (i + 1 < depth) {
+            *err = luci_check_bmap_index_cksum(inode, i, depth, p->bh, &p->key);
+            if (*err) {
+               brelse(p->bh);
+               goto exit;
+            }
+        }
         luci_info_inode(inode, "bmap get path, ipath[%d] %d-%u-%u-0x%x[%ld][%lu]",
                                 i,
                                 p->key.blockno,
@@ -660,10 +666,10 @@ luci_get_block(struct inode *inode,
     memset((char*)ipaths, 0, sizeof(long)*LUCI_MAX_DEPTH);
     memset((char*)ichain, 0, sizeof(Indirect)*LUCI_MAX_DEPTH);
 
-    depth = luci_bmap_get_indices(inode,
-                                  iblock,
-                                  ipaths,
-                                  &blocks_to_boundary);
+    depth = luci_calculate_bmap_indices(inode,
+                                        iblock,
+                                        ipaths,
+                                        &blocks_to_boundary);
     if (depth < 0)
         return -EIO;
 
@@ -678,7 +684,7 @@ luci_get_block(struct inode *inode,
 
     mutex_lock(&(LUCI_I(inode)->truncate_mutex));
 
-    partial = luci_bmap_get_path(inode, depth, ipaths, ichain, &err, flags);
+    partial = luci_walk_bmap(inode, depth, ipaths, ichain, &err, flags);
     if (err) {
         luci_err_inode(inode, "bmap path error %d", err);
         goto exit;
@@ -777,7 +783,7 @@ gotit:
 done:
 
     if (flags)
-        err = luci_update_blkptr_chain_csum(inode, ichain, depth, iblock);
+        err = luci_update_bmap_path_cksum(inode, ichain, depth, iblock);
 
     // FIXED : free bhs associated with lookup, meta pages are already in memory
     partial = ichain + depth - 1;
@@ -1353,6 +1359,7 @@ luci_write_begin(struct file *file,
 
     BUG_ON(inode == NULL);
     atomic64_add(len >> PAGE_CACHE_SHIFT, &writefile_in);
+    trace_luci_write_begin(inode, pos, len);
 
 #ifdef LUCIFS_COMPRESSION
     if (S_ISREG(inode->i_mode)) {
@@ -1508,6 +1515,7 @@ uncompressed_read:
     }
 
 done:
+    trace_luci_readpage(inode, page);
     atomic64_inc(&readfile_out);
     return ret;
 }

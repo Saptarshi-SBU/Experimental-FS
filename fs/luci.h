@@ -48,6 +48,10 @@
 
 #define SECTOR_SIZE (1U << (SECTOR_SHIFT))
 
+#if !defined(HAVE_ALIGN_DOWN)
+#define ALIGN_DOWN(x, a)        __ALIGN_KERNEL((x) - ((a) - 1), (a))
+#endif
+
 static inline s64 ktime_ns_delta(const ktime_t later, const ktime_t earlier)
 {
     return ktime_to_ns(ktime_sub(later, earlier));
@@ -599,6 +603,14 @@ typedef struct {
 } Indirect;
 
 #define IS_INLINE(level) ((level) == 0)
+
+static void inline
+luci_bmap_add_chain(Indirect *p, struct buffer_head *bh, blkptr *v)
+{
+    p->p = v;
+    p->bh = bh;
+    memcpy((char*)&p->key, (char*)v, sizeof(blkptr));
+}
 
 static inline struct luci_sb_info *LUCI_SB(struct super_block *sb)
 {
