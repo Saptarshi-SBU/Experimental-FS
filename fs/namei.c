@@ -661,8 +661,22 @@ static int
 luci_link(struct dentry * old_dentry, struct inode * dir,
         struct dentry *dentry)
 {
-    luci_err_inode(dir, "not Implemented %s", __func__);
-    return -ENOSYS;
+    int err;
+    struct inode *inode = old_dentry->d_inode;
+
+    inode->i_mtime = inode->i_ctime = CURRENT_TIME_SEC;
+    inode_inc_link_count(inode);
+    ihold(inode);
+    err = luci_add_link(dentry, inode);
+    if (!err) {
+       d_instantiate(dentry, inode);
+       return 0;
+    }
+    inode_dec_link_count(inode);
+    iput(inode);
+    return err;
+    //luci_err_inode(dir, "not Implemented %s", __func__);
+    //return -ENOSYS;
 }
 
 // Creating a symlink does not increment refcount to its holding directory inode
