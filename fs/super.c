@@ -38,7 +38,7 @@ extern const struct file_operations luci_compression_stats_ops;
 
 static struct kmem_cache* luci_inode_cachep;
 
-        static struct inode *
+static struct inode *
 luci_alloc_inode(struct super_block *sb)
 {
         struct luci_inode_info *ei;
@@ -48,14 +48,14 @@ luci_alloc_inode(struct super_block *sb)
         return &ei->vfs_inode;
 }
 
-        static void
+static void
 __luci_i_callback(struct rcu_head *head)
 {
         struct inode *inode = container_of(head, struct inode, i_rcu);
         kmem_cache_free(luci_inode_cachep, LUCI_I(inode));
 }
 
-        static void
+static void
 luci_destroy_inode(struct inode *inode)
 {
         call_rcu(&inode->i_rcu, __luci_i_callback);
@@ -122,7 +122,6 @@ luci_dec_size(struct inode *inode, unsigned nr_blocks)
         }
         mark_inode_dirty(inode);
 }
-
 
 // For some reason, lsb->s_free_blocks_count on mkfs
 // does not reflect valid free blocks; even ext2
@@ -409,7 +408,7 @@ luci_evict_inode(struct inode * inode)
 }
 
 static int
-luci_statfs(struct dentry *dentry, struct kstatfs *buf)
+luci_super_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
         struct super_block *sb = dentry->d_sb;
         struct luci_sb_info *sbi = LUCI_SB(sb);
@@ -440,7 +439,7 @@ init_once(void *foo)
         inode_init_once(&li->vfs_inode);
 }
 
-        static int
+static int
 init_inodecache(void)
 {
         luci_inode_cachep = kmem_cache_create("luci_inode_cache",
@@ -461,6 +460,31 @@ destroy_inodecache(void)
         kmem_cache_destroy(luci_inode_cachep);
 }
 
+/*
+ *  Reset mount state to 0 (indicating unclean)
+ *  put_super should put state back to VALID_FS.
+ *  If put super fails/does not happen, let user
+ *  know there was an unclean shutdown.
+ */
+static int
+luci_sync_super(struct super_block *sb, int wait)
+{
+        struct luci_sb_info *sbi = sb->s_fs_info;
+        struct luci_super_block *lsb = sbi->s_lsb;
+
+        spin_lock(&sbi->s_lock);
+        lsb->s_state = 0;
+        lsb->s_wtime = cpu_to_le32(get_seconds());
+        lsb->s_mtime = cpu_to_le32(get_seconds());
+        lsb->s_free_blocks_count = __luci_count_free_blocks(sb);
+        luci_super_update_csum(sb);
+        mark_buffer_dirty(sbi->s_sbh);
+        spin_unlock(&sbi->s_lock);
+        if (wait)
+                sync_dirty_buffer(sbi->s_sbh);
+        return 0;
+}
+
 static void
 luci_put_super(struct super_block *sb)
 {
@@ -471,10 +495,11 @@ static const struct super_operations luci_sops = {
         .alloc_inode    = luci_alloc_inode,
         .destroy_inode  = luci_destroy_inode,
         .put_super      = luci_put_super,
+        .sync_fs        = luci_sync_super,
         .write_inode    = luci_write_inode,
         .drop_inode     = luci_drop_inode,
         .evict_inode    = luci_evict_inode,
-        .statfs         = luci_statfs,
+        .statfs         = luci_super_statfs,
 };
 
 
@@ -660,6 +685,7 @@ luci_super_update_csum(struct super_block *sb)
 void
 luci_free_super(struct super_block * sb) {
         int i;
+        unsigned long count;
         struct buffer_head *bh;
         struct inode *root_inode;
         struct luci_sb_info *sbi = sb->s_fs_info;
@@ -673,13 +699,6 @@ luci_free_super(struct super_block * sb) {
         if (!sbi)
                 return;
 
-        cancel_delayed_work_sync(&sbi->blockgroup_work);
-
-        if (sbi->comp_write_wq) {
-                destroy_workqueue(sbi->comp_write_wq);
-                sbi->comp_write_wq = NULL;
-        }
-
         if (sbi->bg_buddy_map) {
                 debugfs_remove_recursive(sbi->d_buddy_map);
                 sbi->d_buddy_map = NULL;
@@ -687,6 +706,14 @@ luci_free_super(struct super_block * sb) {
                 sbi->bg_buddy_map = NULL;
         }
 
+        cancel_delayed_work_sync(&sbi->blockgroup_work);
+
+        if (sbi->comp_write_wq) {
+                destroy_workqueue(sbi->comp_write_wq);
+                sbi->comp_write_wq = NULL;
+        }
+
+        count = __luci_count_free_blocks(sb);
         if (sbi->s_group_desc) {
                 for (i = 0; i < sbi->s_gdb_count; i++) {
                         bh = sbi->s_group_desc[i];
@@ -698,8 +725,14 @@ luci_free_super(struct super_block * sb) {
         }
 
         if (sbi->s_sbh) {
+                spin_lock(&sbi->s_lock);
+                sbi->s_lsb->s_state = cpu_to_le32(sbi->s_mount_state);
+                sbi->s_lsb->s_wtime = cpu_to_le32(get_seconds());
+                sbi->s_lsb->s_mtime = cpu_to_le32(get_seconds());
+                sbi->s_lsb->s_free_blocks_count = count;
                 luci_super_update_csum(sb);
                 mark_buffer_dirty(sbi->s_sbh);
+                spin_unlock(&sbi->s_lock);
                 sync_dirty_buffer(sbi->s_sbh);
                 brelse(sbi->s_sbh);
                 sbi->s_sbh = NULL;
@@ -774,6 +807,15 @@ restart:
         }
 
         luci_dbg("magic number on block:%lu(%lu)",block_no, block_of);
+
+        // check file system state
+        sbi->s_mount_state = le16_to_cpu(lsb->s_state);
+
+        if (!(sbi->s_mount_state & LUCI_VALID_FS))
+                luci_err("mounting file system in unclean mode");
+
+        if (sbi->s_mount_state & LUCI_ERROR_FS)
+                luci_err("mounting file system with errors");
 
         // get the on-disk block size
         block_size = BLOCK_SIZE << le32_to_cpu(lsb->s_log_block_size);
@@ -868,9 +910,6 @@ restart:
         sbi->s_itb_per_group = sbi->s_inodes_per_group/sbi->s_inodes_per_block;
         // group desc per block
         sbi->s_desc_per_block = sb->s_blocksize/sizeof(struct luci_group_desc);
-
-        sbi->s_mount_state = le16_to_cpu(lsb->s_state);
-
         sbi->s_addr_per_block_bits = ilog2 (LUCI_ADDR_PER_BLOCK(sb));
         sbi->s_desc_per_block_bits = ilog2 (sbi->s_desc_per_block);
 
@@ -901,18 +940,23 @@ restart:
         sb->s_fs_info = sbi;
         if (luci_runlayoutchecks(sb)) {
                 ret = -EINVAL;
+                sbi->s_mount_state = LUCI_ERROR_FS;
+                lsb->s_state = cpu_to_le16(LUCI_ERROR_FS);
                 goto failed;
         }
 
         if (luci_verify_bg_csum(sb) < 0) {
                 luci_err("block group meta data checksum verify failed!");
                 ret = -EBADE;
+                sbi->s_mount_state = LUCI_ERROR_FS;
+                lsb->s_state = cpu_to_le16(LUCI_ERROR_FS);
                 goto failed;
         }
 
         // ready the super-block for any operations
         sb->s_op = &luci_sops;
 
+        spin_lock(&sbi->s_lock);
         // increase mount count
         le16_add_cpu(&lsb->s_mnt_count, 1);
 
@@ -921,6 +965,7 @@ restart:
         lsb->s_free_blocks_count = __luci_count_free_blocks(sb);
 
         mark_buffer_dirty(sbi->s_sbh);
+        spin_unlock(&sbi->s_lock);
         sync_dirty_buffer(sbi->s_sbh);
 
         // keep df command happy; report correct available size
