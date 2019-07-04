@@ -91,10 +91,13 @@ static int luci_ioctl_getflags(struct file *file, void __user *arg)
    unsigned int flags = 0;
    struct luci_inode_info *li = LUCI_I(file_inode(file));
 
-   if (li->i_flags & LUCI_INODE_COMPRESS)
+   if (li->i_flags & LUCI_COMPR_FL)
        flags |= FS_COMPR_FL;
-   else if (li->i_flags & LUCI_INODE_NOCOMPRESS)
+   else if (li->i_flags & LUCI_NOCOMP_FL)
        flags |= FS_NOCOMP_FL;
+
+   luci_get_inode_flags(li);
+   flags = li->i_flags & LUCI_FL_USER_VISIBLE;
 
    if (copy_to_user(arg, &flags, sizeof(flags)))
        return -EFAULT;
@@ -109,9 +112,26 @@ long luci_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
    case FS_IOC32_GETFLAGS:
            return luci_ioctl_getflags(file, (void __user *)arg);
    case FS_IOC_SETFLAGS:
-   case FS_IOC32_SETFLAGS:
-           luci_err("FS_IOC_SETFLAGS, not supported ioctl :0x%x\n", cmd);
+   case FS_IOC32_SETFLAGS: {
+           unsigned int flags = 0;
+           struct inode *inode = file_inode(file);
+           struct luci_inode_info *li = LUCI_I(inode);
+
+           if (get_user(flags, (int __user *) arg))
+               return -EFAULT;
+
+           flags = luci_mask_flags(inode->i_mode, flags);
+           flags = flags & LUCI_FL_USER_MODIFIABLE;
+           mutex_lock(&inode->i_mutex);
+           li->i_flags = flags;
+           luci_set_inode_flags(inode);
+           inode->i_ctime = LUCI_CURR_TIME;
+           mutex_unlock(&inode->i_mutex);
+
+           mark_inode_dirty(inode);
+           luci_info("FS_IOC_SETFLAGS, supported ioctl :0x%x\n", cmd);
            break;
+   }
    case FS_IOC_GETVERSION:
    case FS_IOC32_GETVERSION:
            luci_err("FS_IOC_GETVERSION, not supported ioctl :0x%x\n", cmd);

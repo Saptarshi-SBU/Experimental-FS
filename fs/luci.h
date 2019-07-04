@@ -510,8 +510,58 @@ struct luci_mount_options {
 /*
  * Inode i_flags
  */
+#define LUCI_SECRM_FL                   FS_SECRM_FL     /* Secure deletion */
+#define LUCI_UNRM_FL                    FS_UNRM_FL      /* Undelete */
+#define LUCI_COMPR_FL                   FS_COMPR_FL     /* Compress file */
+#define LUCI_SYNC_FL                    FS_SYNC_FL      /* Synchronous updates */
+#define LUCI_IMMUTABLE_FL               FS_IMMUTABLE_FL /* Immutable file */
+#define LUCI_APPEND_FL                  FS_APPEND_FL    /* writes to file may only append */
+#define LUCI_NODUMP_FL                  FS_NODUMP_FL    /* do not dump file */
+#define LUCI_NOATIME_FL                 FS_NOATIME_FL   /* do not update atime */
+/* Reserved for compression usage... */
+#define LUCI_DIRTY_FL                   FS_DIRTY_FL
+#define LUCI_COMPRBLK_FL                FS_COMPRBLK_FL  /* One or more compressed clusters */
+#define LUCI_NOCOMP_FL                  FS_NOCOMP_FL    /* Don't compress */
+#define LUCI_ECOMPR_FL                  FS_ECOMPR_FL    /* Compression error */
+/* End compression flags --- maybe not all used */
+#define LUCI_BTREE_FL                   FS_BTREE_FL     /* btree format dir */
+#define LUCI_INDEX_FL                   FS_INDEX_FL     /* hash-indexed directory */
+#define LUCI_IMAGIC_FL                  FS_IMAGIC_FL    /* AFS directory */
+#define LUCI_JOURNAL_DATA_FL            FS_JOURNAL_DATA_FL /* Reserved for ext3 */
+#define LUCI_NOTAIL_FL                  FS_NOTAIL_FL    /* file tail should not be merged */
+#define LUCI_DIRSYNC_FL                 FS_DIRSYNC_FL   /* dirsync behaviour (directories only) */
+#define LUCI_TOPDIR_FL                  FS_TOPDIR_FL    /* Top of directory hierarchies*/
+#define LUCI_RESERVED_FL                FS_RESERVED_FL  /* reserved for ext2 lib */
+
+#define LUCI_FL_USER_VISIBLE            FS_FL_USER_VISIBLE      /* User visible flags */
+#define LUCI_FL_USER_MODIFIABLE         FS_FL_USER_MODIFIABLE   /* User modifiable flags */
+
+/* Flags that should be inherited by new inodes from their parent. */
+#define LUCI_FL_INHERITED (LUCI_SECRM_FL | LUCI_UNRM_FL | LUCI_COMPR_FL |\
+                                           LUCI_SYNC_FL | LUCI_NODUMP_FL |\
+                                           LUCI_NOATIME_FL | LUCI_COMPRBLK_FL |\
+                                           LUCI_NOCOMP_FL | LUCI_JOURNAL_DATA_FL |\
+                                           LUCI_NOTAIL_FL | LUCI_DIRSYNC_FL)
+
+/* Flags that are appropriate for regular files (all but dir-specific ones). */
+#define LUCI_REG_FLMASK (~(LUCI_DIRSYNC_FL | LUCI_TOPDIR_FL))
+
+/* Flags that are appropriate for non-directories/regular files. */
+#define LUCI_OTHER_FLMASK (LUCI_NODUMP_FL | LUCI_NOATIME_FL)
+
 #define LUCI_INODE_COMPRESS      (1 << 0)
 #define LUCI_INODE_NOCOMPRESS    (1 << 1)
+
+/* Mask out flags that are inappropriate for the given type of inode. */
+static inline __u32 luci_mask_flags(umode_t mode, __u32 flags)
+{
+        if (S_ISDIR(mode))
+                return flags;
+        else if (S_ISREG(mode))
+                return flags & LUCI_REG_FLMASK;
+        else
+                return flags & LUCI_OTHER_FLMASK;
+}
 
 /*
  * Maximal mount counts between two filesystem checks
@@ -711,6 +761,8 @@ extern blkptr luci_bmap_fetch_L0bp(struct inode *inode, unsigned long i_block);
 extern int luci_bmap_insert_L0bp(struct inode *inode, unsigned long i_block, blkptr *bp);
 int luci_write_inode_raw(struct inode *inode, int do_sync);
 int luci_bmap_free_extents(struct inode *inode, blkptr extents_array[], int n_extents);
+extern void luci_set_inode_flags(struct inode *);
+extern void luci_get_inode_flags(struct luci_inode_info *);
 
 /* crc32 */
 u32 luci_compute_data_cksum(void *addr, size_t length, u32 crc_seed);

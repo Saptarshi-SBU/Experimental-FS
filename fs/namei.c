@@ -536,7 +536,7 @@ luci_unlink(struct inode* dir, struct dentry* dentry)
        goto out;
     }
 
-    dir->i_mtime = dir->i_ctime = CURRENT_TIME_SEC;
+    dir->i_mtime = dir->i_ctime = LUCI_CURR_TIME;
     inode->i_ctime = dir->i_ctime;
 
     mark_inode_dirty(dir);
@@ -664,7 +664,7 @@ luci_link(struct dentry * old_dentry, struct inode * dir,
     int err;
     struct inode *inode = old_dentry->d_inode;
 
-    inode->i_mtime = inode->i_ctime = CURRENT_TIME_SEC;
+    inode->i_mtime = inode->i_ctime = LUCI_CURR_TIME;
     inode_inc_link_count(inode);
     ihold(inode);
     err = luci_add_link(dentry, inode);
@@ -818,13 +818,15 @@ luci_rename(struct inode *src_dir, struct dentry *src_dentry,
             BUG_ON(ret);
 
             // update dest and dir metadata
-            tgt_dentry->d_inode->i_ctime = CURRENT_TIME_SEC;
-            tgt_dir->i_mtime = tgt_dir->i_ctime = CURRENT_TIME_SEC;
+            tgt_dentry->d_inode->i_ctime = LUCI_CURR_TIME;
+            tgt_dir->i_mtime = tgt_dir->i_ctime = LUCI_CURR_TIME;
 
             mark_inode_dirty(tgt_dir);
             mark_inode_dirty(tgt_dentry->d_inode);
-    } else
+    } else {
         ret = luci_add_link(tgt_dentry, src_dentry->d_inode);
+        src_dentry->d_inode->i_ctime = LUCI_CURR_TIME;
+    }
 
     if (!ret) {
         ret = luci_delete_entry(de_src, src_page);

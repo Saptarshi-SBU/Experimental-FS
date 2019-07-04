@@ -57,9 +57,9 @@ static void luci_init_inode_flags(struct inode *inode) {
         if (S_ISREG(inode->i_mode)) {
                 struct luci_inode_info *li = LUCI_I(inode);
 #ifdef LUCIFS_COMPRESSION
-                li->i_flags |= LUCI_INODE_COMPRESS;
+                li->i_flags |= LUCI_COMPR_FL;
 #else
-                li->i_flags |= LUCI_INODE_NOCOMPRESS;
+                li->i_flags |= LUCI_NOCOMP_FL;
 #endif
         }
 }
@@ -225,7 +225,7 @@ read_block_bitmap(struct super_block *sb, unsigned long bg) {
         if (!gdesc)
                 goto err;
 
-        luci_dbg("block group :%lu nr_free blocks : %u", bg, gdesc->bg_free_blocks_count);
+        //luci_dbg("block group :%lu nr_free blocks : %u", bg, gdesc->bg_free_blocks_count);
 
         bmap_block = gdesc->bg_block_bitmap;
 
@@ -256,7 +256,7 @@ read_block_bitmap(struct super_block *sb, unsigned long bg) {
                         }
                 }
                 unlock_buffer(bmap_bh);
-                luci_info("bg block bitmap %lu crc OK", bg);
+                //luci_dbg("bg block bitmap %lu crc OK", bg);
         }
 
 #ifdef DEBUG_BMAP
@@ -662,7 +662,6 @@ gotit:
         // unlock
         unlock_buffer(sbi->s_sbh);
 
-        inode->i_mtime = inode->i_atime = inode->i_ctime = LUCI_CURR_TIME;
         // sector based (TBD : add a macro for block to sector)
         inode->i_blocks += (got_blocks * luci_sectors_per_block(inode));
 

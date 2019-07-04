@@ -52,7 +52,7 @@
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4,8,0))
     #include <linux/time.h>
-    #define LUCI_CURR_TIME CURRENT_TIME
+    #define LUCI_CURR_TIME CURRENT_TIME_SEC
 #else
     #include <linux/fs.h>
     #define LUCI_CURR_TIME current_time(inode)

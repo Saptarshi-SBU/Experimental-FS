@@ -51,7 +51,7 @@ __luci_setsize(struct inode *inode, loff_t newsize)
     }
     luci_truncate(inode, newsize); // shrink will need bmap update
     truncate_setsize(inode, newsize);
-    inode->i_atime = inode->i_mtime = inode->i_ctime = LUCI_CURR_TIME;
+    inode->i_mtime = inode->i_ctime = LUCI_CURR_TIME;
     if (inode_needs_sync(inode)) {
         sync_mapping_buffers(inode->i_mapping);
         sync_inode_metadata(inode, 1);
@@ -112,6 +112,8 @@ __luci_getattr(const struct dentry *dentry, struct kstat *stat)
 
     generic_fillattr(inode, stat);
     stat->blksize = inode->i_sb->s_blocksize;
+    luci_info_inode(inode, "atime 0x%lx mtime 0x%lx\n",
+                    inode->i_atime, inode->i_mtime);
     return 0;
 }
 
@@ -1102,6 +1104,42 @@ Egdp:
     return ERR_PTR(-EIO);
 }
 
+void luci_set_inode_flags(struct inode *inode)
+{
+        unsigned int flags = LUCI_I(inode)->i_flags;
+
+        inode->i_flags &= ~(S_SYNC|S_APPEND|S_IMMUTABLE|S_NOATIME|S_DIRSYNC);
+        if (flags & LUCI_SYNC_FL)
+                inode->i_flags |= S_SYNC;
+        if (flags & LUCI_APPEND_FL)
+                inode->i_flags |= S_APPEND;
+        if (flags & LUCI_IMMUTABLE_FL)
+                inode->i_flags |= S_IMMUTABLE;
+        if (flags & LUCI_NOATIME_FL)
+                inode->i_flags |= S_NOATIME;
+        if (flags & LUCI_DIRSYNC_FL)
+                inode->i_flags |= S_DIRSYNC;
+}
+
+/* Propagate flags from i_flags to LUCI_I(inode)->i_flags */
+void luci_get_inode_flags(struct luci_inode_info *ei)
+{
+        unsigned int flags = ei->vfs_inode.i_flags;
+
+        ei->i_flags &= ~(LUCI_SYNC_FL|LUCI_APPEND_FL|
+                        LUCI_IMMUTABLE_FL|LUCI_NOATIME_FL|LUCI_DIRSYNC_FL);
+        if (flags & S_SYNC)
+                ei->i_flags |= LUCI_SYNC_FL;
+        if (flags & S_APPEND)
+                ei->i_flags |= LUCI_APPEND_FL;
+        if (flags & S_IMMUTABLE)
+                ei->i_flags |= LUCI_IMMUTABLE_FL;
+        if (flags & S_NOATIME)
+                ei->i_flags |= LUCI_NOATIME_FL;
+        if (flags & S_DIRSYNC)
+                ei->i_flags |= LUCI_DIRSYNC_FL;
+}
+
 /*
  * This code path gets trigerred when the inode has already been created
  * on disk and we are fetching inode. inode is loaded with raw inode
@@ -1224,6 +1262,7 @@ luci_iget(struct super_block *sb, unsigned long ino) {
         BUG();
     }
 
+    luci_set_inode_flags(inode);
     brelse(bh);
 
     // clears the new state
@@ -1250,6 +1289,7 @@ luci_write_inode_raw(struct inode *inode, int do_sync)
         memset(raw_inode, 0, LUCI_SB(sb)->s_inode_size);
 
     raw_inode->i_mode = cpu_to_le16(inode->i_mode);
+    luci_get_inode_flags(ei);
 
     raw_inode->i_links_count = cpu_to_le16(inode->i_nlink);
     raw_inode->i_size = cpu_to_le32(inode->i_size);
