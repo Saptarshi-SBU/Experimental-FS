@@ -19,6 +19,7 @@
 #include <linux/parser.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
+#include <linux/bitops.h>
 #include "kern_feature.h"
 #include "luci.h"
 #include "compress.h"
@@ -137,6 +138,16 @@ __luci_count_free_blocks(struct super_block *sb)
                 gdesc = luci_get_group_desc(sb, i, NULL);
                 count += le16_to_cpu(gdesc->bg_free_blocks_count);
         }
+        return count;
+}
+
+static unsigned
+__luci_count_clear_bits(char *data, size_t size)
+{
+        int bit;
+        unsigned count = 0;
+        for_each_clear_bit(bit, (unsigned long *)data, size)
+                count++;
         return count;
 }
 
@@ -512,16 +523,23 @@ luci_verify_bg_csum(struct super_block *sb)
         struct luci_sb_info *sbi = sb->s_fs_info;
         for (i = 0; i < sbi->s_groups_count; i++) {
                 struct buffer_head *bh;
+                unsigned free_blocks, free_inodes;
 
                 bh = read_block_bitmap(sb, i);
                 if (!bh)
                         goto error;
+
+                free_blocks = __luci_count_clear_bits(bh->b_data, 4096 << 3);
                 brelse(bh);
 
                 bh = read_inode_bitmap(sb, i);
                 if (!bh)
                         goto error;
+                free_inodes = __luci_count_clear_bits(bh->b_data, 4096 << 3);
                 brelse(bh);
+
+                pr_info("GDT[%u] free_blocks :%u free_inodes :%u\n",
+                        i, free_blocks, free_inodes);
         }
 
         return 0;
