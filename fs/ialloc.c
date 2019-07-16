@@ -228,6 +228,7 @@ read_block_bitmap(struct super_block *sb, unsigned long bg) {
         //luci_dbg("block group :%lu nr_free blocks : %u", bg, gdesc->bg_free_blocks_count);
 
         bmap_block = gdesc->bg_block_bitmap;
+        pr_info("block group :%lu/%lu nr_free blocks : %u", bg, bmap_block, gdesc->bg_free_blocks_count);
 
         cached = true;
         bmap_bh = sb_find_get_block(sb, bmap_block);
