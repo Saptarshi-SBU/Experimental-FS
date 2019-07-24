@@ -378,6 +378,7 @@ luci_new_inode(struct inode *dir, umode_t mode, const struct qstr *qstr) {
         struct luci_group_desc *gdesc;
         struct super_block *sb = dir->i_sb;
         struct luci_sb_info *sbi =  LUCI_SB(sb);
+        struct luci_super_block *lsb = NULL;
         struct luci_inode_info *li;
 
 #if 0
@@ -496,6 +497,22 @@ gotit:
 #endif
 
         percpu_counter_add(&sbi->s_freeinodes_counter, -1);
+
+        //TBD : We are not updating the super-block across all backups
+        lock_buffer(sbi->s_sbh);
+
+        percpu_counter_add(&sbi->s_freeinodes_counter, -1);
+
+        lsb = sbi->s_lsb;
+
+        lsb->s_free_inodes_count -= 1;
+
+        luci_super_update_csum(sb);
+
+        mark_buffer_dirty(sbi->s_sbh);
+
+        // unlock
+        unlock_buffer(sbi->s_sbh);
 
         if (S_ISDIR(mode))
                 percpu_counter_inc(&sbi->s_dirs_counter);

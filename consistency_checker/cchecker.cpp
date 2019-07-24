@@ -10,12 +10,11 @@
 #include <sys/stat.h>
 
 #include <map>
+#include <list>
+#include <cassert>
 #include <stdexcept>
 
 #include "luci.h"
-
-#define TESTDEV "/dev/sdb"
-//#define TESTDEV "/dev/loop0"
 
 using namespace std;
 
@@ -23,14 +22,32 @@ class Group {
         public:
         char *blockbitMap;
         char *inodebitMap;
+        struct luci_group_desc *gd;
         std::map<unsigned long, struct luci_inode> inodeMap;
+
+        Group() {}
+
+        ~Group(){
+                if (blockbitMap)
+                        delete blockbitMap;
+                if (inodebitMap)
+                        delete inodebitMap;
+                inodeMap.clear();
+        }
 };
 
+std::list<Group *> groupList;
+
+static void CleanupGroupList(std::list<Group*> groupList) {
+        while (!groupList.empty())
+                groupList.pop_back();
+}
+
 size_t CCheckerCountBitMap(char *bitmap, size_t size) {
-        size_t count = 0, wordsize = 4;
-        for (size_t i = 0; i < size; i+=wordsize) {
-                size_t val = *((unsigned *)(bitmap + i));
-                count += ((sizeof(wordsize) * 8) - __builtin_popcount(val));
+        size_t count = 0;
+        for (size_t i = 0; i < size; i+=4) {
+                unsigned val = *((unsigned *)(bitmap + i));
+                count += ((sizeof(unsigned) * 8) - __builtin_popcount(val));
         }
         return count;
 }
@@ -75,7 +92,7 @@ void CCheckerReadGroupInodeTable(struct luci_super_block *lsb, struct luci_group
                                 type.assign("regular");
                         else if (S_ISDIR(inode->i_mode))
                                 type.assign("dir");
-                        printf ("Inode :%u type :%s, blocks :%u\n", ino, type.c_str(), inode->i_blocks);
+                        //printf ("Inode :%u type :%s, blocks :%u\n", ino, type.c_str(), inode->i_blocks);
                         if (inodeMap.find(ino) != inodeMap.end())
                                 throw std::runtime_error("inode already present");
                         inodeMap[ino] = *inode;
@@ -85,8 +102,9 @@ void CCheckerReadGroupInodeTable(struct luci_super_block *lsb, struct luci_group
         delete [] buf;
 }
 
-static int CCheckerLuciLoadGroupDescriptorSingle(struct luci_super_block *lsb, struct luci_group_desc *gd, int group, int fd) {
+static Group *CCheckerLuciLoadGroupDescriptorSingle(struct luci_super_block *lsb, struct luci_group_desc *gd, int group, int fd) {
         Group *gp = new Group();
+        gp->gd = gd;
         gp->inodebitMap = CCheckerReadGroupInodeBitmap(lsb, gd, fd);
         gp->blockbitMap = CCheckerReadGroupBlockBitmap(lsb, gd, fd);
         printf ("Block Group BlockMap No[%u]   : 0x%x/crc=0x%x\n",
@@ -107,7 +125,7 @@ static int CCheckerLuciLoadGroupDescriptorSingle(struct luci_super_block *lsb, s
                         std::cout << i.first << " ";
                 std::cout << std::endl;
         }
-        delete gp;
+        return gp;
 }
 
 void CCheckerLuciLoadGroupDescriptorAll(int fd, struct luci_super_block *lsb) {
@@ -131,11 +149,13 @@ void CCheckerLuciLoadGroupDescriptorAll(int fd, struct luci_super_block *lsb) {
         printf ("Nr Groups : %u\n", nr_groups);
         printf ("Nr Group descriptor blocks :%u\n", nr_desc_blocks); 
         for (i = 0; i < nr_groups; i++) {
+                Group *gp;
                 printf ("GD :%u\n", i);
                 struct luci_group_desc *gd = (struct luci_group_desc *)((char *)gdesc + i * sizeof(struct luci_group_desc));
                 nr_free_blocks += gd->bg_free_blocks_count;
                 nr_free_inodes += gd->bg_free_inodes_count;
-                CCheckerLuciLoadGroupDescriptorSingle(lsb, gd, i, fd);
+                gp = CCheckerLuciLoadGroupDescriptorSingle(lsb, gd, i, fd);
+                groupList.push_back(gp);
         }
         printf("GDT Free Blocks :%u\n", nr_free_blocks);
         printf("GDT Free Inodes :%u\n", nr_free_inodes);
@@ -158,13 +178,44 @@ struct luci_super_block * CCheckerLuciLoadSuper(int fd) {
         return lsb;
 }
 
-int main(void) {
+static void TestFreeBlocks(struct luci_super_block *lsb, std::list<Group*> &groupList) {
+        size_t sum_blocks = 0;
+        for (auto &i : groupList)
+                sum_blocks += i->gd->bg_free_blocks_count;
+        assert(lsb->s_free_blocks_count == sum_blocks);
+        std::cout << "TestFreeBlocks pass" << std::endl;
+}
+
+static void TestFreeInodes(struct luci_super_block *lsb, std::list<Group*> &groupList) {
+        size_t sum_inodes = 0;
+        for (auto &i : groupList)
+                sum_inodes += i->gd->bg_free_inodes_count;
+        assert(lsb->s_free_inodes_count == sum_inodes);
+        std::cout << "TestFreeInodes pass" << std::endl;
+}
+
+int main(int argc, char *argv[]) {
+        int fd;
+        char *testdev;
         struct luci_super_block *lsb;
-        int fd = open(TESTDEV, O_RDONLY);
-        if (fd < 0)
+
+        if (argc < 2) {
+                std::cerr << "need device path" << std::endl;
+                return -1;
+        }
+
+        testdev = argv[1];
+        fd = open(testdev, O_RDONLY);
+        if (fd < 0) {
                 std::cout << "failed to open device:" << strerror(errno) << std::endl;
+                return -1;
+        }
+
         lsb = CCheckerLuciLoadSuper(fd);
         CCheckerLuciLoadGroupDescriptorAll(fd, lsb);
+        TestFreeBlocks(lsb, groupList);
+        TestFreeInodes(lsb, groupList);
+        CleanupGroupList(groupList);
         free(lsb);
         close(fd);
         return 0;
