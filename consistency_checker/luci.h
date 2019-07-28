@@ -83,7 +83,7 @@ struct luci_super_block {
      * things it doesn't understand...
      */
     __le32  s_first_ino;        /* First non-reserved inode */
-    __le16   s_inode_size;      /* size of inode structure */
+    __le16  s_inode_size;      /* size of inode structure */
     __le16  s_block_group_nr;   /* block group # of this superblock */
     __le32  s_feature_compat;   /* compatible feature set */
     __le32  s_feature_incompat;     /* incompatible feature set */
@@ -271,5 +271,18 @@ enum {
     LUCI_FT_SYMLINK     = 7,
     LUCI_FT_MAX
 };
+
+static inline unsigned ilog2(unsigned size) {
+        int n = 0;
+        for (size = 0; size; size >>= 1, n++);
+        return n;
+}
+
+#define LUCI_MAX_DEPTH                    4
+#define LUCI_BLOCK_SIZE(lsb)              (1024U << __le32_to_cpu((lsb)->s_log_block_size))
+#define LUCI_BLOCK_SIZE_BITS(lsb)         ilog2(LUCI_BLOCK_SIZE((lsb)))
+#define LUCI_ADDR_PER_BLOCK(lsb)          (LUCI_BLOCK_SIZE(lsb) / sizeof (blkptr))
+#define LUCI_ADDR_PER_BLOCK_BITS(lsb)     (ilog2(LUCI_ADDR_PER_BLOCK(lsb)))
+#define LUCI_BLKPTR_SIZE                  (sizeof(blkptr))
 
 #endif

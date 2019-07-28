@@ -11,6 +11,8 @@
 
 #include <map>
 #include <list>
+#include <set>
+#include <vector>
 #include <cassert>
 #include <stdexcept>
 
@@ -27,7 +29,7 @@ class Group {
 
         Group() {}
 
-        ~Group(){
+        ~Group() {
                 if (blockbitMap)
                         delete blockbitMap;
                 if (inodebitMap)
@@ -36,20 +38,100 @@ class Group {
         }
 };
 
-std::list<Group *> groupList;
+std::map<unsigned long, Group *> groupList;
 
-static void CleanupGroupList(std::list<Group*> groupList) {
-        while (!groupList.empty())
-                groupList.pop_back();
+char *globalBlockBitMap;
+
+std::set<unsigned long> duplicateblocksInodeList;
+
+std::set<unsigned long> missingblocksInodeList;
+
+static int nr_pass;
+
+static inline size_t sectors_count(struct luci_super_block *lsb, unsigned nr_blocks) {
+        unsigned blocksize = (1024U << __le32_to_cpu(lsb->s_log_block_size));
+        size_t size = nr_blocks * blocksize;
+        return size >> 9;
 }
 
-size_t CCheckerCountBitMap(char *bitmap, size_t size) {
+static inline bool bpOk(blkptr *bp) {
+        return !((!bp->blockno) || (bp->blockno == UINT32_MAX));
+}
+
+static void CleanupGroupList(std::map<unsigned long, Group*> groupList) {
+        groupList.clear();
+}
+
+static size_t CCheckerCountBitMap(char *bitmap, size_t size) {
         size_t count = 0;
         for (size_t i = 0; i < size; i+=4) {
                 unsigned val = *((unsigned *)(bitmap + i));
                 count += ((sizeof(unsigned) * 8) - __builtin_popcount(val));
         }
         return count;
+}
+
+static int __CCheckerCheckBitMap(char *bitmap, unsigned long blockno) {
+        unsigned block = blockno / 8;
+        unsigned offset = blockno & 7;
+
+        char *val = bitmap + block; 
+        if (offset) {
+                if ((*val &= (1 << (offset - 1))) == 0)
+                        return -ENOENT;
+        } else {
+                if ((*val &= (1 << 7)) == 0)
+                        return -ENOENT;
+        }
+        return 0;
+}
+
+static void CCheckerCheckBitMap(struct luci_super_block *lsb, unsigned long ino, blkptr bp) {
+        Group *gp;
+        unsigned long blockno = bp.blockno;
+        unsigned long blocks_per_group = __le32_to_cpu(lsb->s_blocks_per_group);
+        unsigned group = blockno / blocks_per_group;
+        gp = (groupList.find(group))->second;
+
+        if (nr_pass == 1)
+                return;
+
+        if ((blockno >= lsb->s_blocks_count) ||
+                ((__CCheckerCheckBitMap(gp->blockbitMap, blockno) < 0)  && !bp.length)) {
+                if (missingblocksInodeList.find(ino) == missingblocksInodeList.end())
+                        duplicateblocksInodeList.insert(ino);
+        }
+}
+
+static int __CCheckerAddBitMap(char *bitmap, unsigned long blockno) {
+        unsigned block = blockno / 8;
+        unsigned offset = blockno & 7;
+
+        char *val = bitmap + block; 
+        if (offset) {
+                if ((*val &= (1 << (offset - 1))) != 0)
+                        return -EEXIST;
+                *val |= (1 << (offset - 1));
+        } else {
+                if ((*val &= (1 << 7)) != 0)
+                        return -EEXIST;
+                *val |= (1 << 7);
+        }
+        return 0;
+}
+
+static int CCheckerAddBitMap(struct luci_super_block *lsb, unsigned long ino, char *bitmap, blkptr bp) {
+        unsigned long blockno = bp.blockno;
+
+        if (nr_pass != 1)
+                return 0;
+
+        if ((blockno >= lsb->s_blocks_count) ||
+                ((__CCheckerAddBitMap(bitmap, blockno) < 0)  && !bp.length)) {
+                if (duplicateblocksInodeList.find(ino) == duplicateblocksInodeList.end())
+                        duplicateblocksInodeList.insert(ino);
+        }
+        return 0;
 }
 
 static char* CCheckerReadGroupInodeBitmap(struct luci_super_block *lsb, struct luci_group_desc *gd, int fd) {
@@ -66,6 +148,83 @@ static char* CCheckerReadGroupBlockBitmap(struct luci_super_block *lsb, struct l
         char *bitmap = new char [blocksize];
         pread(fd, bitmap, blocksize, off);
         return bitmap;
+}
+
+static size_t CCheckerScanInodeIndirectBlocks(struct luci_super_block *lsb, unsigned long ino, unsigned long blockno, int level, int fd) {
+        int i;
+        char *buf;
+        size_t nr_blocks = 0;
+        unsigned blocksize = (1024U << __le32_to_cpu(lsb->s_log_block_size));
+        int nr_blkptr = blocksize / LUCI_BLKPTR_SIZE;
+        off_t off = (blocksize * blockno);
+
+        if (level == 0)
+                return nr_blocks;
+
+        buf = new char[LUCI_BLKPTR_SIZE];
+        for (i = 0; i < nr_blkptr; i++) {
+                blkptr *bp;
+                pread(fd, buf, LUCI_BLKPTR_SIZE, off + i * LUCI_BLKPTR_SIZE);
+                bp = (blkptr *)buf;
+                if (!bpOk(bp))
+                        continue;
+                CCheckerAddBitMap(lsb, ino, globalBlockBitMap, *bp);
+                CCheckerCheckBitMap(lsb, ino, *bp);
+                nr_blocks += CCheckerScanInodeIndirectBlocks(lsb, ino, bp->blockno, level - 1, fd);
+                nr_blocks++;
+        }
+        delete buf;
+        return nr_blocks;
+}
+
+void CCheckerScanInodeBlockTree(struct luci_super_block *lsb, struct luci_inode *inode, unsigned long ino, int fd) {
+        blkptr bp;
+        size_t nr_blocks = 0;
+
+        bp = inode->i_block[0];
+        std::cout << "L0 Block :" << bp.blockno << std::endl;
+        if (bpOk(&bp)) {
+                CCheckerAddBitMap(lsb, ino, globalBlockBitMap, bp);
+                CCheckerCheckBitMap(lsb, ino, bp);
+                nr_blocks++;
+        }
+
+        bp = inode->i_block[1];
+        std::cout << "L0 Block :" << bp.blockno << std::endl;
+        if (bpOk(&bp)) {
+                CCheckerAddBitMap(lsb, ino, globalBlockBitMap, bp);
+                CCheckerCheckBitMap(lsb, ino, bp);
+                nr_blocks++;
+        }
+
+        bp = inode->i_block[2];
+        std::cout << "L1 Block :" << bp.blockno << std::endl;
+        if (bpOk(&bp)) {
+                CCheckerAddBitMap(lsb, ino, globalBlockBitMap, bp);
+                CCheckerCheckBitMap(lsb, ino, bp);
+                nr_blocks += CCheckerScanInodeIndirectBlocks(lsb, ino, bp.blockno, 1, fd);
+                nr_blocks++;
+        }
+
+        bp = inode->i_block[3];
+        std::cout << "L2 Block :" << bp.blockno << std::endl;
+        if (bpOk(&bp)) {
+                CCheckerAddBitMap(lsb, ino, globalBlockBitMap, bp);
+                CCheckerCheckBitMap(lsb, ino, bp);
+                nr_blocks += CCheckerScanInodeIndirectBlocks(lsb, ino, bp.blockno, 2, fd);
+                nr_blocks++;
+        }
+
+        bp = inode->i_block[4];
+        std::cout << "L3 Block :" << bp.blockno << std::endl;
+        if (bpOk(&bp)) {
+                CCheckerAddBitMap(lsb, ino, globalBlockBitMap, bp);
+                CCheckerCheckBitMap(lsb, ino, bp);
+                nr_blocks += CCheckerScanInodeIndirectBlocks(lsb, ino, bp.blockno, 3, fd);
+                nr_blocks++;
+        }
+        std::cout << "NR Blocks: " << sectors_count(lsb, nr_blocks)
+                  << " isize:" << (inode->i_size >> 9) << std::endl;
 }
 
 void CCheckerReadGroupInodeTable(struct luci_super_block *lsb, struct luci_group_desc *gd, int group, int fd,
@@ -92,10 +251,13 @@ void CCheckerReadGroupInodeTable(struct luci_super_block *lsb, struct luci_group
                                 type.assign("regular");
                         else if (S_ISDIR(inode->i_mode))
                                 type.assign("dir");
-                        //printf ("Inode :%u type :%s, blocks :%u\n", ino, type.c_str(), inode->i_blocks);
-                        if (inodeMap.find(ino) != inodeMap.end())
-                                throw std::runtime_error("inode already present");
-                        inodeMap[ino] = *inode;
+                        if (nr_pass == 1) {
+                                if (inodeMap.find(ino) != inodeMap.end())
+                                        throw std::runtime_error("inode already present");
+                                inodeMap[ino] = *inode;
+                        }
+                        printf ("Inode :%u type :%s, blocks :%u links_count :%u\n", ino, type.c_str(), inode->i_blocks, inode->i_links_count);
+                        CCheckerScanInodeBlockTree(lsb, inode, ino, fd);
                 }
                 count++;
         }
@@ -155,13 +317,18 @@ void CCheckerLuciLoadGroupDescriptorAll(int fd, struct luci_super_block *lsb) {
                 nr_free_blocks += gd->bg_free_blocks_count;
                 nr_free_inodes += gd->bg_free_inodes_count;
                 gp = CCheckerLuciLoadGroupDescriptorSingle(lsb, gd, i, fd);
-                groupList.push_back(gp);
+                groupList[i] = gp;
         }
         printf("GDT Free Blocks :%u\n", nr_free_blocks);
         printf("GDT Free Inodes :%u\n", nr_free_inodes);
 }
 
-struct luci_super_block * CCheckerLuciLoadSuper(int fd) {
+static void CCheckerLuciMissingBlocks(struct luci_super_block *lsb, int fd) {
+        for (auto &i : groupList)
+                CCheckerReadGroupInodeTable(lsb, i.second->gd, i.first, fd, i.second->inodeMap);
+}
+
+struct luci_super_block *CCheckerLuciLoadSuper(int fd) {
         struct luci_super_block *lsb = (struct luci_super_block *)malloc(1024);;
         pread(fd, lsb, 1024, 1024);
         printf ("SB Magic           :0x%x\n", lsb->s_magic);
@@ -178,20 +345,30 @@ struct luci_super_block * CCheckerLuciLoadSuper(int fd) {
         return lsb;
 }
 
-static void TestFreeBlocks(struct luci_super_block *lsb, std::list<Group*> &groupList) {
+static void TestFreeBlocksCount(struct luci_super_block *lsb, std::map<unsigned long, Group*> &groupList) {
         size_t sum_blocks = 0;
         for (auto &i : groupList)
-                sum_blocks += i->gd->bg_free_blocks_count;
+                sum_blocks += i.second->gd->bg_free_blocks_count;
         assert(lsb->s_free_blocks_count == sum_blocks);
-        std::cout << "TestFreeBlocks pass" << std::endl;
+        std::cout << "CChecker:TestFreeBlocksCount pass" << std::endl;
 }
 
-static void TestFreeInodes(struct luci_super_block *lsb, std::list<Group*> &groupList) {
+static void TestFreeInodesCount(struct luci_super_block *lsb, std::map<unsigned long, Group*> &groupList) {
         size_t sum_inodes = 0;
         for (auto &i : groupList)
-                sum_inodes += i->gd->bg_free_inodes_count;
+                sum_inodes += i.second->gd->bg_free_inodes_count;
         assert(lsb->s_free_inodes_count == sum_inodes);
-        std::cout << "TestFreeInodes pass" << std::endl;
+        std::cout << "CChecker:TestFreeInodesCount pass" << std::endl;
+}
+
+static void TestDuplicateBlocks(std::set<unsigned long> &duplicateblocksInodeList) {
+        assert(duplicateblocksInodeList.empty());
+        std::cout << "CChecker:TestDuplicateBlocks pass" << std::endl;
+}
+
+static void TestMissingBlocks(std::set<unsigned long> &missingblocksInodeList) {
+        assert(missingblocksInodeList.empty());
+        std::cout << "CChecker:TestMissingBlocks pass" << std::endl;
 }
 
 int main(int argc, char *argv[]) {
@@ -211,13 +388,21 @@ int main(int argc, char *argv[]) {
                 return -1;
         }
 
+        nr_pass = 1;
         lsb = CCheckerLuciLoadSuper(fd);
+        globalBlockBitMap = new char[lsb->s_blocks_count/8];
         CCheckerLuciLoadGroupDescriptorAll(fd, lsb);
-        TestFreeBlocks(lsb, groupList);
-        TestFreeInodes(lsb, groupList);
+        TestFreeBlocksCount(lsb, groupList);
+        TestFreeInodesCount(lsb, groupList);
+        TestDuplicateBlocks(duplicateblocksInodeList);
+
+        nr_pass = 2;
+        CCheckerLuciMissingBlocks(lsb, fd);
+        TestMissingBlocks(missingblocksInodeList);
+
         CleanupGroupList(groupList);
+        delete [] globalBlockBitMap;
         free(lsb);
         close(fd);
         return 0;
 }
-
