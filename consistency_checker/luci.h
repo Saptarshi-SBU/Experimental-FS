@@ -273,9 +273,10 @@ enum {
 };
 
 static inline unsigned ilog2(unsigned size) {
-        int n = 0;
-        for (size = 0; size; size >>= 1, n++);
-        return n;
+        int p = 0;
+        unsigned bytes = size;
+        for (; bytes > 1; bytes >>= 1, p++);
+        return p;
 }
 
 #define LUCI_MAX_DEPTH                    4
@@ -284,5 +285,27 @@ static inline unsigned ilog2(unsigned size) {
 #define LUCI_ADDR_PER_BLOCK(lsb)          (LUCI_BLOCK_SIZE(lsb) / sizeof (blkptr))
 #define LUCI_ADDR_PER_BLOCK_BITS(lsb)     (ilog2(LUCI_ADDR_PER_BLOCK(lsb)))
 #define LUCI_BLKPTR_SIZE                  (sizeof(blkptr))
+
+/*
+ *  * LUCI_DIR_PAD defines the directory entries boundaries
+ *   *
+ *    * NOTE: It must be a multiple of 4
+ *     */
+#define LUCI_DIR_PAD                4
+#define LUCI_DIR_ROUND              (LUCI_DIR_PAD - 1)
+#define LUCI_DIR_REC_LEN(name_len)  (((name_len) + 8 + LUCI_DIR_ROUND) & ~LUCI_DIR_ROUND)
+#define LUCI_MAX_REC_LEN            ((1<<16) - 1)
+
+#define LUCI_NAME_LEN           255
+#define LUCI_SUPER_MAGIC        0xEF53
+#define LUCI_LINK_MAX           32000
+
+/*
+ *  * Special inode numbers
+ *   */
+#define LUCI_BAD_INO            1  /* Bad blocks inode */
+#define LUCI_ROOT_INO           2  /* Root inode */
+#define LUCI_BOOT_LOADER_INO    5  /* Boot loader inode */
+#define LUCI_UNDEL_DIR_INO      6  /* Undelete directory inode */
 
 #endif
