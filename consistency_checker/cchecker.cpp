@@ -19,10 +19,12 @@
 #include <stdexcept>
 
 #include "luci.h"
+#include "graph.h"
 
 using namespace std;
 
-#define dbg_printf 
+//#define dbg_printf printf
+#define dbg_printf
 
 class Group {
         public:
@@ -62,6 +64,9 @@ std::set<unsigned long> InodeBlocksNotMarkedInBitMap;
 std::list<unsigned long> orphanInodeList;
 
 std::set<unsigned long>  InodeNotMarkedInBitMap;
+
+// DAG for detecting directory cycles
+cchecker_graph::Graph<long> dirGraph;
 
 static int nr_pass;
 
@@ -169,10 +174,15 @@ static int CCheckerAddBitMap(struct luci_super_block *lsb, unsigned long ino,
 
 static char* CCheckerReadGroupInodeBitmap(struct luci_super_block *lsb,
                 struct luci_group_desc *gd, int fd) {
-        unsigned blocksize = (1024U << __le32_to_cpu(lsb->s_log_block_size));
-        off_t off = __le32_to_cpu(gd->bg_inode_bitmap) * blocksize;
+        unsigned long blocksize = (1024UL << __le32_to_cpu(lsb->s_log_block_size));
+        //loff_t off = __le32_to_cpu(gd->bg_inode_bitmap) * blocksize;
+        loff_t off = gd->bg_inode_bitmap * blocksize;
         char *bitmap = new char [blocksize];
         pread(fd, bitmap, blocksize, off);
+        printf("inodebitMap :%lx/%lx\n", off, off/blocksize);
+        //for (int i = 0; i < blocksize; i++)
+        //        printf("[%d] 0x%x ", i, *(bitmap + i));
+        //printf("\n");
         return bitmap;
 }
 
@@ -365,8 +375,11 @@ static int CCheckerReadDirBlock(struct luci_super_block *lsb, struct luci_inode 
                                 orphanInodeList.push_back(de->inode);
                         }
                         inode = globalInodeMap[de->inode];
-                        if (S_ISDIR(inode.i_mode))
+                        if (S_ISDIR(inode.i_mode)) {
                                 links_count++;
+                                dirGraph.add_vertex(de->inode);
+                                dirGraph.add_edge(ino, de->inode);
+                        }
                 }
         }
         return links_count;
@@ -381,6 +394,8 @@ static int CCheckerReadDirInode(struct luci_super_block *lsb, struct luci_inode 
         size_t blocksize = (1024U << __le32_to_cpu(lsb->s_log_block_size));
         unsigned int nr_blocks = (size + blocksize - 1)/blocksize;
         char *buf = new char[blocksize];
+
+        dirGraph.add_vertex(ino);
 
         for (size_t fblock = 0; fblock < nr_blocks; fblock++) {
                 size_t readbytes = std::min(size, blocksize);
@@ -408,7 +423,7 @@ static std::string CCheckerGetFileType(int mode) {
 }
 
 static void CCheckerReadGroupInodeTable(struct luci_super_block *lsb, struct luci_group_desc *gd,
-                int group, int fd, std::map<unsigned long, struct luci_inode>& inodeMap) {
+                int group, int fd, std::map<unsigned long, struct luci_inode>& inodeMap, char *inodebitMap) {
         size_t i, count;
         unsigned long ino = 0;
         struct luci_inode *inode;
@@ -421,7 +436,13 @@ static void CCheckerReadGroupInodeTable(struct luci_super_block *lsb, struct luc
         unsigned nr_blocks = (inodes_per_group * inode_size + blocksize - 1) / blocksize;
         char *buf = new char[inode_size];
 
-        for (i = 0, count = 0; i < (nr_blocks * blocksize); i+=inode_size) {
+        for (i = 0, count = 0; i < (nr_blocks * blocksize); i+=inode_size, count++) {
+                // Lookup inodes only marked in bitmap
+                // For certain groups, inode table entries may not be
+                // initialized if unmarked in inode bitmap
+                if (__CCheckerCheckBitMap(inodebitMap, count) != 0)
+                        continue;
+                printf("count :%lu\n", count);
                 pread(fd, buf, inode_size, off + i);
                 inode = (struct luci_inode *)buf;
                 ino = base_inode + count;
@@ -447,7 +468,7 @@ static void CCheckerReadGroupInodeTable(struct luci_super_block *lsb, struct luc
 
                         CCheckerScanInodeBlockTree(lsb, inode, ino, fd);
                 }
-                count++;
+                //count++;
         }
         delete [] buf;
 }
@@ -469,7 +490,7 @@ static Group *CCheckerLuciLoadGroupDescriptorSingle(struct luci_super_block *lsb
         dbg_printf ("Block Group InodeTable No[%u] : 0x%x/crc=0x%x, 0x%x\n",
                         group, gd->bg_inode_table, gd->bg_inode_table_checksum, gd->bg_checksum);
 
-        CCheckerReadGroupInodeTable(lsb, gd, group, fd, gp->inodeMap);
+        CCheckerReadGroupInodeTable(lsb, gd, group, fd, gp->inodeMap, gp->inodebitMap);
         if (!gp->inodeMap.empty()) {
                 dbg_printf("group=%u inode list:\n", group);
                 for (auto &i : gp->inodeMap) {
@@ -497,7 +518,7 @@ static void CCheckerLuciLoadGroupDescriptorAll(int fd, struct luci_super_block *
         gdesc = (struct luci_group_desc *) malloc(nr_desc_blocks * block_size);
 
         // 2nd block GDT entries
-        pread(fd, gdesc, block_size, block_size);
+        pread(fd, gdesc, block_size * nr_desc_blocks, block_size);
 
         dbg_printf ("Nr Groups : %u\n", nr_groups);
         dbg_printf ("Nr Group descriptor blocks :%u\n", nr_desc_blocks); 
@@ -518,7 +539,7 @@ static void CCheckerLuciLoadGroupDescriptorAll(int fd, struct luci_super_block *
 static void CCheckerLuciMissingBlocks(struct luci_super_block *lsb, int fd) {
         for (auto &i : blockgroupMap)
                 CCheckerReadGroupInodeTable(lsb, i.second->gd, i.first, fd,
-                        i.second->inodeMap);
+                        i.second->inodeMap, i.second->inodebitMap);
 }
 
 struct luci_super_block *CCheckerLuciLoadSuper(int fd) {
@@ -592,6 +613,10 @@ static void TestOrphanInodes(std::list<unsigned long>& orphanInodeList) {
         printf ("CChecker:TestOrphanInodes pass\n");
 }
 
+static void TestDirCycle(cchecker_graph::Graph<long>& dirGraph) {
+        assert(!cchecker_graph::DetectCycle<long>(dirGraph));
+        printf ("CChecker:TestDirCycle pass\n");
+}
 
 int main(int argc, char *argv[]) {
         int fd;
@@ -624,6 +649,7 @@ int main(int argc, char *argv[]) {
         CCheckerLuciMissingBlocks(lsb, fd);
         TestMissingBlocks(InodeBlocksNotMarkedInBitMap);
         TestDirLinks(globalDirMap);
+        TestDirCycle(dirGraph);
         TestOrphanInodes(orphanInodeList);
 
         CleanupGroupList(blockgroupMap);
