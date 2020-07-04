@@ -359,6 +359,7 @@ luci_grow_blocks(struct inode *inode, long from, long to)
 int
 luci_truncate(struct inode *inode, loff_t size)
 {
+        int ret = 0;
         struct super_block *sb = inode->i_sb;
         long n_blocks = (size + sb->s_blocksize - 1) / sb->s_blocksize;
         long i_blocks = (inode->i_size + sb->s_blocksize - 1) / sb->s_blocksize; // TBD : EXTENT_SIZE will be more accurate here
@@ -370,9 +371,9 @@ luci_truncate(struct inode *inode, loff_t size)
         // do not grow blocks; this makes truncate O(n) operation.
         if (delta_blocks < 0) {
                 luci_dbg("freeing %ld blocks on truncate", delta_blocks);
-                return luci_free_blocks(inode, -delta_blocks);
+                ret = luci_free_blocks(inode, -delta_blocks);
         }
-        return 0;
+        return ret;
 }
 
 // invoked when i_count (in-memory references) drops to zero
@@ -445,6 +446,7 @@ static void
 init_once(void *foo)
 {
         struct luci_inode_info *li = (struct luci_inode_info *) foo;
+        INIT_LIST_HEAD(&li->i_orphan);
         mutex_init(&li->truncate_mutex);
         rwlock_init(&li->i_meta_lock);
         inode_init_once(&li->vfs_inode);
@@ -538,7 +540,7 @@ luci_verify_bg_csum(struct super_block *sb)
                 free_inodes = __luci_count_clear_bits(bh->b_data, 4096 << 3);
                 brelse(bh);
 
-                pr_info("GDT[%u] free_blocks :%u free_inodes :%u\n",
+                luci_dbg("GDT[%u] free_blocks :%u free_inodes :%u\n",
                         i, free_blocks, free_inodes);
         }
 
@@ -765,6 +767,80 @@ luci_free_super(struct super_block * sb) {
         sb->s_fs_info = NULL;
 }
 
+/* luci_orphan_cleanup() walks a singly-linked list of inodes (starting at
+ * the superblock) which were deleted from all directories, but held open by
+ * a process at the time of a crash.  We walk the list and try to delete these
+ * inodes at recovery time (only with a read-write filesystem).
+ *
+ * In order to keep the orphan inode chain consistent during traversal (in
+ * case of crash during recovery), we link each inode into the superblock
+ * orphan list_head and handle it the same way as an inode deletion during
+ * normal operation (which journals the operations for us).
+ *
+ * We only do an iget() and an iput() on each inode, which is very safe if we
+ * accidentally point at an in-use or already deleted inode.  The worst that
+ * can happen in this case is that we get a "bit already cleared" message from
+ * ext3_free_inode().  The only reason we would point at a wrong inode is if
+ * e2fsck was run on this filesystem, and it must have already done the orphan
+ * inode cleanup for us, so we can safely abort without any further action.
+ */
+static void luci_orphan_cleanup (struct super_block * sb,
+				 struct luci_super_block * lsb)
+{
+	int nr_orphans = 0, nr_truncates = 0;
+
+	if (!lsb->s_last_orphan) {
+		luci_dbg("no orphan inodes found for cleanup");
+		return;
+	}
+
+	if (bdev_read_only(sb->s_bdev)) {
+		luci_info("error: write access "
+			"unavailable, skipping orphan cleanup.");
+		return;
+	}
+
+	if (LUCI_SB(sb)->s_mount_state & LUCI_ERROR_FS) {
+		if (lsb->s_last_orphan) {
+			luci_err("Errors on filesystem, "
+				  "cannot process orphan list.");
+            return;
+        }
+    }
+
+    while (lsb->s_last_orphan) {
+        struct inode *inode = luci_iget(sb, le32_to_cpu(lsb->s_last_orphan));
+        if (IS_ERR(inode)) {
+            luci_err("error fetching orphan inode :%u\n",
+                le32_to_cpu(lsb->s_last_orphan));
+            lsb->s_last_orphan = 0;
+            break;
+        }
+
+        luci_dbg("procssing orphan inode :%u\n",
+            le32_to_cpu(lsb->s_last_orphan));
+        list_add(&LUCI_I(inode)->i_orphan, &LUCI_SB(sb)->s_orphan);
+        if (inode->i_nlink) {
+            luci_dbg("truncating inode %lu to %Ld bytes\n",
+                inode->i_ino, inode->i_size);
+            luci_truncate(inode, inode->i_size);
+            nr_truncates++;
+        } else {
+            luci_dbg("deleting unreferenced inode %lu\n",
+                inode->i_ino);
+            nr_orphans++;
+        }
+        luci_orphan_del(inode);
+        iput(inode);  /* The delete magic happens here! */
+    }
+
+	if (nr_orphans)
+		luci_info("%d orphan inodes deleted", nr_orphans);
+	if (nr_truncates)
+		luci_info("%d orphan truncates cleaned up", nr_truncates);
+    return;
+}
+
 static int
 luci_read_superblock(struct super_block *sb) {
         int ret = 0;
@@ -985,6 +1061,11 @@ restart:
         mark_buffer_dirty(sbi->s_sbh);
         spin_unlock(&sbi->s_lock);
         sync_dirty_buffer(sbi->s_sbh);
+
+        // orphan processing
+        INIT_LIST_HEAD(&sbi->s_orphan);
+        mutex_init(&sbi->s_orphan_mutex);
+        luci_orphan_cleanup(sb, lsb);
 
         // keep df command happy; report correct available size
         percpu_counter_set(&sbi->s_freeblocks_counter,

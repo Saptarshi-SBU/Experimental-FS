@@ -192,6 +192,10 @@ struct luci_sb_info {
      */
     spinlock_t s_lock;
 
+    /* orphan processing */
+    struct list_head s_orphan;
+    struct mutex s_orphan_mutex;
+
     // Workqueue for compressed writes
     struct workqueue_struct *comp_write_wq;
 
@@ -729,6 +733,11 @@ void luci_super_update_csum(struct super_block *sb);
 
 /* dir.c */
 
+/* namei.c */
+
+int luci_orphan_add(struct inode *inode);
+int luci_orphan_del(struct inode *inode);
+
 //#define DEBUG_DENTRY
 
 inline __le16 luci_rec_len_to_disk(unsigned dlen);
@@ -749,6 +758,13 @@ unsigned luci_last_byte(struct inode *inode, unsigned long page_nr);
 #define COMPR_BLK_UPDATE    0x02
 #define COMPR_BLK_INSERT    0x04
 #define COMPR_BLK_INFO      0x08
+
+/*
+ * The i_dtime field of the inode, normally used to store the
+ * time an inode was deleted, is (ab)used as the inode number
+ * of the next item in the orphan inode list
+ */
+#define LUCI_NEXT_ORPHAN(inode) LUCI_I(inode)->i_dtime
 
 #ifdef HAVE_NEW_GETATTR
 int luci_getattr(const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags);
@@ -934,5 +950,7 @@ static inline void
 luci_print_bh(struct buffer_head *bh) {
     luci_dbg("bh dump : block :%lu size :%lu", bh->b_blocknr, bh->b_size);
 }
+
+//#define SIMULATE_ORPHAN_INODE
 
 #endif

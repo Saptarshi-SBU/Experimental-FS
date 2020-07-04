@@ -49,8 +49,17 @@ __luci_setsize(struct inode *inode, loff_t newsize)
         luci_err_inode(inode, "cannot modify size of non-regular file type");
         return -EINVAL;
     }
-    luci_truncate(inode, newsize); // shrink will need bmap update
+    (void) luci_orphan_add(inode);
+
     truncate_setsize(inode, newsize);
+    luci_truncate(inode, newsize); // shrink will need bmap update
+
+    #ifdef SIMULATE_ORPHAN_INODE
+    // pass
+    #else
+    (void) luci_orphan_del(inode);
+    #endif
+
     inode->i_mtime = inode->i_ctime = LUCI_CURR_TIME;
     if (inode_needs_sync(inode)) {
         sync_mapping_buffers(inode->i_mapping);
@@ -1261,6 +1270,8 @@ luci_iget(struct super_block *sb, unsigned long ino) {
         luci_err("Inode mode not supported");
         BUG();
     }
+
+    INIT_LIST_HEAD(&li->i_orphan);
 
     luci_set_inode_flags(inode);
     brelse(bh);

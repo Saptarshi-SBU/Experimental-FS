@@ -519,8 +519,10 @@ luci_unlink(struct inode* dir, struct dentry* dentry)
     if (!de) {
        err = -ENOENT;
        luci_err("name :%s not found", dentry->d_name.name);
-       goto out;
+       goto no_entry;
     }
+
+    (void) luci_orphan_add(inode);
 
     err = luci_truncate(inode, 0);
     if (err) {
@@ -542,7 +544,15 @@ luci_unlink(struct inode* dir, struct dentry* dentry)
     mark_inode_dirty(dir);
     mark_inode_dirty(inode);
     inode_dec_link_count(inode);
+
 out:
+    #ifdef SIMULATE_ORPHAN_INODE
+    // pass
+    #else
+    (void) luci_orphan_del(inode);
+    #endif
+
+no_entry:
 #ifdef HAVE_TRACEPOINT_ENABLED
     trace_luci_unlink_enabled()
 #endif
@@ -618,14 +628,14 @@ luci_rmdir(struct inode *dir, struct dentry *dentry)
     luci_dbg_inode(inode, "rmdir on inode");
     if (luci_empty_dir(inode) == 0) {
         err = luci_unlink(dir, dentry);
-	if (err) {
+        if (err) {
             luci_err("rmdir failed for inode %lu", inode->i_ino);
-	    return err;
-	}
+	        return err;
+        }
         inode->i_size = 0;
         inode_dec_link_count(inode);
         inode_dec_link_count(dir);
-	return 0;
+        return 0;
     }
     return err;
 }
@@ -824,8 +834,8 @@ luci_rename(struct inode *src_dir, struct dentry *src_dentry,
             mark_inode_dirty(tgt_dir);
             mark_inode_dirty(tgt_dentry->d_inode);
     } else {
-        ret = luci_add_link(tgt_dentry, src_dentry->d_inode);
-        src_dentry->d_inode->i_ctime = LUCI_CURR_TIME;
+            ret = luci_add_link(tgt_dentry, src_dentry->d_inode);
+            src_dentry->d_inode->i_ctime = LUCI_CURR_TIME;
     }
 
     if (!ret) {
@@ -835,6 +845,112 @@ luci_rename(struct inode *src_dir, struct dentry *src_dentry,
                 inode_dec_link_count(src_dir);
     }
     return ret;
+}
+
+/* luci_orphan_add() links an unlinked or truncated inode into a list of
+ * such inodes, starting at the superblock, in case we crash before the
+ * file is closed/deleted, or in case the inode truncate spans multiple
+ * transactions and the last transaction is not recovered after a crash.
+ *
+ * At filesystem recovery time, we walk this list deleting unlinked
+ * inodes and truncating linked inodes in ext3_orphan_cleanup().
+ */
+int luci_orphan_add(struct inode *inode)
+{
+	struct super_block *sb = inode->i_sb;
+	int ret = 0;
+
+	mutex_lock(&LUCI_SB(sb)->s_orphan_mutex);
+    // inode may have been already added to the orphan list
+	if (!list_empty(&LUCI_I(inode)->i_orphan)) {
+        luci_dbg_inode(inode, "inode already present in orphan list\n");
+        ret = -ENOENT;
+		goto out;
+    }
+
+	/* Orphan handling is only valid for files with data blocks
+	 * being truncated, or files being unlinked. */
+
+	if (!((S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode) ||
+		S_ISLNK(inode->i_mode)) || inode->i_nlink == 0)) {
+        luci_err_inode(inode, "invalid inode type for orphan processing");
+        ret = -EINVAL;
+        goto out;
+    }
+
+	/* Insert this inode at the head of the on-disk orphan list... */
+	LUCI_NEXT_ORPHAN(inode) = le32_to_cpu(LUCI_SB(sb)->s_lsb->s_last_orphan);
+	LUCI_SB(sb)->s_lsb->s_last_orphan = cpu_to_le32(inode->i_ino);
+
+    // inode data is synced so that orphan list is persisted
+    mark_inode_dirty_sync(inode);
+    sync_dirty_buffer(LUCI_SB(sb)->s_sbh);
+
+	/* Only add to the head of the in-memory list if all the
+	 * previous operations succeeded.  If the orphan_add is going to
+	 * fail (possibly taking the journal offline), we can't risk
+	 * leaving the inode on the orphan list: stray orphan-list
+	 * entries can cause panics at unmount time.
+	 *
+	 * This is safe: on error we're going to ignore the orphan list
+	 * anyway on the next recovery. */
+	list_add(&LUCI_I(inode)->i_orphan, &LUCI_SB(sb)->s_orphan);
+
+	luci_dbg("superblock will point to %lu\n", inode->i_ino);
+	luci_dbg("orphan inode %lu will point to %d\n",
+			inode->i_ino, LUCI_NEXT_ORPHAN(inode));
+out:
+	mutex_unlock(&LUCI_SB(sb)->s_orphan_mutex);
+    return ret;
+}
+
+/*
+ * luci_orphan_del() removes an unlinked or truncated inode from the list
+ * of such inodes stored on disk, because it is finally being cleaned up.
+ */
+int luci_orphan_del(struct inode *inode)
+{
+    int ret = 0;
+	unsigned long ino_next;
+	struct list_head *prev;
+	struct luci_sb_info *sbi = LUCI_SB(inode->i_sb);
+	struct luci_inode_info *ei = LUCI_I(inode);
+
+	mutex_lock(&LUCI_SB(inode->i_sb)->s_orphan_mutex);
+
+    // inode may have been already deleted from the orphan list
+	if (list_empty(&ei->i_orphan)) {
+        luci_dbg_inode(inode, "inode not present in orphan list\n");
+        ret = -ENOENT;
+		goto out;
+    }
+
+	ino_next = LUCI_NEXT_ORPHAN(inode);
+	prev = ei->i_orphan.prev;
+	luci_dbg_inode(inode, "remove inode from orphan list\n");
+
+    // remove from in-memory linked list
+	list_del_init(&ei->i_orphan);
+
+	if (prev == &sbi->s_orphan) {
+		sbi->s_lsb->s_last_orphan = cpu_to_le32(ino_next);
+		luci_dbg("superblock will point to next inode: %lu\n", ino_next);
+	} else {
+		struct inode *i_prev =
+			&list_entry(prev, struct luci_inode_info, i_orphan)->vfs_inode;
+		luci_dbg("orphan inode %lu will point to %lu\n",
+			  i_prev->i_ino, ino_next);
+		LUCI_NEXT_ORPHAN(i_prev) = ino_next;
+	}
+	LUCI_NEXT_ORPHAN(inode) = 0;
+
+    // inode data is synced so that orphan list is persisted
+    mark_inode_dirty_sync(inode);
+    sync_dirty_buffer(sbi->s_sbh);
+
+out:
+	mutex_unlock(&LUCI_SB(inode->i_sb)->s_orphan_mutex);
+	return ret;
 }
 
 const struct inode_operations luci_dir_inode_operations = {
