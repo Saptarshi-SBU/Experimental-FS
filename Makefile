@@ -1,4 +1,5 @@
 SUBDIRS = fs
+SUBDIRS += lib
 
 .PHONY: subdirs $(SUBDIRS)
 
